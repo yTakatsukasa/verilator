@@ -84,6 +84,22 @@ void LinkCellsGraph::loopsMessageCb(V3GraphVertex* vertexp) {
     }
 }
 
+static void visitModuleVertex(const V3GraphVertex* vertex, int depth, AstNodeModule* parentp, V3HierBlockPlan* planp) {
+    const GraphWay way = GraphWay::FORWARD;
+    AstNodeModule* modp = static_cast<const LinkCellsVertex*>(vertex)->modp();
+    if (planp->isHierBlock(modp)) {
+        if (parentp)
+            planp->registerUsage(parentp, modp);
+        parentp = modp;
+    }
+
+    UINFO(3, std::setw(depth*2) << std::setfill(' ') << "" << "Vertex:" << vertex->name() << "\n");
+    for (V3GraphEdge* ep = vertex->beginp(way); ep; ep = ep->nextp(way)) {
+        UINFO(3, std::setw((depth+1)*2) << std::setfill(' ') << ""  << "Edge:" << ep->name() << "\n");
+        visitModuleVertex(ep->furtherp(way), depth + 2, parentp, planp);
+    }
+}
+
 //######################################################################
 // Link state, as a visitor of each AstNode
 
@@ -111,6 +127,9 @@ private:
     LibraryVertex*      m_libVertexp;   // Vertex at root of all libraries
     V3GraphVertex*      m_topVertexp;   // Vertex of top module
     vl_unordered_set<string> m_declfnWarned;  // Files we issued DECLFILENAME on
+    V3HierBlockPlan*    m_hierBlockPlanp;     // Plan for hierarchical verilation
+    std::map<AstNodeModule*, bool>
+                        m_maybeTop;     // true if the module is not used by other modules
 
     VL_DEBUG_FUNC;  // Declare debug()
 
@@ -150,6 +169,7 @@ private:
                 nodep->v3error("Can't resolve module reference: '"<<prettyName<<"'");
             }
         }
+        m_maybeTop[modp] = false;  // modp is used in other modules, so must not be top
         return modp;
     }
 
@@ -188,6 +208,7 @@ private:
     }
     virtual void visit(AstNodeModule* nodep) VL_OVERRIDE {
         // Module: Pick up modnames, so we can resolve cells later
+        m_maybeTop.insert(std::make_pair(nodep, true));
         AstNodeModule* oldModp = m_modp;
         {
             m_modp = nodep;
@@ -447,6 +468,12 @@ private:
     // Accelerate the recursion
     // Must do statements to support Generates, math though...
     virtual void visit(AstNodeMath* nodep) VL_OVERRIDE {}
+    virtual void visit(AstPragma* nodep) VL_OVERRIDE {
+        if (nodep->pragType() == AstPragmaType::HIER_BLOCK) {
+            if (m_hierBlockPlanp) m_hierBlockPlanp->add(m_modp);
+        }
+        iterateChildren(nodep);
+    }
     virtual void visit(AstNode* nodep) VL_OVERRIDE {
         // Default: Just iterate
         iterateChildren(nodep);
@@ -478,14 +505,28 @@ private:
 
 public:
     // CONSTRUCTORS
-    LinkCellsVisitor(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp)
+    LinkCellsVisitor(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp, V3HierBlockPlan* planp)
         : m_mods(nodep) {
         m_filterp = filterp;
         m_parseSymp = parseSymp;
         m_modp = NULL;
         m_libVertexp = NULL;
         m_topVertexp = NULL;
+        m_hierBlockPlanp = planp;
         iterate(nodep);
+        if (m_hierBlockPlanp) {
+            if (m_topVertexp) {
+                visitModuleVertex(m_topVertexp, 0, NULL, m_hierBlockPlanp);
+            } else {
+                for (std::map<AstNodeModule*, bool>::const_iterator it = m_maybeTop.begin();
+                     it != m_maybeTop.end(); ++it) {
+                    if (!it->second) continue;
+                    const V3GraphVertex* vp = it->first->user1u().toGraphVertex();
+                    if (!vp) continue;
+                    visitModuleVertex(vp, 0, NULL, m_hierBlockPlanp);
+                }
+            }
+        }
     }
     virtual ~LinkCellsVisitor() {}
 };
@@ -493,7 +534,7 @@ public:
 //######################################################################
 // Link class functions
 
-void V3LinkCells::link(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp) {
+void V3LinkCells::link(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp, V3HierBlockPlan* planp) {
     UINFO(4,__FUNCTION__<<": "<<endl);
-    LinkCellsVisitor visitor (nodep, filterp, parseSymp);
+    LinkCellsVisitor visitor (nodep, filterp, parseSymp, planp);
 }

@@ -205,6 +205,18 @@ public:
         of.puts("# Include global rules\n");
         of.puts("include $(VERILATOR_ROOT)/include/verilated.mk\n");
 
+        if (!v3Global.opt.hierBlocks().empty()) {
+            of.puts("\n### Hierarych Blocks\n");
+            const V3StringList& hierBlocks = v3Global.opt.hierBlocks();
+            for (V3StringList::const_iterator it = hierBlocks.begin(); it != hierBlocks.end(); ++it) {
+                const std::string prefix = "V" + *it;
+                const std::string libname = "lib" + *it + ".a";
+                of.puts(prefix + "/" + libname + ":\n");
+                of.puts("\t${MAKE} -f " + prefix + ".mk -C " + prefix + " VM_PREFIX=" + prefix + " " + libname + "\n");
+                of.puts("VK_HIER_BLCOK_LIBS += " + prefix + "/" + libname + "\n");
+            }
+        }
+
         if (v3Global.opt.exe()) {
             of.puts("\n### Executable rules... (from --exe)\n");
             of.puts("VPATH += $(VM_USER_DIR)\n");
@@ -218,8 +230,9 @@ public:
             }
 
             of.puts("\n### Link rules... (from --exe)\n");
-            of.puts(v3Global.opt.exeName()+": $(VK_USER_OBJS) $(VK_GLOBAL_OBJS) $(VM_PREFIX)__ALL.a\n");
-            of.puts("\t$(LINK) $(LDFLAGS) $^ $(LOADLIBES) $(LDLIBS) -o $@ $(LIBS) $(SC_LIBS)\n");
+            of.puts(v3Global.opt.exeName()+": $(VK_USER_OBJS) $(VK_GLOBAL_OBJS) $(VM_PREFIX)__ALL.a");
+            if (!v3Global.opt.hierBlocks().empty()) of.puts(" $(VK_HIER_BLCOK_LIBS)");
+            of.puts("\n\t$(LINK) $(LDFLAGS) $^ $(LOADLIBES) $(LDLIBS) -o $@ $(LIBS) $(SC_LIBS)\n");
             of.puts("\n");
         }
 

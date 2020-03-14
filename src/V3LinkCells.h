@@ -25,12 +25,14 @@
 
 class VInFilter;
 class V3ParseSym;
+class V3HierBlockPlan;
 
 //============================================================================
 
 class V3LinkCells {
 public:
-    static void link(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp);
+    static void link(AstNetlist* nodep, VInFilter* filterp, V3ParseSym* parseSymp,
+                     V3HierBlockPlan* planp);
 };
 
 #endif  // Guard

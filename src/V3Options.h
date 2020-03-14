@@ -115,6 +115,7 @@ class V3Options {
   public:
 
   private:
+    friend class V3HierBlockPlan;
     // TYPES
     typedef std::map<string,int> DebugSrcMap;
 
@@ -130,6 +131,7 @@ class V3Options {
     V3StringSet m_noClockers;   // argument: Verilog -noclk signals
     V3StringList m_vFiles;      // argument: Verilog files to read
     V3StringList m_forceIncs;   // argument: -FI
+    V3StringList m_hierBlocks;  // hier_block lists
     DebugSrcMap m_debugSrcs;    // argument: --debugi-<srcfile>=<level>
     DebugSrcMap m_dumpTrees;    // argument: --dump-treei-<srcfile>=<level>
     std::map<string,string> m_parameters;  // Parameters
@@ -434,6 +436,7 @@ class V3Options {
     const V3StringSet& libraryFiles() const { return m_libraryFiles; }
     const V3StringList& vFiles() const { return m_vFiles; }
     const V3StringList& forceIncs() const { return m_forceIncs; }
+    const V3StringList& hierBlocks() const { return m_hierBlocks; }
     const V3LangCode& defaultLanguage() const { return m_defaultLanguage; }
 
     bool hasParameter(const string& name);

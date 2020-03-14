@@ -581,28 +581,34 @@ int main(int argc, char** argv, char** env) {
     // Read first filename
     v3Global.readFiles();
 
-    // Link, etc, if needed
-    if (!v3Global.opt.preprocOnly()) {
-        process();
-    }
+    // In proprocOnly mode, run the following loop just once, otherwise repeat until nextHierBlock() returns false.
+    while (v3Global.opt.preprocOnly() || v3Global.nextHierBlock()) {
+        // Link, etc, if needed
+        if (!v3Global.opt.preprocOnly()) {
+            process();
+        }
 
-    // Final steps
-    V3Global::dumpCheckGlobalTree("final", 990, v3Global.opt.dumpTreeLevel(__FILE__) >= 3);
-    V3Error::abortIfWarnings();
+        // Final steps
+        V3Global::dumpCheckGlobalTree("final", 990, v3Global.opt.dumpTreeLevel(__FILE__) >= 3);
+        V3Error::abortIfWarnings();
 
-    if (v3Global.opt.makeDepend().isTrue()) {
-        V3File::writeDepend(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()+"__ver.d");
-    }
-    if (v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue()) {
-        V3File::writeTimes(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()
-                           +"__verFiles.dat", argString);
-    }
-    if (v3Global.opt.protectIds()) {
-        VIdProtect::writeMapFile(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()+"__idmap.xml");
-    }
+        if (v3Global.opt.makeDepend().isTrue()) {
+            V3File::writeDepend(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()+"__ver.d");
+        }
+        if (v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue()) {
+            V3File::writeTimes(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()
+                               +"__verFiles.dat", argString);
+        }
+        if (v3Global.opt.protectIds()) {
+            VIdProtect::writeMapFile(v3Global.opt.makeDir()+"/"+v3Global.opt.prefix()+"__idmap.xml");
+        }
 
-    // Final writing shouldn't throw warnings, but...
-    V3Error::abortIfWarnings();
+        // Final writing shouldn't throw warnings, but...
+        V3Error::abortIfWarnings();
+
+        // No need to repeat this loop in preprocess only mode.
+        if (v3Global.opt.preprocOnly()) break;
+    }
 #ifdef VL_LEAK_CHECKS
     // Cleanup memory for valgrind leak analysis
     v3Global.clear();

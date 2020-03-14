@@ -28,9 +28,13 @@
 #include "V3FileLine.h"
 #include "V3Options.h"
 
+#include <map>
 #include <string>
+#include <vector>
 
 class AstNetlist;
+class AstNodeModule;
+class V3Global;
 
 //======================================================================
 // Statics
@@ -63,12 +67,35 @@ inline bool operator==(VWidthMinUsage::en lhs, const VWidthMinUsage& rhs) {
 }
 
 //######################################################################
+// Block Verilation
+
+class V3HierBlockPlan {
+    class HierBlock;
+    std::map<const AstNodeModule*, HierBlock*> m_blocks;
+    std::vector<HierBlock*> m_sortedBlocks;
+    std::vector<std::string> m_generatedWrappers;
+    V3Options m_origOpt;
+    enum state { STATE_INIT, STATE_HIER_BLOCK, STATE_TOP, STATE_DONE };
+    state m_state;
+    static void copyOptions(const V3Options* srcp, V3Options* dstp);
+
+public:
+    V3HierBlockPlan();
+    bool isHierBlock(const AstNodeModule* modp) const;
+    void add(const AstNodeModule* modp);
+    void registerUsage(const AstNodeModule* userp, const AstNodeModule* useep);
+
+    bool updateParameter(V3Global* globalp);
+};
+
+//######################################################################
 // V3Global - The top level class for the entire program
 
 class V3Global {
     // Globals
     AstNetlist* m_rootp;  // Root of entire netlist
     VWidthMinUsage m_widthMinUsage;  // What AstNode::widthMin() is used for
+    V3HierBlockPlan* m_planp;
 
     int m_debugFileNumber;  // Number to append to debug files created
     bool m_assertDTypesResolved;  // Tree should have dtypep()'s
@@ -82,9 +109,16 @@ public:
     // Options
     V3Options opt;  // All options; let user see them directly
 
-  public:
+public:
     // CONSTRUCTORS
     V3Global() {
+        m_rootp = NULL;  // created by makeInitNetlist() so static constructors run first
+        m_planp = NULL;
+        init();
+    }
+    AstNetlist* makeNetlist();
+    void boot() { UASSERT(!m_rootp,"call once"); m_rootp = makeNetlist(); }
+    void init() {
         m_debugFileNumber = 0;
         m_widthMinUsage = VWidthMinUsage::LINT_WIDTH;
         m_assertDTypesResolved = false;
@@ -93,10 +127,7 @@ public:
         m_needHInlines = false;
         m_needHeavy = false;
         m_dpi = false;
-        m_rootp = NULL;  // created by makeInitNetlist() so static constructors run first
     }
-    AstNetlist* makeNetlist();
-    void boot() { UASSERT(!m_rootp,"call once"); m_rootp = makeNetlist(); }
     void clear();
     // ACCESSORS (general)
     AstNetlist* rootp() const { return m_rootp; }
@@ -105,6 +136,7 @@ public:
 
     // METHODS
     void readFiles();
+    bool nextHierBlock();
     void checkTree();
     static void dumpCheckGlobalTree(const string& stagename, int newNumber=0, bool doDump=true);
     void assertDTypesResolved(bool flag) { m_assertDTypesResolved = flag; }
@@ -125,6 +157,7 @@ public:
     void needHeavy(bool flag) { m_needHeavy = flag; }
     bool dpi() const { return m_dpi; }
     void dpi(bool flag) { m_dpi = flag; }
+    friend class V3HierBlockPlan;
 };
 
 extern V3Global v3Global;
