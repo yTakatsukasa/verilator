@@ -705,6 +705,7 @@ vnum    {vnum1}|{vnum2}|{vnum3}|{vnum4}|{vnum5}
   "/*verilator clock_enable*/"          { FL; return yVL_CLOCK_ENABLE; }
   "/*verilator coverage_block_off*/"    { FL; return yVL_COVERAGE_BLOCK_OFF; }
   "/*verilator full_case*/"             { FL; return yVL_FULL_CASE; }
+  "/*verilator hier_block*/"            { FL; return yVL_HIER_BLOCK; }
   "/*verilator inline_module*/"         { FL; return yVL_INLINE_MODULE; }
   "/*verilator isolate_assignments*/"   { FL; return yVL_ISOLATE_ASSIGNMENTS; }
   "/*verilator no_inline_module*/"      { FL; return yVL_NO_INLINE_MODULE; }

@@ -646,6 +646,7 @@ class AstSenTree;
 %token<fl>		yVL_CLOCK_ENABLE	"/*verilator clock_enable*/"
 %token<fl>		yVL_COVERAGE_BLOCK_OFF	"/*verilator coverage_block_off*/"
 %token<fl>		yVL_FULL_CASE		"/*verilator full_case*/"
+%token<fl>		yVL_HIER_BLOCK		"/*verilator hier_block*/"
 %token<fl>		yVL_INLINE_MODULE	"/*verilator inline_module*/"
 %token<fl>		yVL_ISOLATE_ASSIGNMENTS	"/*verilator isolate_assignments*/"
 %token<fl>		yVL_NO_INLINE_MODULE	"/*verilator no_inline_module*/"
@@ -1974,6 +1975,7 @@ non_port_module_item<nodep>:	// ==IEEE: non_port_module_item
 	|	yaSCIMPH				{ $$ = new AstScImpHdr($<fl>1,*$1); }
 	|	yaSCCTOR				{ $$ = new AstScCtor($<fl>1,*$1); }
 	|	yaSCDTOR				{ $$ = new AstScDtor($<fl>1,*$1); }
+	|	yVL_HIER_BLOCK				{ $$ = new AstPragma($1,AstPragmaType::HIER_BLOCK); }
 	|	yVL_INLINE_MODULE			{ $$ = new AstPragma($1,AstPragmaType::INLINE_MODULE); }
 	|	yVL_NO_INLINE_MODULE			{ $$ = new AstPragma($1,AstPragmaType::NO_INLINE_MODULE); }
 	|	yVL_PUBLIC_MODULE			{ $$ = new AstPragma($1,AstPragmaType::PUBLIC_MODULE); v3Global.dpi(true); }
