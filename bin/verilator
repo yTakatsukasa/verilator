@@ -3232,6 +3232,19 @@ Specifies that following lines of code should have coverage re-enabled (if
 appropriate --coverage flags are passed) after being disabled earlier with
 /*verilator coverage_off*/.
 
+=item /*verilator hier_block*/
+
+Specifies that the module is a unit of hierarchical verilation to reduce the
+runtime and the memory consumption for verilation. The module will not
+be inlined nor uniquified to each instance. The hierachical block has some
+limitations such as:
+
+   The block can not be accessed using dot (.) from upper module.
+   Signals in the block can not be traced.
+
+Modules marked by this metacomment may instantiate other modules that is
+also marked by this metacomment.
+
 =item /*verilator inline_module*/
 
 Specifies the module the comment appears in may be inlined into any modules
