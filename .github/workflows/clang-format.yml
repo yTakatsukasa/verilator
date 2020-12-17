@@ -5,6 +5,7 @@
 name: clang-format
 
 on:
+  push:
   pull_request_target:
   workflow_dispatch:
 
@@ -21,24 +22,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-            token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install packages for build
         env:
           CI_BUILD_STAGE_NAME: build
         run: |
-            bash ci/ci-install.bash &&
-            sudo apt-get install clang-10 &&
-            git config --global user.email "action@example.com" &&
-            git config --global user.name "github action"
+          bash ci/ci-install.bash &&
+          sudo apt-get install clang-10 &&
+          git config --global user.email "action@example.com" &&
+          git config --global user.name "github action"
       - name: Format code
         run: |
-            autoconf &&
-            ./configure &&
-            make clang-format CLANGFORMAT=clang-format-10 &&
-            git status
+          autoconf &&
+          ./configure &&
+          make clang-format CLANGFORMAT=clang-format-10 &&
+          git status
       - name: Push
         run: |
-            if [ -n "$(git status --porcelain)" ]; then
-                git commit . -m "Apply clang-format" &&
-                git push origin
-            fi
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit . -m "Apply clang-format" &&
+            git push origin
+          fi
