@@ -351,7 +351,6 @@ class ConstBitOpTreeVisitor final : public AstNVisitor {
             return constp && constp->toUQuad() == v;
         };
         if (nodep->type() == m_rootp->type()) {  // And, Or, Xor
-            CONST_BITOP_RETURN_IF(!m_polarity && isXorTree(), nodep);
             incrOps(nodep, __LINE__);
             VL_RESTORER(m_curOpp);
             VL_RESTORER(m_leafp);
@@ -379,15 +378,16 @@ class ConstBitOpTreeVisitor final : public AstNVisitor {
             }
             return;
         } else if (VN_IS(m_rootp, Xor) && VN_IS(nodep, Eq) && isConst(nodep->lhsp(), 0)
-                   && VN_IS(nodep->rhsp(), And)) {  // 0 == (1 & RedXor)
+                   && VN_IS(nodep->rhsp(), And)) {  // 0 == (1 & RedXor), 0 == (1 & Xor)
             AstAnd* andp = static_cast<AstAnd*>(nodep->rhsp());  // already checked above
             CONST_BITOP_RETURN_IF(!isConst(andp->lhsp(), 1), andp->lhsp());
-            AstRedXor* redXorp = VN_CAST(andp->rhsp(), RedXor);
-            CONST_BITOP_RETURN_IF(!redXorp, andp->rhsp());
+            AstNode* xorp = VN_CAST(andp->rhsp(), RedXor);
+            if (!xorp) xorp = VN_CAST(andp->rhsp(), Xor);
+            CONST_BITOP_RETURN_IF(!xorp, andp->rhsp());
             incrOps(nodep, __LINE__);
             incrOps(andp, __LINE__);
             m_polarity = !m_polarity;
-            iterate(redXorp);
+            iterate(xorp);
             return;
         } else if (VN_IS(m_rootp, Xor) && VN_IS(nodep, And) && isConst(nodep->lhsp(), 1)
                    && (VN_IS(nodep->rhsp(), Xor)
