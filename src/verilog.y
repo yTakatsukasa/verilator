@@ -2680,10 +2680,10 @@ non_port_module_item<nodep>:    // ==IEEE: non_port_module_item
         //                      // Verilator specific
         |       vlScBlock                               { $$ = $1; }
         |       yVL_HIER_BLOCK                          { $$ = new AstPragma{$1, VPragmaType::HIER_BLOCK}; }
-        |       yVL_SUBGRAPH_BOUNDARY                   { $$ = new AstPragma{$1, VPragmaType::SUBGRAPH_BOUNDARY}; }
         |       yVL_INLINE_MODULE                       { $$ = new AstPragma{$1, VPragmaType::INLINE_MODULE}; }
         |       yVL_NO_INLINE_MODULE                    { $$ = new AstPragma{$1, VPragmaType::NO_INLINE_MODULE}; }
         |       yVL_PUBLIC_MODULE                       { $$ = new AstPragma{$1, VPragmaType::PUBLIC_MODULE}; v3Global.dpi(true); }
+        |       yVL_SUBGRAPH_BOUNDARY                   { $$ = new AstPragma{$1, VPragmaType::SUBGRAPH_BOUNDARY}; }
         ;
 
 vlScBlock<nodep>:  // Verilator-specific `systemc_* blocks
@@ -8442,14 +8442,14 @@ vltItem:
                         { V3Control::addCaseFull(*$2, $4->toUInt()); }
         |       yVLT_HIER_BLOCK vltDModuleE
                         { V3Control::addModulePragma(*$2, VPragmaType::HIER_BLOCK); }
-        |       yVLT_SUBGRAPH_BOUNDARY vltDModuleE
-                        { V3Control::addModulePragma(*$2, VPragmaType::SUBGRAPH_BOUNDARY); }
         |       yVLT_HIER_PARAMS vltDModuleE
                         { V3Control::addModulePragma(*$2, VPragmaType::HIER_PARAMS); }
         |       yVLT_HIER_WORKERS vltDModuleE vltDWorkers
                         { V3Control::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
         |       yVLT_HIER_WORKERS vltDHierDpi vltDWorkers
                         { V3Control::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
+        |       yVLT_SUBGRAPH_BOUNDARY vltDModuleE
+                        { V3Control::addModulePragma(*$2, VPragmaType::SUBGRAPH_BOUNDARY); }
         |       yVLT_PARALLEL_CASE vltDFile
                         { V3Control::addCaseParallel(*$2, 0); }
         |       yVLT_PARALLEL_CASE vltDFile yVLT_D_LINES yaINTNUM
