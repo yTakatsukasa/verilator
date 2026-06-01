@@ -649,6 +649,13 @@ or "`ifdef`"'s may break other tools.
 
    Same as :option:`split_var` control file option.
 
+.. option:: /*verilator&32;subgraph_boundary*/
+
+   Specifies that the module is a subgraph scheduler boundary. This
+   metacomment must be between ``module module_name(...);`` and
+   ``endmodule``. Note that the metacomment is ignored unless the
+   :vlopt:`--subgraph-schedule` option is specified.
+
 .. option:: /*verilator&32;tag <text...>*/
 
    Attached after a variable or structure member to indicate opaque (to
