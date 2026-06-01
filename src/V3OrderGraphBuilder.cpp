@@ -129,6 +129,20 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
     }
 
+    bool shouldGroupSubgraphActive(AstActive* nodep) const {
+        if (!m_scopep->modp()->subgraphBoundary()) return false;
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure);
+            if (!procp) return false;
+            if (procp->isSuspendable()) return false;
+            if (VN_IS(procp, AlwaysPre) || VN_IS(procp, AlwaysPost) || VN_IS(procp, AlwaysObserved)
+                || VN_IS(procp, AlwaysReactive)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // VISITORS
     void visit(AstActive* nodep) override {
         UASSERT_OBJ(!nodep->senTreeStorep(), nodep,
@@ -172,7 +186,11 @@ class OrderGraphBuilder final : public VNVisitor {
         }
 
         // Analyze logic underneath
-        iterateChildren(nodep);
+        if (shouldGroupSubgraphActive(nodep)) {
+            iterateLogic(nodep);
+        } else {
+            iterateChildren(nodep);
+        }
     }
     void visit(AstNodeVarRef* nodep) override {
         // As we explicitly not visit (see ignored nodes below) any subtree that is not relevant
@@ -306,27 +324,33 @@ class OrderGraphBuilder final : public VNVisitor {
         nodep->v3fatalSrc("AstInitialStatic should not need ordering");
     }  // LCOV_EXCL_STOP
     void visit(AstInitialAutomatic* nodep) override {  //
+        if (m_logicVxp) return iterateChildren(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlways* nodep) override {  //
+        if (m_logicVxp) return iterateChildren(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPre* nodep) override {
+        if (m_logicVxp) return iterateChildren(nodep);
         UASSERT_OBJ(!m_inPre, nodep, "Should not nest");
         VL_RESTORER(m_inPre);
         m_inPre = true;
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPost* nodep) override {
+        if (m_logicVxp) return iterateChildren(nodep);
         UASSERT_OBJ(!m_inPost, nodep, "Should not nest");
         VL_RESTORER(m_inPost);
         m_inPost = true;
         iterateLogic(nodep);
     }
     void visit(AstAlwaysObserved* nodep) override {  //
+        if (m_logicVxp) return iterateChildren(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysReactive* nodep) override {  //
+        if (m_logicVxp) return iterateChildren(nodep);
         iterateLogic(nodep);
     }
     void visit(AstFinal* nodep) override {  // LCOV_EXCL_START
@@ -335,6 +359,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     //--- Verilator concoctions
     void visit(AstCoverToggle* nodep) override {  //
+        if (m_logicVxp) return iterateChildren(nodep);
         iterateLogic(nodep);
     }
 
