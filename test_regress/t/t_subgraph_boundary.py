@@ -14,7 +14,8 @@ test.scenarios('vlt')
 
 out_filename = test.obj_dir + "/V" + test.name + "_010_linkdotparam.tree.json"
 
-test.lint(v_flags=["--subgraph-schedule --dump-tree-json --no-json-edit-nums"])
+test.compile(verilator_flags2=["--subgraph-schedule --dump-tree-json --no-json-edit-nums"])
+test.execute()
 
 test.file_grep(out_filename, r'"name":"sub".*"subgraphBoundary":true')
 

@@ -228,11 +228,6 @@ class LinkResolveVisitor final : public VNVisitor {
             m_modp->hierBlock(v3Global.opt.hierarchical());
             nodep->unlinkFrBack();
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
-        } else if (nodep->pragType() == VPragmaType::SUBGRAPH_BOUNDARY) {
-            UASSERT_OBJ(m_modp, nodep, "SUBGRAPH_BOUNDARY not under a module");
-            m_modp->subgraphBoundary(v3Global.opt.subgraphSchedule());
-            nodep->unlinkFrBack();
-            VL_DO_DANGLING(pushDeletep(nodep), nodep);
         } else if (nodep->pragType() == VPragmaType::PUBLIC_MODULE) {
             UASSERT_OBJ(m_modp, nodep, "PUBLIC_MODULE not under a module");
             m_modp->modPublic(true);
@@ -242,6 +237,11 @@ class LinkResolveVisitor final : public VNVisitor {
             UASSERT_OBJ(m_ftaskp, nodep, "PUBLIC_TASK not under a task");
             m_ftaskp->taskPublic(true);
             m_modp->modPublic(true);  // Need to get to the task...
+            nodep->unlinkFrBack();
+            VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        } else if (nodep->pragType() == VPragmaType::SUBGRAPH_BOUNDARY) {
+            UASSERT_OBJ(m_modp, nodep, "SUBGRAPH_BOUNDARY not under a module");
+            m_modp->subgraphBoundary(v3Global.opt.subgraphSchedule());
             nodep->unlinkFrBack();
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         } else if (nodep->pragType() == VPragmaType::VERILATOR_LIB) {
