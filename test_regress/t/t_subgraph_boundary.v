@@ -21,15 +21,15 @@ module t (
 
   int cyc;
   logic [7:0] in;
-  logic [7:0] out0;
-  logic [7:0] out1;
-  logic [7:0] ref0;
-  logic [7:0] ref1;
+  logic [23:0] out0;
+  logic [23:0] out1;
+  logic [23:0] ref0;
+  logic [23:0] ref1;
 
-  sub i_sub0 (.clk(clk), .in(in), .out(out0));
-  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out(out1));
-  sub_ref i_ref0 (.clk(clk), .in(in), .out(ref0));
-  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out(ref1));
+  sub i_sub0 (.clk(clk), .in(in), .out_child_comb(out0[23:16]), .out_child_direct(out0[15:8]), .out_reg_comb(out0[7:0]));
+  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out_child_comb(out1[23:16]), .out_child_direct(out1[15:8]), .out_reg_comb(out1[7:0]));
+  sub_ref i_ref0 (.clk(clk), .in(in), .out_child_comb(ref0[23:16]), .out_child_direct(ref0[15:8]), .out_reg_comb(ref0[7:0]));
+  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out_child_comb(ref1[23:16]), .out_child_direct(ref1[15:8]), .out_reg_comb(ref1[7:0]));
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
@@ -54,32 +54,54 @@ endmodule
 module sub (
   input logic clk,
   input logic [7:0] in,
-  output logic [7:0] out
+  output logic [7:0] out_child_comb,
+  output logic [7:0] out_child_direct,
+  output logic [7:0] out_reg_comb
 ); `SUBGRAPH_BOUNDARY
 
+  logic [7:0] child_comb_out;
   logic [7:0] q;
   logic [7:0] leaf_out;
 
+  sub_flop i_child_comb (.clk(clk), .in(in ^ 8'h3c), .out(child_comb_out));
+  sub_flop i_child_direct (.clk(clk), .in(in + 8'd7), .out(out_child_direct));
   sub_leaf i_leaf (.in(in), .out(leaf_out));
 
   always_ff @(posedge clk) q <= leaf_out;
-  assign out = q;
+  assign out_child_comb = {child_comb_out[0], child_comb_out[7:1]} ^ 8'h69;
+  assign out_reg_comb = {q[6:0], q[7]} ^ 8'h11;
 
 endmodule
 
 module sub_ref (
   input logic clk,
   input logic [7:0] in,
-  output logic [7:0] out
+  output logic [7:0] out_child_comb,
+  output logic [7:0] out_child_direct,
+  output logic [7:0] out_reg_comb
 );
 
+  logic [7:0] child_comb_out;
   logic [7:0] q;
   logic [7:0] leaf_out;
 
+  sub_flop i_child_comb (.clk(clk), .in(in ^ 8'h3c), .out(child_comb_out));
+  sub_flop i_child_direct (.clk(clk), .in(in + 8'd7), .out(out_child_direct));
   sub_leaf i_leaf (.in(in), .out(leaf_out));
 
   always_ff @(posedge clk) q <= leaf_out;
-  assign out = q;
+  assign out_child_comb = {child_comb_out[0], child_comb_out[7:1]} ^ 8'h69;
+  assign out_reg_comb = {q[6:0], q[7]} ^ 8'h11;
+
+endmodule
+
+module sub_flop (
+  input logic clk,
+  input logic [7:0] in,
+  output logic [7:0] out
+);
+
+  always_ff @(posedge clk) out <= in;
 
 endmodule
 
