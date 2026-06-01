@@ -38,6 +38,7 @@
 #include "V3UniqueNames.h"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -603,10 +604,174 @@ public:
 };
 
 //######################################################################
+// SubgraphConstraintVisitor
+
+class SubgraphConstraintVisitor final {
+    using Assignments = std::vector<std::pair<string, AstNodeExpr*>>;
+
+    class ModuleScanVisitor final : public VNVisitorConst {
+        // STATE
+        Assignments& m_assignments;
+        std::vector<AstCell*>& m_cellps;
+        std::unordered_set<string>& m_safeNames;
+
+        // METHODS
+        void addAssignment(AstNodeExpr* lhsp, AstNodeExpr* rhsp) {
+            const string name = lhsName(lhsp, true);
+            if (!name.empty()) m_assignments.emplace_back(name, rhsp);
+        }
+        void addSafeLhs(AstNodeExpr* lhsp) {
+            const string name = lhsName(lhsp, true);
+            if (!name.empty()) m_safeNames.insert(name);
+        }
+
+        // VISITORS
+        void visit(AstAssign* nodep) override { addAssignment(nodep->lhsp(), nodep->rhsp()); }
+        void visit(AstAssignDly* nodep) override { addSafeLhs(nodep->lhsp()); }
+        void visit(AstAssignW* nodep) override { addAssignment(nodep->lhsp(), nodep->rhsp()); }
+        void visit(AstCell* nodep) override { m_cellps.push_back(nodep); }
+        void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+
+    public:
+        ModuleScanVisitor(AstNodeModule* modp, Assignments& assignments,
+                          std::vector<AstCell*>& cellps, std::unordered_set<string>& safeNames)
+            : m_assignments{assignments}
+            , m_cellps{cellps}
+            , m_safeNames{safeNames} {
+            iterateAndNextConstNull(modp->inlinesp());
+            iterateAndNextConstNull(modp->stmtsp());
+        }
+        ~ModuleScanVisitor() override = default;
+    };
+
+    struct ModuleInfo final {
+        Assignments m_assignments;
+        bool m_busy = false;
+        std::vector<AstCell*> m_cellps;
+        bool m_done = false;
+        std::unordered_set<string> m_safeNames;
+    };
+
+    AstNetlist* const m_rootp;
+    std::unordered_map<AstNodeModule*, ModuleInfo> m_infos;
+
+    static bool exprSafe(AstNodeExpr* nodep, const std::unordered_set<string>& safeNames) {
+        if (AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
+            return !refp->access().isReadOrRW() || safeNames.count(refp->varp()->name());
+        }
+        bool safe = true;
+        nodep->foreach([&](AstVarRef* refp) {
+            if (refp->access().isReadOrRW() && !safeNames.count(refp->varp()->name()))
+                safe = false;
+        });
+        return safe;
+    }
+
+    static string lhsName(AstNodeExpr* nodep, bool requireWrite) {
+        if (AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
+            if (!requireWrite || refp->access().isWriteOrRW()) return refp->varp()->name();
+        }
+        string name;
+        nodep->foreach([&](AstVarRef* refp) {  //
+            if (name.empty() && (!requireWrite || refp->access().isWriteOrRW())) {
+                name = refp->varp()->name();
+            }
+        });
+        return name;
+    }
+
+    void checkNested(AstNodeModule* ownerp, AstNodeModule* modp,
+                     std::unordered_set<AstNodeModule*>& seen) {
+        if (!seen.insert(modp).second) return;
+        const ModuleInfo& inf = info(modp);
+        for (AstCell* const cellp : inf.m_cellps) {
+            AstNodeModule* const childp = cellp->modp();
+            if (childp->subgraphBoundary()) {
+                cellp->v3error("Subgraph boundary module '"
+                               << ownerp->prettyName()
+                               << "' instantiates subgraph boundary module '"
+                               << childp->prettyName() << "'");
+            } else {
+                checkNested(ownerp, childp, seen);
+            }
+        }
+    }
+
+    const ModuleInfo& info(AstNodeModule* modp) {
+        ModuleInfo& inf = m_infos[modp];
+        if (inf.m_done || inf.m_busy) return inf;
+
+        inf.m_busy = true;
+        ModuleScanVisitor{modp, inf.m_assignments, inf.m_cellps, inf.m_safeNames};
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (AstCell* const cellp : inf.m_cellps) {
+                const ModuleInfo& childInfo = info(cellp->modp());
+                for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                    AstVar* const portp = pinp->modVarp();
+                    AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+                    if (!portp || !exprp || !portp->isWritable()) continue;
+                    if (!childInfo.m_safeNames.count(portp->name())) continue;
+                    const string name = lhsName(exprp, false);
+                    if (!name.empty() && inf.m_safeNames.insert(name).second) changed = true;
+                }
+            }
+            for (const auto& pair : inf.m_assignments) {
+                const string& name = pair.first;
+                if (inf.m_safeNames.count(name)) continue;
+                if (exprSafe(pair.second, inf.m_safeNames)) {
+                    inf.m_safeNames.insert(name);
+                    changed = true;
+                }
+            }
+        }
+
+        inf.m_busy = false;
+        inf.m_done = true;
+        return inf;
+    }
+
+    void validate(AstNodeModule* modp) {
+        if (!modp->subgraphBoundary()) return;
+
+        std::unordered_set<AstNodeModule*> seen;
+        checkNested(modp, modp, seen);
+
+        const ModuleInfo& inf = info(modp);
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            AstVar* const varp = VN_CAST(stmtp, Var);
+            if (!varp || !varp->isIO() || !varp->isWritable()) continue;
+            if (inf.m_safeNames.count(varp->name())) continue;
+            varp->v3error("Subgraph boundary module '"
+                          << modp->prettyName() << "' output '" << varp->prettyName()
+                          << "' has a feedthrough path from non-state logic");
+        }
+    }
+
+public:
+    explicit SubgraphConstraintVisitor(AstNetlist* rootp)
+        : m_rootp{rootp} {
+        for (AstNodeModule* modp = m_rootp->modulesp(); modp;
+             modp = VN_AS(modp->nextp(), NodeModule)) {
+            info(modp);
+        }
+        for (AstNodeModule* modp = m_rootp->modulesp(); modp;
+             modp = VN_AS(modp->nextp(), NodeModule)) {
+            validate(modp);
+        }
+    }
+};
+
+//######################################################################
 // Task class functions
 
 void V3LinkJump::linkJump(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
-    { LinkJumpVisitor{nodep}; }  // Destruct before checking
+    {
+        LinkJumpVisitor{nodep};
+        SubgraphConstraintVisitor{nodep};
+    }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("linkjump", 0, dumpTreeEitherLevel() >= 3);
 }
