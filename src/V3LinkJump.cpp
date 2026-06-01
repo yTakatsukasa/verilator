@@ -37,6 +37,8 @@
 #include "V3Error.h"
 #include "V3UniqueNames.h"
 
+#include <set>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -611,6 +613,7 @@ public:
 
 class SubgraphConstraintVisitor final {
     using Assignments = std::vector<std::pair<string, AstNodeExpr*>>;
+    using TraceSeen = std::set<std::pair<AstNodeModule*, string>>;
 
     class ModuleScanVisitor final : public VNVisitorConst {
         // STATE
@@ -652,6 +655,7 @@ class SubgraphConstraintVisitor final {
         bool m_busy = false;
         std::vector<AstCell*> m_cellps;
         bool m_done = false;
+        std::unordered_set<string> m_inputNames;
         std::unordered_set<string> m_safeNames;
     };
 
@@ -683,6 +687,74 @@ class SubgraphConstraintVisitor final {
         return name;
     }
 
+    void collectExprInputs(AstNodeModule* modp, AstNodeExpr* exprp, std::set<string>& inputs,
+                           TraceSeen& seen) {
+        if (AstVarRef* const refp = VN_CAST(exprp, VarRef)) {
+            if (refp->access().isReadOrRW())
+                collectNameInputs(modp, refp->varp()->name(), inputs, seen);
+            return;
+        }
+        exprp->foreach([&](AstVarRef* refp) {
+            if (refp->access().isReadOrRW())
+                collectNameInputs(modp, refp->varp()->name(), inputs, seen);
+        });
+    }
+
+    void collectNameInputs(AstNodeModule* modp, const string& name, std::set<string>& inputs,
+                           TraceSeen& seen) {
+        if (!seen.emplace(modp, name).second) return;
+
+        const ModuleInfo& inf = info(modp);
+        if (inf.m_inputNames.count(name)) {
+            inputs.insert(name);
+            return;
+        }
+        if (inf.m_safeNames.count(name)) return;
+
+        for (const auto& pair : inf.m_assignments) {
+            if (pair.first == name) collectExprInputs(modp, pair.second, inputs, seen);
+        }
+
+        for (AstCell* const cellp : inf.m_cellps) {
+            for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                AstVar* const portp = pinp->modVarp();
+                AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+                if (!portp || !exprp || !portp->isWritable()) continue;
+                if (lhsName(exprp, false) != name) continue;
+
+                std::set<string> childInputs;
+                TraceSeen childSeen;
+                collectNameInputs(cellp->modp(), portp->name(), childInputs, childSeen);
+                for (const string& childInput : childInputs) {
+                    for (AstPin* inputPinp = cellp->pinsp(); inputPinp;
+                         inputPinp = VN_AS(inputPinp->nextp(), Pin)) {
+                        AstVar* const inputPortp = inputPinp->modVarp();
+                        AstNodeExpr* const inputExprp = VN_CAST(inputPinp->exprp(), NodeExpr);
+                        if (inputPortp && inputExprp && inputPortp->name() == childInput) {
+                            collectExprInputs(modp, inputExprp, inputs, seen);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    string feedthroughSourceText(AstNodeModule* modp, const string& name) {
+        std::set<string> inputs;
+        TraceSeen seen;
+        collectNameInputs(modp, name, inputs, seen);
+        if (inputs.empty()) return "non-state logic";
+
+        std::ostringstream os;
+        os << "input port(s): ";
+        const char* sep = "";
+        for (const string& input : inputs) {
+            os << sep << "'" << input << "'";
+            sep = ", ";
+        }
+        return os.str();
+    }
+
     void checkNested(AstNodeModule* ownerp, AstNodeModule* modp,
                      std::unordered_set<AstNodeModule*>& seen) {
         if (!seen.insert(modp).second) return;
@@ -706,6 +778,10 @@ class SubgraphConstraintVisitor final {
 
         inf.m_busy = true;
         ModuleScanVisitor{modp, inf.m_assignments, inf.m_cellps, inf.m_safeNames};
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            AstVar* const varp = VN_CAST(stmtp, Var);
+            if (varp && varp->isInput()) inf.m_inputNames.insert(varp->name());
+        }
 
         bool changed = true;
         while (changed) {
@@ -747,9 +823,10 @@ class SubgraphConstraintVisitor final {
             AstVar* const varp = VN_CAST(stmtp, Var);
             if (!varp || !varp->isIO() || !varp->isWritable()) continue;
             if (inf.m_safeNames.count(varp->name())) continue;
+            const string sourceText = feedthroughSourceText(modp, varp->name());
             varp->v3error("Subgraph boundary module '"
                           << modp->prettyName() << "' output '" << varp->prettyName()
-                          << "' has a feedthrough path from non-state logic");
+                          << "' has a feedthrough path from " << sourceText);
         }
     }
 
@@ -774,7 +851,7 @@ void V3LinkJump::linkJump(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
     {
         LinkJumpVisitor{nodep};
-        SubgraphConstraintVisitor{nodep};
+        if (v3Global.opt.subgraphSchedule()) SubgraphConstraintVisitor{nodep};
     }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("linkjump", 0, dumpTreeEitherLevel() >= 3);
 }

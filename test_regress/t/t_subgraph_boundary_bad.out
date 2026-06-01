@@ -1,4 +1,4 @@
-%Error: t/t_subgraph_boundary_bad.v:28:22: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from non-state logic
+%Error: t/t_subgraph_boundary_bad.v:28:22: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
    28 |   output logic [7:0] out
       |                      ^~~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
