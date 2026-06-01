@@ -122,6 +122,7 @@ class InlineMarkVisitor final : public VNVisitor {
         if (m_modp->modPublic() && (m_modp->isTop() || !v3Global.opt.flatten())) {
             cantInline("modPublic", false);
         }
+        if (m_modp->subgraphBoundary()) cantInline("subgraphBoundary", true);
         // If the instance is a --lib-create library stub instance, and need tracing,
         // then don't inline as we need to know its a lib stub for sepecial handling
         // in V3TraceDecl. See #7001.
