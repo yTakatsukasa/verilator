@@ -1737,6 +1737,8 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
         m_statsVars = flag;
         m_stats |= flag;
     });
+    DECL_OPTION("-subgraph-schedule", OnOff, &m_subgraphSchedule);
+    DECL_OPTION("-subgraph_schedule", OnOff, &m_subgraphSchedule).undocumented();
     DECL_OPTION("-std", CbOnOff, [this](bool flag) {
         m_stdPackage = flag;
         m_stdWaiver = flag;

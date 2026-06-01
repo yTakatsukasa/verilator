@@ -290,6 +290,7 @@ private:
     bool m_stdPackage = true;       // main switch: --std-package
     bool m_stdWaiver = true;        // main switch: --std-waiver
     bool m_structsPacked = false;   // main switch: --structs-packed
+    bool m_subgraphSchedule = false;  // main switch: --subgraph-schedule
     bool m_systemC = false;         // main switch: --sc: System C instead of simple C++
     bool m_stats = false;           // main switch: --stats
     bool m_statsVars = false;       // main switch: --stats-vars
@@ -602,6 +603,7 @@ public:
     bool quietExit() const VL_MT_SAFE { return m_quietExit; }
     bool quietStats() const VL_MT_SAFE { return m_quietStats; }
     bool reportUnoptflat() const { return m_reportUnoptflat; }
+    bool subgraphSchedule() const { return m_subgraphSchedule; }
     bool verilate() const { return m_verilate; }
     bool vpi() const { return m_vpi; }
     bool waiverMultiline() const { return m_waiverMultiline; }

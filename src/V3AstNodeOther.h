@@ -293,6 +293,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
     bool m_hasParameterList : 1;  // Has #() for parameter declaration
     bool m_hierBlock : 1;  // Hierarchical Block marked by HIER_BLOCK pragma
     bool m_hierParams : 1;  // Block containing params for parameterized hier blocks
+    bool m_subgraphBoundary : 1;  // Module boundary should be opaque to the scheduler
     bool m_internal : 1;  // Internally created
     bool m_recursive : 1;  // Recursive module
     bool m_recursiveClone : 1;  // If recursive, what module it clones, otherwise nullptr
@@ -315,6 +316,7 @@ protected:
         , m_hasParameterList{false}
         , m_hierBlock{false}
         , m_hierParams{false}
+        , m_subgraphBoundary{false}
         , m_internal{false}
         , m_recursive{false}
         , m_recursiveClone{false}
@@ -357,6 +359,8 @@ public:
     void hierBlock(bool flag) { m_hierBlock = flag; }
     bool hierParams() const { return m_hierParams; }
     void hierParams(bool flag) { m_hierParams = flag; }
+    bool subgraphBoundary() const { return m_subgraphBoundary; }
+    void subgraphBoundary(bool flag) { m_subgraphBoundary = flag; }
     bool internal() const { return m_internal; }
     void internal(bool flag) { m_internal = flag; }
     bool recursive() const { return m_recursive; }

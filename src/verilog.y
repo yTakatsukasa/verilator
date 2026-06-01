@@ -261,6 +261,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVLT_SC_BV                  "sc_bv"
 %token<fl>              yVLT_SFORMAT                "sformat"
 %token<fl>              yVLT_SPLIT_VAR              "split_var"
+%token<fl>              yVLT_SUBGRAPH_BOUNDARY      "subgraph_boundary"
 %token<fl>              yVLT_TIMING_OFF             "timing_off"
 %token<fl>              yVLT_TIMING_ON              "timing_on"
 %token<fl>              yVLT_TRACING_OFF            "tracing_off"
@@ -804,6 +805,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVL_SC_BV                 "/*verilator sc_bv*/"
 %token<fl>              yVL_SFORMAT               "/*verilator sformat*/"
 %token<fl>              yVL_SPLIT_VAR             "/*verilator split_var*/"
+%token<fl>              yVL_SUBGRAPH_BOUNDARY     "/*verilator subgraph_boundary*/"
 %token<fl>              yVL_FSM_ARC_INCL_COND     "/*verilator fsm_arc_include_cond*/"
 %token<fl>              yVL_FSM_RESET_ARC         "/*verilator fsm_reset_arc*/"
 %token<fl>              yVL_FSM_STATE             "/*verilator fsm_state*/"
@@ -2678,6 +2680,7 @@ non_port_module_item<nodep>:    // ==IEEE: non_port_module_item
         //                      // Verilator specific
         |       vlScBlock                               { $$ = $1; }
         |       yVL_HIER_BLOCK                          { $$ = new AstPragma{$1, VPragmaType::HIER_BLOCK}; }
+        |       yVL_SUBGRAPH_BOUNDARY                   { $$ = new AstPragma{$1, VPragmaType::SUBGRAPH_BOUNDARY}; }
         |       yVL_INLINE_MODULE                       { $$ = new AstPragma{$1, VPragmaType::INLINE_MODULE}; }
         |       yVL_NO_INLINE_MODULE                    { $$ = new AstPragma{$1, VPragmaType::NO_INLINE_MODULE}; }
         |       yVL_PUBLIC_MODULE                       { $$ = new AstPragma{$1, VPragmaType::PUBLIC_MODULE}; v3Global.dpi(true); }
@@ -8277,6 +8280,8 @@ vltItem:
                         { V3Control::addCaseFull(*$2, $4->toUInt()); }
         |       yVLT_HIER_BLOCK vltDModuleE
                         { V3Control::addModulePragma(*$2, VPragmaType::HIER_BLOCK); }
+        |       yVLT_SUBGRAPH_BOUNDARY vltDModuleE
+                        { V3Control::addModulePragma(*$2, VPragmaType::SUBGRAPH_BOUNDARY); }
         |       yVLT_HIER_PARAMS vltDModuleE
                         { V3Control::addModulePragma(*$2, VPragmaType::HIER_PARAMS); }
         |       yVLT_HIER_WORKERS vltDModuleE vltDWorkers

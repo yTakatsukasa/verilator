@@ -312,6 +312,12 @@ The grammar of control commands is as follows:
 
    Same as :option:`/*verilator&32;split_var*/` metacomment.
 
+.. option:: subgraph_boundary -module "<modulename>"
+
+   Specifies that the module is a subgraph scheduler boundary. Note that the
+   setting is ignored unless the :vlopt:`--subgraph-schedule` option is
+   specified.
+
 .. option:: timing_off [-file "<filename>" [-lines <line> [ - <line>]]]
 
 .. option:: timing_on  [-file "<filename>" [-lines <line> [ - <line>]]]

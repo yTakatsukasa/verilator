@@ -523,6 +523,7 @@ detailed descriptions of these arguments.
     --no-skip-identical         Disable skipping identical output
     --stats                     Create statistics file
     --stats-vars                Provide statistics on variables
+    --subgraph-schedule         Enable subgraph scheduler boundaries
     --no-std                    Prevent loading standard files
     --no-std-package            Prevent parsing standard package
     --no-std-waiver             Prevent parsing standard lint waivers

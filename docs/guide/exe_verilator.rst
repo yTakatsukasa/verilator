@@ -1739,6 +1739,12 @@ Summary:
    compatibility with versions before Verilator 5.006, when Verilator would
    always pack unpacked structures.
 
+.. option:: --subgraph-schedule
+
+   Enables subgraph scheduler boundary metacomments and control-file
+   directives. This is an experimental option intended to reduce scheduler
+   graph size for repeated module instances.
+
 .. option:: -sv
 
    Specifies SystemVerilog language features should be enabled; equivalent
