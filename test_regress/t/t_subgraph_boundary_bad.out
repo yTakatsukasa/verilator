@@ -1,4 +1,11 @@
-%Error: t/t_subgraph_boundary_bad.v:27:4: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from non-state logic
-%Error: t/t_subgraph_boundary_bad.v:39:4: Subgraph boundary module 'bad_nested_parent' instantiates subgraph boundary module 'bad_nested_child'
-%Error: t/t_subgraph_boundary_bad.v:47:4: Subgraph boundary module 'bad_nested_grandparent' instantiates subgraph boundary module 'bad_nested_grandchild'
+%Error: t/t_subgraph_boundary_bad.v:28:22: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from non-state logic
+   28 |   output logic [7:0] out
+      |                      ^~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_subgraph_boundary_bad.v:54:25: Subgraph boundary module 'bad_nested_grandparent' instantiates subgraph boundary module 'bad_nested_grandchild'
+   54 |   bad_nested_grandchild i_grandchild (.clk(clk), .in(in), .out(out));
+      |                         ^~~~~~~~~~~~
+%Error: t/t_subgraph_boundary_bad.v:74:20: Subgraph boundary module 'bad_nested_parent' instantiates subgraph boundary module 'bad_nested_child'
+   74 |   bad_nested_child i_child (.clk(clk), .in(in), .out(out));
+      |                    ^~~~~~~
 %Error: Exiting due to
