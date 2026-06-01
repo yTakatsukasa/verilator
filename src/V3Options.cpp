@@ -1737,8 +1737,6 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
         m_statsVars = flag;
         m_stats |= flag;
     });
-    DECL_OPTION("-subgraph-schedule", OnOff, &m_subgraphSchedule);
-    DECL_OPTION("-subgraph_schedule", OnOff, &m_subgraphSchedule).undocumented();
     DECL_OPTION("-std", CbOnOff, [this](bool flag) {
         m_stdPackage = flag;
         m_stdWaiver = flag;
@@ -1746,6 +1744,8 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-std-package", OnOff, &m_stdPackage);
     DECL_OPTION("-std-waiver", OnOff, &m_stdWaiver);
     DECL_OPTION("-stop-fail", OnOff, &m_stopFail);
+    DECL_OPTION("-subgraph-schedule", OnOff, &m_subgraphSchedule);
+    DECL_OPTION("-subgraph_schedule", OnOff, &m_subgraphSchedule).undocumented();
     DECL_OPTION("-structs-packed", CbOnOff, [this, fl](bool flag) {
         m_structsPacked = flag;
         fl->v3warn(DEPRECATED, "Option --structs-packed is deprecated, avoid use");

@@ -2813,8 +2813,8 @@ void AstNodeModule::dump(std::ostream& str) const {
         str << " [RECURSIVE]";
     }
     if (parameterizedTemplate()) str << " [PAR-TEMPL]";
-    if (verilatorLib()) str << " [VERILATOR-LIB]";
     if (subgraphBoundary()) str << " [SUBGRAPH-BOUNDARY]";
+    if (verilatorLib()) str << " [VERILATOR-LIB]";
     str << " [" << timeunit() << "]";
     if (libname() != "work") str << " libname=" << libname();
 }
@@ -2828,8 +2828,8 @@ void AstNodeModule::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, dead);
     dumpJsonBoolFuncIf(str, recursiveClone);
     dumpJsonBoolFuncIf(str, recursive);
-    dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonBoolFuncIf(str, subgraphBoundary);
+    dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonStr(str, "timeunit", timeunit().ascii());
     if (libname() != "work") dumpJsonStr(str, "libname=", libname());
     dumpJsonGen(str);

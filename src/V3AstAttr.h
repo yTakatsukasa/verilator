@@ -1575,12 +1575,12 @@ public:
         COVERAGE_BLOCK_OFF,
         HIER_BLOCK,
         HIER_PARAMS,
-        SUBGRAPH_BOUNDARY,
         INLINE_MODULE,
         NO_INLINE_MODULE,
         NO_INLINE_TASK,
         PUBLIC_MODULE,
         PUBLIC_TASK,
+        SUBGRAPH_BOUNDARY,
         TIMEUNIT_SET,
         UNROLL_DISABLE,
         UNROLL_FULL,
@@ -1595,12 +1595,12 @@ public:
             "COVERAGE_BLOCK_OFF",  //
             "HIER_BLOCK",  //
             "HIER_PARAMS",  //
-            "SUBGRAPH_BOUNDARY",  //
             "INLINE_MODULE",  //
             "NO_INLINE_MODULE",  //
             "NO_INLINE_TASK",  //
             "PUBLIC_MODULE",  //
             "PUBLIC_TASK",  //
+            "SUBGRAPH_BOUNDARY",  //
             "TIMEUNIT_SET",  //
             "UNROLL_DISABLE",  //
             "UNROLL_FULL",  //
