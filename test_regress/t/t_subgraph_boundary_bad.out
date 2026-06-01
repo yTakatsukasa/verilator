@@ -1,0 +1,4 @@
+%Error: t/t_subgraph_boundary_bad.v:27:4: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from non-state logic
+%Error: t/t_subgraph_boundary_bad.v:39:4: Subgraph boundary module 'bad_nested_parent' instantiates subgraph boundary module 'bad_nested_child'
+%Error: t/t_subgraph_boundary_bad.v:47:4: Subgraph boundary module 'bad_nested_grandparent' instantiates subgraph boundary module 'bad_nested_grandchild'
+%Error: Exiting due to
