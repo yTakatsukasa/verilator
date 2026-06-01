@@ -68,6 +68,33 @@ class V3OrderCFuncEmitter final {
         return name;
     }
 
+    static AstNode* unlinkProcedureBody(AstNodeProcedure* procp) {
+        AstNode* const stmtsp = procp->stmtsp();
+        UASSERT_OBJ(stmtsp, procp, "Empty process should have been deleted earlier");
+        stmtsp->unlinkFrBackWithNext();
+        // 'procp' is no longer needed but the OrderGraph still references
+        // it (for debug dump). It will get deleted when deleting the
+        // AstActives in V3Order.
+        return stmtsp;
+    }
+
+    static AstNode* unlinkSubgraphActiveBody(AstActive* activep) {
+        AstNode* headp = nullptr;
+        for (AstNode *nodep = activep->stmtsp(), *nextp; nodep; nodep = nextp) {
+            nextp = nodep->nextp();
+            if (AstNodeProcedure* const procp = VN_CAST(nodep, NodeProcedure)) {
+                UASSERT_OBJ(!procp->isSuspendable(), procp,
+                            "Suspendable subgraph process should not be grouped");
+                AstNode* const stmtsp = unlinkProcedureBody(procp);
+                headp = AstNode::addNext(headp, stmtsp);
+            } else {
+                nodep->unlinkFrBack();
+                headp = AstNode::addNext(headp, nodep);
+            }
+        }
+        return headp;
+    }
+
 public:
     // CONSTRUCTOR
     V3OrderCFuncEmitter(const std::string& tag, bool slow)
@@ -119,6 +146,7 @@ public:
         // We are move the logic into a CFunc
         AstNode* const logicp = lVtxp->nodep();
         // If the logic is a procedure, we need to do a few special things
+        AstActive* const activep = VN_CAST(logicp, Active);
         AstNodeProcedure* const procp = VN_CAST(logicp, NodeProcedure);
 
         // Some properties to consider
@@ -139,14 +167,9 @@ public:
         // Process procedures per statement, so we can split CFuncs within procedures.
         // Everything else is handled as a unit.
         AstNode* const headp = [&]() -> AstNode* {
+            if (activep) return unlinkSubgraphActiveBody(activep);
             if (!procp) return logicp->unlinkFrBack();  // Not a procedure, handle as a unit
-            AstNode* const stmtsp = procp->stmtsp();
-            UASSERT_OBJ(stmtsp, procp, "Empty process should have been deleted earlier");
-            stmtsp->unlinkFrBackWithNext();
-            // 'procp' is no longer needed but the OrderGraph still references
-            // it (for debug dump). It will get deleted when deleting the
-            // AstActives in V3Order.
-            return stmtsp;
+            return unlinkProcedureBody(procp);
         }();
         // Process each statement in the list starting at headp
         for (AstNode *currp = headp, *nextp; currp; currp = nextp) {
