@@ -26,6 +26,8 @@
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
 
+#include <unordered_set>
+
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 //######################################################################
@@ -129,18 +131,187 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
     }
 
-    bool shouldGroupSubgraphActive(AstActive* nodep) const {
-        if (!m_scopep->modp()->subgraphBoundary()) return false;
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure);
-            if (!procp) return false;
-            if (procp->isSuspendable()) return false;
-            if (VN_IS(procp, AlwaysPre) || VN_IS(procp, AlwaysPost) || VN_IS(procp, AlwaysObserved)
-                || VN_IS(procp, AlwaysReactive)) {
-                return false;
+    bool isSubgraphWrapperCall(AstCCall* nodep) const {
+        AstCFunc* const funcp = nodep->funcp();
+        AstScope* const scopep = funcp->scopep();
+        return scopep && scopep->modp()->subgraphBoundary()
+               && 0 == funcp->name().rfind("_eval_", 0);
+    }
+
+    bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
+        return isUnderScope(vscp->scopep(), subgraphScopep)
+               && 0 == vscp->varp()->name().rfind("__Vdly", 0);
+    }
+
+    bool isUnderScope(AstScope* scopep, AstScope* basep) const {
+        for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp == basep) return true;
+        }
+        return false;
+    }
+
+    void addVarUsage(AstVarScope* varscp, bool isRead, bool isWrite, AstNode* nodep,
+                     bool forcePost = false, bool forceNotPost = false) {
+        UASSERT_OBJ(m_scopep, nodep, "Var usage not under scope");
+        UASSERT_OBJ(m_logicVxp, nodep, "Var usage not under logic");
+        UASSERT_OBJ(varscp, nodep, "Var didn't get varscoped in V3Scope.cpp");
+
+        // Variable reference in logic. Add data dependency.
+
+        // Check whether this variable was already generated/consumed in the same logic. We
+        // don't want to add extra edges if the logic has many usages of the same variable,
+        // so only proceed on first encounter.
+        const bool prevGen = varscp->user2() & VU_GEN;
+        const bool prevCon = varscp->user2() & VU_CON;
+
+        // Compute whether the variable is produced (written) here
+        const bool gen = !prevGen && isWrite && !varscp->varp()->ignoreSchedWrite();
+        const bool inPost = !forceNotPost && (m_inPost || forcePost);
+
+        // Compute whether the value is consumed (read) here
+        bool con = false;
+        if (!prevCon && isRead) {
+            con = true;
+            if (prevGen && !m_inClocked) {
+                // Dangerous assumption:
+                // If a variable is consumed in the same combinational process that produced it
+                // earlier, consider it something like:
+                //      foo = 1
+                //      foo = foo + 1
+                // and still optimize. Note this will break though:
+                //      if (sometimes) foo = 1
+                //      foo = foo + 1
+                // TODO: Do this properly with liveness analysis (i.e.: if live, it's consumed)
+                //       Note however that this construct is not nicely synthesizable (yields
+                //       latch?).
+                con = false;
+            }
+            if (!m_inClocked && m_forceReadEdgeIgnores.count(varscp)) con = false;
+        }
+
+        // Note: See V3OrderGraph.h about the roles of the various vertex types
+
+        // Variable is produced
+        if (gen) {
+            // Update VarUsage
+            varscp->user2Or(VU_GEN);
+            // Add edges for produced variables
+            if (inPost) {
+                if (!varscp->varp()->ignorePostWrite()) {
+                    // Add edge from producing LogicVertex -> produced VarStdVertex
+                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                    m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+                }
+                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
+                // Add edge from produced VarPostVertex -> to producing LogicVertex
+                m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
+            } else if (!m_inClocked) {  // Combinational logic
+                // Add edge from producing LogicVertex -> produced VarStdVertex
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+                // Add edge from produced VarPostVertex -> to producing LogicVertex
+                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
+                m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
+            } else if (m_inPre) {  // AstAlwaysPre
+                // Add edge from producing LogicVertex -> produced VarPordVertex
+                OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
+                m_graphp->addHardEdge(m_logicVxp, ordVxp, WEIGHT_NORMAL);
+                // Add edge from producing LogicVertex -> produced VarStdVertex
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+            } else {
+                // Sequential (clocked) logic
+                // Add edge from produced VarPordVertex -> to producing LogicVertex
+                OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
+                m_graphp->addHardEdge(ordVxp, m_logicVxp, WEIGHT_NORMAL);
+                // Add edge from producing LogicVertex-> to produced VarStdVertex
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
             }
         }
-        return true;
+
+        // Variable is consumed
+        if (con) {
+            // Update VarUsage
+            varscp->user2Or(VU_CON);
+            // Add edges
+            if (inPost) {
+                // Combinational logic
+                if (!varscp->varp()->ignorePostRead() && m_readTriggersCombLogic(varscp)) {
+                    // Ignore explicit sensitivities
+                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                    // Add edge from consumed VarStdVertex -> to consuming LogicVertex
+                    m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
+                }
+            } else if (!m_inClocked) {  // Combinational logic
+                if (m_readTriggersCombLogic(varscp)) {
+                    // Ignore explicit sensitivities
+                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                    // Add edge from consumed VarStdVertex -> to consuming LogicVertex
+                    m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
+                }
+            } else if (m_inPre) {
+                // AstAlwaysPre logic
+                // Add edge from consumed VarPreVertex -> to consuming LogicVertex
+                // This one is cutable (vs the producer) as there's only one such consumer,
+                // but may be many producers
+                OrderVarVertex* const preVxp = getVarVertex(varscp, VarVertexType::PRE);
+                m_graphp->addSoftEdge(preVxp, m_logicVxp, WEIGHT_PRE);
+            } else {
+                // Sequential (clocked) logic
+                // Add edge from consuming LogicVertex -> to consumed VarPreVertex
+                // Generation of 'pre' because we want to indicate it should be before
+                // AstAlwaysPre
+                OrderVarVertex* const preVxp = getVarVertex(varscp, VarVertexType::PRE);
+                m_graphp->addHardEdge(m_logicVxp, preVxp, WEIGHT_NORMAL);
+                // Add edge from consuming LogicVertex -> to consumed VarPostVertex
+                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
+                m_graphp->addHardEdge(m_logicVxp, postVxp, WEIGHT_POST);
+            }
+        }
+    }
+
+    void addSubgraphCallPortUsage(AstCCall* nodep) {
+        if (!isSubgraphWrapperCall(nodep)) return;
+        AstCFunc* const funcp = nodep->funcp();
+        AstScope* const scopep = funcp->scopep();
+        for (AstVarScope* vscp = scopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            AstVar* const varp = vscp->varp();
+            if (!varp->isIO()) continue;
+            const VDirection direction = varp->direction();
+            if (direction.isNonOutput()) addVarUsage(vscp, true, false, nodep, false, true);
+            if (direction.isWritable()) addVarUsage(vscp, false, true, nodep, true);
+        }
+
+        std::unordered_set<AstCFunc*> seen;
+        std::function<void(AstCFunc*)> addCalleeUsage = [&](AstCFunc* scanFuncp) {
+            if (!seen.insert(scanFuncp).second) return;
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
+                if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar) return;
+                addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(), nodep,
+                            false, !internalOrderVar && refp->access().isReadOrRW());
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint()) return;
+                addCalleeUsage(calledFuncp);
+            });
+        };
+        addCalleeUsage(funcp);
+    }
+
+    bool shouldGroupSubgraphWrapperActive(AstActive* nodep) const {
+        if (!m_scopep->modp()->subgraphBoundary()) return false;
+        bool sawCall = false;
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (VN_IS(stmtp, NodeProcedure)) return false;
+            stmtp->foreach([&](AstCCall* callp) {
+                if (isSubgraphWrapperCall(callp)) sawCall = true;
+            });
+        }
+        return sawCall;
     }
 
     // VISITORS
@@ -186,135 +357,20 @@ class OrderGraphBuilder final : public VNVisitor {
         }
 
         // Analyze logic underneath
-        if (shouldGroupSubgraphActive(nodep)) {
+        if (shouldGroupSubgraphWrapperActive(nodep)) {
             iterateLogic(nodep);
         } else {
             iterateChildren(nodep);
         }
     }
     void visit(AstNodeVarRef* nodep) override {
-        // As we explicitly not visit (see ignored nodes below) any subtree that is not relevant
-        // for ordering, we should be able to assert this:
-        UASSERT_OBJ(m_scopep, nodep, "AstVarRef not under scope");
-        UASSERT_OBJ(m_logicVxp, nodep, "AstVarRef not under logic");
         AstVarScope* const varscp = nodep->varScopep();
-        UASSERT_OBJ(varscp, nodep, "Var didn't get varscoped in V3Scope.cpp");
-
-        // Variable reference in logic. Add data dependency.
-
-        // Check whether this variable was already generated/consumed in the same logic. We
-        // don't want to add extra edges if the logic has many usages of the same variable,
-        // so only proceed on first encounter.
-        const bool prevGen = varscp->user2() & VU_GEN;
-        const bool prevCon = varscp->user2() & VU_CON;
-
-        // Compute whether the variable is produced (written) here
-        const bool gen
-            = !prevGen && nodep->access().isWriteOrRW() && !varscp->varp()->ignoreSchedWrite();
-
-        // Compute whether the value is consumed (read) here
-        bool con = false;
-        if (!prevCon && nodep->access().isReadOrRW()) {
-            con = true;
-            if (prevGen && !m_inClocked) {
-                // Dangerous assumption:
-                // If a variable is consumed in the same combinational process that produced it
-                // earlier, consider it something like:
-                //      foo = 1
-                //      foo = foo + 1
-                // and still optimize. Note this will break though:
-                //      if (sometimes) foo = 1
-                //      foo = foo + 1
-                // TODO: Do this properly with liveness analysis (i.e.: if live, it's consumed)
-                //       Note however that this construct is not nicely synthesizable (yields
-                //       latch?).
-                con = false;
-            }
-            if (!m_inClocked && m_forceReadEdgeIgnores.count(varscp)) con = false;
-        }
-
-        // Note: See V3OrderGraph.h about the roles of the various vertex types
-
-        // Variable is produced
-        if (gen) {
-            // Update VarUsage
-            varscp->user2Or(VU_GEN);
-            // Add edges for produced variables
-            if (m_inPost) {
-                if (!varscp->varp()->ignorePostWrite()) {
-                    // Add edge from producing LogicVertex -> produced VarStdVertex
-                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                    m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
-                }
-                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
-                // Add edge from produced VarPostVertex -> to producing LogicVertex
-                m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
-            } else if (!m_inClocked) {  // Combinational logic
-                // Add edge from producing LogicVertex -> produced VarStdVertex
-                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
-                // Add edge from produced VarPostVertex -> to producing LogicVertex
-                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
-                m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
-            } else if (m_inPre) {  // AstAlwaysPre
-                // Add edge from producing LogicVertex -> produced VarPordVertex
-                OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
-                m_graphp->addHardEdge(m_logicVxp, ordVxp, WEIGHT_NORMAL);
-                // Add edge from producing LogicVertex -> produced VarStdVertex
-                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
-            } else {
-                // Sequential (clocked) logic
-                // Add edge from produced VarPordVertex -> to producing LogicVertex
-                OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
-                m_graphp->addHardEdge(ordVxp, m_logicVxp, WEIGHT_NORMAL);
-                // Add edge from producing LogicVertex-> to produced VarStdVertex
-                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
-            }
-        }
-
-        // Variable is consumed
-        if (con) {
-            // Update VarUsage
-            varscp->user2Or(VU_CON);
-            // Add edges
-            if (m_inPost) {
-                // Combinational logic
-                if (!varscp->varp()->ignorePostRead() && m_readTriggersCombLogic(varscp)) {
-                    // Ignore explicit sensitivities
-                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                    // Add edge from consumed VarStdVertex -> to consuming LogicVertex
-                    m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
-                }
-            } else if (!m_inClocked) {  // Combinational logic
-                if (m_readTriggersCombLogic(varscp)) {
-                    // Ignore explicit sensitivities
-                    OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
-                    // Add edge from consumed VarStdVertex -> to consuming LogicVertex
-                    m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
-                }
-            } else if (m_inPre) {
-                // AstAlwaysPre logic
-                // Add edge from consumed VarPreVertex -> to consuming LogicVertex
-                // This one is cutable (vs the producer) as there's only one such consumer,
-                // but may be many producers
-                OrderVarVertex* const preVxp = getVarVertex(varscp, VarVertexType::PRE);
-                m_graphp->addSoftEdge(preVxp, m_logicVxp, WEIGHT_PRE);
-            } else {
-                // Sequential (clocked) logic
-                // Add edge from consuming LogicVertex -> to consumed VarPreVertex
-                // Generation of 'pre' because we want to indicate it should be before
-                // AstAlwaysPre
-                OrderVarVertex* const preVxp = getVarVertex(varscp, VarVertexType::PRE);
-                m_graphp->addHardEdge(m_logicVxp, preVxp, WEIGHT_NORMAL);
-                // Add edge from consuming LogicVertex -> to consumed VarPostVertex
-                OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
-                m_graphp->addHardEdge(m_logicVxp, postVxp, WEIGHT_POST);
-            }
-        }
+        addVarUsage(varscp, nodep->access().isReadOrRW(), nodep->access().isWriteOrRW(), nodep);
     }
-    void visit(AstCCall* nodep) override { iterateChildren(nodep); }
+    void visit(AstCCall* nodep) override {
+        addSubgraphCallPortUsage(nodep);
+        iterateChildren(nodep);
+    }
 
     //--- Logic akin to SystemVerilog Processes (AstNodeProcedure)
     void visit(AstInitial* nodep) override {  // LCOV_EXCL_START

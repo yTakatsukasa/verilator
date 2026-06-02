@@ -429,6 +429,187 @@ void addVirtIfaceTriggerAssignments(AstNetlist* netlistp, AstCFunc* initFuncp,
     }
 }
 
+void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
+                        const V3Order::ExternalDomainsProvider& externalDomains) {
+    if (!v3Global.opt.subgraphSchedule()) return;
+
+    enum class SubgraphWrapperKind : uint8_t {
+        Always,
+        AlwaysObserved,
+        AlwaysPost,
+        AlwaysPre,
+        AlwaysReactive,
+        InitialAutomatic,
+        Stmt
+    };
+
+    struct SubgraphWrapper final {
+        SubgraphWrapperKind m_kind = SubgraphWrapperKind::Stmt;
+        VAlwaysKwd m_keyword = VAlwaysKwd::ALWAYS;
+    };
+
+    const auto wrapperFromLogic = [](AstNode* nodep) {
+        SubgraphWrapper result;
+        AstNodeProcedure* const origp = VN_CAST(nodep, NodeProcedure);
+        if (const AstAlways* const alwaysp = VN_CAST(origp, Always)) {
+            result.m_kind = SubgraphWrapperKind::Always;
+            result.m_keyword = alwaysp->keyword();
+        } else if (VN_IS(origp, AlwaysObserved)) {
+            result.m_kind = SubgraphWrapperKind::AlwaysObserved;
+        } else if (VN_IS(origp, AlwaysPost)) {
+            result.m_kind = SubgraphWrapperKind::AlwaysPost;
+        } else if (VN_IS(origp, AlwaysPre)) {
+            result.m_kind = SubgraphWrapperKind::AlwaysPre;
+        } else if (VN_IS(origp, AlwaysReactive)) {
+            result.m_kind = SubgraphWrapperKind::AlwaysReactive;
+        } else if (VN_IS(origp, InitialAutomatic)) {
+            result.m_kind = SubgraphWrapperKind::InitialAutomatic;
+        }
+        return result;
+    };
+
+    const auto makeWrapperLogic
+        = [](FileLine* flp, const SubgraphWrapper& wrapper, AstNodeStmt* callp) -> AstNode* {
+        if (wrapper.m_kind == SubgraphWrapperKind::Always) {
+            return new AstAlways{flp, wrapper.m_keyword, nullptr, callp};
+        }
+        if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre) {
+            AstAlwaysPre* const procp = new AstAlwaysPre{flp};
+            procp->addStmtsp(callp);
+            return procp;
+        }
+        if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPost) {
+            AstAlwaysPost* const procp = new AstAlwaysPost{flp};
+            procp->addStmtsp(callp);
+            return procp;
+        }
+        if (wrapper.m_kind == SubgraphWrapperKind::AlwaysObserved) {
+            return new AstAlwaysObserved{flp, nullptr, callp};
+        }
+        if (wrapper.m_kind == SubgraphWrapperKind::AlwaysReactive) {
+            return new AstAlwaysReactive{flp, nullptr, callp};
+        }
+        if (wrapper.m_kind == SubgraphWrapperKind::InitialAutomatic) {
+            return new AstInitialAutomatic{flp, callp};
+        }
+        return callp;
+    };
+
+    const auto disableLifePostForExternalReads
+        = [](const LogicByScope& subgraphLogic, AstScope* subgraphScopep) {
+              subgraphLogic.foreachLogic([&](AstNode* logicp) {
+                  logicp->foreach([&](AstVarRef* refp) {
+                      if (refp->access().isWriteOnly()) return;
+                      AstVarScope* const vscp = refp->varScopep();
+                      if (vscp->scopep() == subgraphScopep) return;
+                      vscp->optimizeLifePost(false);
+                  });
+              });
+          };
+
+    struct SubgraphGroup final {
+        AstScope* m_scopep = nullptr;
+        AstSenTree* m_senTreep = nullptr;
+        FileLine* m_flp = nullptr;
+        LogicByScope m_earlyLogic;
+        bool m_hasPost = false;
+        bool m_hasNonPostLate = false;
+        SubgraphWrapper m_lateWrapper;
+        LogicByScope m_lateLogic;
+        LogicByScope* m_ownerp = nullptr;
+    };
+
+    std::vector<SubgraphGroup> groups;
+    const auto findGroup
+        = [&](LogicByScope* ownerp, AstScope* scopep, AstSenTree* senTreep) -> SubgraphGroup& {
+        for (SubgraphGroup& group : groups) {
+            if (group.m_scopep == scopep) return group;
+        }
+        groups.emplace_back();
+        SubgraphGroup& group = groups.back();
+        group.m_ownerp = ownerp;
+        group.m_scopep = scopep;
+        group.m_senTreep = senTreep;
+        return group;
+    };
+
+    for (LogicByScope* const lbsp : logic) {
+        LogicByScope lowered;
+
+        for (const auto& pair : *lbsp) {
+            AstScope* const scopep = pair.first;
+            if (!scopep->modp()->subgraphBoundary()) {
+                lowered.emplace_back(pair);
+                continue;
+            }
+
+            AstActive* const activep = pair.second;
+            AstSenTree* const senTreep = activep->sentreep();
+            SubgraphGroup& group = findGroup(lbsp, scopep, senTreep);
+            if (!group.m_flp) group.m_flp = activep->fileline();
+
+            for (AstNode* stmtp = activep->stmtsp(); stmtp;) {
+                AstNode* const nextp = stmtp->nextp();
+                stmtp->unlinkFrBack();
+                const bool isPost = VN_IS(stmtp, AlwaysPost);
+                if (isPost) {
+                    group.m_hasPost = true;
+                } else if (!VN_IS(stmtp, AlwaysPre)) {
+                    if (!group.m_hasNonPostLate) group.m_lateWrapper = wrapperFromLogic(stmtp);
+                    group.m_hasNonPostLate = true;
+                }
+                LogicByScope& groupLogic
+                    = VN_IS(stmtp, AlwaysPre) ? group.m_earlyLogic : group.m_lateLogic;
+                groupLogic.add(scopep, senTreep, stmtp);
+                stmtp = nextp;
+            }
+            activep->deleteTree();
+        }
+        *lbsp = std::move(lowered);
+    }
+
+    unsigned subgraphIndex = 0;
+    for (SubgraphGroup& group : groups) {
+        FileLine* const flp = group.m_flp;
+        AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
+
+        const auto lowerActiveGroup = [&](LogicByScope& subgraphLogic,
+                                          const SubgraphWrapper& wrapper) {
+            if (subgraphLogic.empty()) return;
+            AstCFunc* const funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
+                                                   tag + "_subgraph_" + cvtToStr(subgraphIndex++),
+                                                   false, slow, externalDomains, group.m_scopep);
+            if (funcp) {
+                util::splitCheck(funcp);
+                wrapperActivep->addStmtsp(
+                    makeWrapperLogic(flp, wrapper, util::callVoidFunc(funcp)));
+            }
+        };
+        if (!group.m_earlyLogic.empty()) {
+            lowerActiveGroup(group.m_earlyLogic,
+                             wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()));
+        }
+        if (!group.m_lateLogic.empty()) {
+            SubgraphWrapper wrapper;
+            if (group.m_hasNonPostLate) {
+                wrapper = group.m_lateWrapper;
+            } else if (group.m_hasPost) {
+                wrapper.m_kind = SubgraphWrapperKind::AlwaysPost;
+            } else {
+                wrapper = wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
+            }
+            disableLifePostForExternalReads(group.m_lateLogic, group.m_scopep);
+            lowerActiveGroup(group.m_lateLogic, wrapper);
+        }
+        if (wrapperActivep->stmtsp()) {
+            group.m_ownerp->emplace_back(group.m_scopep, wrapperActivep);
+        } else {
+            wrapperActivep->deleteTree();
+        }
+    }
+}
+
 // Order the combinational logic to create the settle loop
 void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilder& senExprBulider,
                   LogicClasses& logicClasses) {
@@ -461,6 +642,10 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
     // First trigger is for pure combinational triggers (first iteration)
     AstSenTree* const inputChanged
         = trigKit.newExtraTriggerSenTree(trigKit.vscp(), firstIterationTrigger);
+
+    lowerSubgraphLogic(
+        netlistp, {&comb, &hybrid}, trigToSen, "stl", true,
+        [=](const AstVarScope*, std::vector<AstSenTree*>& out) { out.push_back(inputChanged); });
 
     // Create and the body function
     AstCFunc* const stlFuncp = V3Order::order(
@@ -598,31 +783,36 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
     const auto& vifVscpToSensIco
         = virtIfaceTriggers.makeVscpToSensMap(trigKit, firstVifTriggerIndex, trigKit.vscp());
 
+    const V3Order::ExternalDomainsProvider icoExternalDomains
+        = [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+              AstVar* const varp = vscp->varp();
+              // If it has an explicit change detect trigger, use that,
+              // otherwise fall back to using the 'first iteration' trigger
+              auto it = inp2changedp.find(vscp);
+              if (it != inp2changedp.end()) {
+                  out.push_back(it->second);
+              } else if (varp->isPrimaryInish() || varp->isSigUserRWPublic()
+                         || varp->sampled()) {
+                  if (!firstIterTriggerp) {
+                      firstIterTriggerp
+                          = trigKit.newExtraTriggerSenTree(trigKit.vscp(), firstIterationTrigger);
+                  }
+                  out.push_back(firstIterTriggerp);
+              }
+              // Add other triggers
+              if (varp->isWrittenByDpi()) out.push_back(dpiExportTriggered);
+              if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
+                  const auto& ifaceTriggered
+                      = findTriggeredIface(vscp, vifVscpToSensIco, virtIfaceTriggers);
+                  out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
+              }
+          };
+
+    lowerSubgraphLogic(netlistp, {&logic}, trigToSen, "ico", false, icoExternalDomains);
+
     // Create and Order the body function
-    AstCFunc* const icoFuncp = V3Order::order(
-        netlistp, {&logic}, trigToSen, "ico", false, false,
-        [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
-            AstVar* const varp = vscp->varp();
-            // If it has an explicit change detect trigger, use that,
-            // otherwise fall back to using the 'first iteration' trigger
-            auto it = inp2changedp.find(vscp);
-            if (it != inp2changedp.end()) {
-                out.push_back(it->second);
-            } else if (varp->isPrimaryInish() || varp->isSigUserRWPublic() || varp->sampled()) {
-                if (!firstIterTriggerp) {
-                    firstIterTriggerp
-                        = trigKit.newExtraTriggerSenTree(trigKit.vscp(), firstIterationTrigger);
-                }
-                out.push_back(firstIterTriggerp);
-            }
-            // Add other triggers
-            if (varp->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-            if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
-                const auto& ifaceTriggered
-                    = findTriggeredIface(vscp, vifVscpToSensIco, virtIfaceTriggers);
-                out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
-            }
-        });
+    AstCFunc* const icoFuncp
+        = V3Order::order(netlistp, {&logic}, trigToSen, "ico", false, false, icoExternalDomains);
     util::splitCheck(icoFuncp);
 
     // Create the eval loop
@@ -1080,18 +1270,24 @@ void schedule(AstNetlist* netlistp) {
     const auto& vifVscpToSensAct
         = virtIfaceTriggers.makeVscpToSensMap(trigKit, firstVifTriggerIndex, trigKit.vscp());
 
+    const V3Order::ExternalDomainsProvider actExternalDomains
+        = [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+              auto it = actTimingDomains.find(vscp);
+              if (it != actTimingDomains.end()) out = it->second;
+              if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggeredAct);
+              if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
+                  const auto& ifaceTriggered
+                      = findTriggeredIface(vscp, vifVscpToSensAct, virtIfaceTriggers);
+                  out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
+              }
+          };
+
+    lowerSubgraphLogic(netlistp, {&logicRegions.m_pre, &logicRegions.m_act, &logicReplicas.m_act},
+                       trigToSenAct, "act", false, actExternalDomains);
+
     AstCFunc* const actFuncp = V3Order::order(
         netlistp, {&logicRegions.m_pre, &logicRegions.m_act, &logicReplicas.m_act}, trigToSenAct,
-        "act", false, false, [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
-            auto it = actTimingDomains.find(vscp);
-            if (it != actTimingDomains.end()) out = it->second;
-            if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggeredAct);
-            if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
-                const auto& ifaceTriggered
-                    = findTriggeredIface(vscp, vifVscpToSensAct, virtIfaceTriggers);
-                out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
-            }
-        });
+        "act", false, false, actExternalDomains);
     util::splitCheck(actFuncp);
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-create-act");
 
@@ -1118,18 +1314,23 @@ void schedule(AstNetlist* netlistp) {
             = virtIfaceTriggers.makeVscpToSensMap(trigKit, firstVifTriggerIndex, trigVscp);
 
         const auto& timingDomains = timingKit.remapDomains(trigMap);
-        AstCFunc* const funcp = V3Order::order(
-            netlistp, logic, trigToSen, name, name == "nba" && v3Global.opt.mtasks(), false,
-            [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
-                auto it = timingDomains.find(vscp);
-                if (it != timingDomains.end()) out = it->second;
-                if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-                if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
-                    const auto& ifaceTriggered
-                        = findTriggeredIface(vscp, vifVscpToSens, virtIfaceTriggers);
-                    out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
-                }
-            });
+        const V3Order::ExternalDomainsProvider externalDomains
+            = [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+                  auto it = timingDomains.find(vscp);
+                  if (it != timingDomains.end()) out = it->second;
+                  if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
+                  if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
+                      const auto& ifaceTriggered
+                          = findTriggeredIface(vscp, vifVscpToSens, virtIfaceTriggers);
+                      out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
+                  }
+              };
+
+        lowerSubgraphLogic(netlistp, logic, trigToSen, name, false, externalDomains);
+
+        AstCFunc* const funcp
+            = V3Order::order(netlistp, logic, trigToSen, name,
+                             name == "nba" && v3Global.opt.mtasks(), false, externalDomains);
 
         return {trigVscp, funcp};
     };

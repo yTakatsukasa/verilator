@@ -238,7 +238,11 @@ class V3OrderProcessDomains final {
         for (OrderLogicVertex* const lVtxp : m_logicpsToDelete) {
             UASSERT_OBJ(lVtxp->domainp() == m_deleteDomainp, lVtxp,
                         "Should have been marked as deleted");
-            lVtxp->nodep()->unlinkFrBack()->deleteTree();
+            if (AstActive* const activep = VN_CAST(lVtxp->nodep(), Active)) {
+                if (activep->stmtsp()) activep->stmtsp()->unlinkFrBackWithNext()->deleteTree();
+            } else {
+                lVtxp->nodep()->unlinkFrBack()->deleteTree();
+            }
             lVtxp->unlinkDelete(&m_graph);
         }
     }

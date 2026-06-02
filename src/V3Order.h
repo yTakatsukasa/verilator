@@ -26,6 +26,7 @@
 
 class AstCFunc;
 class AstNetlist;
+class AstScope;
 class AstSenItem;
 class AstSenTree;
 class AstVarScope;
@@ -49,7 +50,8 @@ AstCFunc* order(AstNetlist* netlistp,  //
                 const string& tag,  //
                 bool parallel,  //
                 bool slow,  //
-                const ExternalDomainsProvider& externalDomains) VL_MT_DISABLED;
+                const ExternalDomainsProvider& externalDomains,  //
+                AstScope* resultScopep = nullptr) VL_MT_DISABLED;
 
 void selfTestParallel();
 
