@@ -131,16 +131,16 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
     }
 
+    bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
+        return isUnderScope(vscp->scopep(), subgraphScopep)
+               && 0 == vscp->varp()->name().rfind("__Vdly", 0);
+    }
+
     bool isSubgraphWrapperCall(AstCCall* nodep) const {
         AstCFunc* const funcp = nodep->funcp();
         AstScope* const scopep = funcp->scopep();
         return scopep && scopep->modp()->subgraphBoundary()
                && 0 == funcp->name().rfind("_eval_", 0);
-    }
-
-    bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
-        return isUnderScope(vscp->scopep(), subgraphScopep)
-               && 0 == vscp->varp()->name().rfind("__Vdly", 0);
     }
 
     bool isUnderScope(AstScope* scopep, AstScope* basep) const {

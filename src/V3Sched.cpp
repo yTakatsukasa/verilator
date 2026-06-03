@@ -433,6 +433,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                         const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
                         const V3Order::ExternalDomainsProvider& externalDomains) {
     if (!v3Global.opt.subgraphSchedule()) return;
+    static std::unordered_map<AstScope*, std::vector<AstCFunc*>> s_stlSubgraphFuncs;
+    if (tag == "stl") s_stlSubgraphFuncs.clear();
 
     enum class SubgraphWrapperKind : uint8_t {
         Always,
@@ -520,11 +522,18 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         LogicByScope* m_ownerp = nullptr;
     };
 
+    const auto boundaryScopeFor = [](AstScope* scopep) -> AstScope* {
+        for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp->modp()->subgraphBoundary()) return scanp;
+        }
+        return nullptr;
+    };
+
     std::vector<SubgraphGroup> groups;
     const auto findGroup
         = [&](LogicByScope* ownerp, AstScope* scopep, AstSenTree* senTreep) -> SubgraphGroup& {
         for (SubgraphGroup& group : groups) {
-            if (group.m_scopep == scopep) return group;
+            if (group.m_scopep == scopep && group.m_senTreep == senTreep) return group;
         }
         groups.emplace_back();
         SubgraphGroup& group = groups.back();
@@ -539,14 +548,15 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
 
         for (const auto& pair : *lbsp) {
             AstScope* const scopep = pair.first;
-            if (!scopep->modp()->subgraphBoundary()) {
+            AstScope* const boundaryScopep = boundaryScopeFor(scopep);
+            if (!boundaryScopep) {
                 lowered.emplace_back(pair);
                 continue;
             }
 
             AstActive* const activep = pair.second;
             AstSenTree* const senTreep = activep->sentreep();
-            SubgraphGroup& group = findGroup(lbsp, scopep, senTreep);
+            SubgraphGroup& group = findGroup(lbsp, boundaryScopep, senTreep);
             if (!group.m_flp) group.m_flp = activep->fileline();
 
             for (AstNode* stmtp = activep->stmtsp(); stmtp;) {
@@ -573,17 +583,42 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     for (SubgraphGroup& group : groups) {
         FileLine* const flp = group.m_flp;
         AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
+        const auto makeUnguardedTailFunc = [&](AstCFunc* funcp) {
+            AstNode* bodyp = funcp->stmtsp();
+            if (AstIf* const ifp = VN_CAST(bodyp, If)) {
+                if (!ifp->nextp() && !ifp->elsesp() && ifp->thensp()) bodyp = ifp->thensp();
+            }
+            AstCFunc* const tailp
+                = new AstCFunc{funcp->fileline(), funcp->name() + "__tail", group.m_scopep, ""};
+            tailp->dontCombine(true);
+            tailp->isStatic(false);
+            tailp->isLoose(true);
+            tailp->slow(slow);
+            tailp->isConst(false);
+            tailp->declPrivate(true);
+            group.m_scopep->addBlocksp(tailp);
+            if (bodyp) tailp->addStmtsp(bodyp->cloneTree(true));
+            return tailp;
+        };
 
         const auto lowerActiveGroup = [&](LogicByScope& subgraphLogic,
-                                          const SubgraphWrapper& wrapper) {
+                                          const SubgraphWrapper& wrapper,
+                                          const std::vector<AstCFunc*>* tailFuncps = nullptr) {
             if (subgraphLogic.empty()) return;
             AstCFunc* const funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
                                                    tag + "_subgraph_" + cvtToStr(subgraphIndex++),
                                                    false, slow, externalDomains, group.m_scopep);
             if (funcp) {
                 util::splitCheck(funcp);
-                wrapperActivep->addStmtsp(
-                    makeWrapperLogic(flp, wrapper, util::callVoidFunc(funcp)));
+                if (tag == "stl")
+                    s_stlSubgraphFuncs[group.m_scopep].push_back(makeUnguardedTailFunc(funcp));
+                AstNodeStmt* const callp = util::callVoidFunc(funcp);
+                if (tailFuncps) {
+                    for (AstCFunc* const tailFuncp : *tailFuncps) {
+                        callp->addNext(util::callVoidFunc(tailFuncp));
+                    }
+                }
+                wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, callp));
             }
         };
         if (!group.m_earlyLogic.empty()) {
@@ -600,7 +635,12 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 wrapper = wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
             }
             disableLifePostForExternalReads(group.m_lateLogic, group.m_scopep);
-            lowerActiveGroup(group.m_lateLogic, wrapper);
+            const std::vector<AstCFunc*>* tailFuncps = nullptr;
+            if (tag != "stl" && tag != "ico") {
+                const auto it = s_stlSubgraphFuncs.find(group.m_scopep);
+                if (it != s_stlSubgraphFuncs.end()) tailFuncps = &it->second;
+            }
+            lowerActiveGroup(group.m_lateLogic, wrapper, tailFuncps);
         }
         if (wrapperActivep->stmtsp()) {
             group.m_ownerp->emplace_back(group.m_scopep, wrapperActivep);
