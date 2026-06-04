@@ -590,7 +590,11 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             if (refp->access() != VAccess::READ) return;
             AstVarScope* const sourceVscp = refp->varScopep();
             AstScope* const sourceBoundaryp = boundaryScopeFor(sourceVscp->scopep());
-            if (!sourceBoundaryp || sourceBoundaryp == boundaryScopep) return;
+            const bool snapshotBoundaryInput
+                = sourceBoundaryp == boundaryScopep && sourceVscp->scopep() == boundaryScopep
+                  && sourceVscp->varp()->isIO() && sourceVscp->varp()->direction().isNonOutput();
+            if (!sourceBoundaryp || (sourceBoundaryp == boundaryScopep && !snapshotBoundaryInput))
+                return;
             addSnapshotRequirement(ownerp, senTreep, sourceVscp);
             AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
             refp->replaceWith(new AstVarRef{refp->fileline(), snapshotVscp, VAccess::READ});
