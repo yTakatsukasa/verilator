@@ -456,7 +456,15 @@ class ParamProcessor final {
     }
     string moduleCalcName(const AstNodeModule* srcModp, const string& longname) {
         string newname = longname;
-        if (longname.length() > 30) {
+        bool preferIndexedName = false;
+        if (v3Global.opt.subgraphSchedule() && srcModp->subgraphBoundary()) {
+            const string prefix = srcModp->name() + "_";
+            if (longname.rfind(prefix, 0) == 0) {
+                const string suffix = longname.substr(prefix.length());
+                preferIndexedName = std::count(suffix.begin(), suffix.end(), '_') > 1;
+            }
+        }
+        if (preferIndexedName || longname.length() > 30) {
             const auto pair = m_longMap.emplace(longname, "");
             if (pair.second) {
                 newname = srcModp->name();
