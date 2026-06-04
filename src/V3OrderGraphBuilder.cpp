@@ -476,6 +476,7 @@ class OrderGraphBuilder final : public VNVisitor {
                 AstVarScope* const vscp = refp->varScopep();
                 const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
                 const bool exportedInternalVar = m_externallyConsumedSubgraphVars.count(vscp);
+                const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
                 if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar
                     && !exportedInternalVar) {
                     return;
@@ -487,6 +488,10 @@ class OrderGraphBuilder final : public VNVisitor {
                 if (hideClockedBoundaryContract && sourceBoundaryp == scopep
                     && vscp->scopep() == scopep && vscp->varp()->isIO()
                     && vscp->varp()->direction().isNonOutput()) {
+                    return;
+                }
+                if (hideClockedBoundaryContract && externalToSubgraph
+                    && refp->access().isReadOrRW() && !refp->access().isWriteOrRW()) {
                     return;
                 }
                 if (internalOrderVar) {
@@ -613,6 +618,13 @@ class OrderGraphBuilder final : public VNVisitor {
     }
     void visit(AstNodeVarRef* nodep) override {
         AstVarScope* const varscp = nodep->varScopep();
+        if (m_isSubgraphSnapshotLogic) {
+            if (0 == varscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
+                addCoarseVarUsage(varscp, nodep->access().isReadOrRW(),
+                                  nodep->access().isWriteOrRW(), nodep);
+            }
+            return;
+        }
         addVarUsage(varscp, nodep->access().isReadOrRW(), nodep->access().isWriteOrRW(), nodep);
     }
     void visit(AstCCall* nodep) override {
