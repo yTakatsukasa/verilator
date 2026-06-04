@@ -583,18 +583,24 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
               if (!bucket.m_seen.insert(sourceVscp).second) return;
               bucket.m_sourceVars.push_back(sourceVscp);
           };
+    const auto isUnderBoundaryScope = [](AstScope* scopep, AstScope* boundaryScopep) {
+        for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp == boundaryScopep) return true;
+        }
+        return false;
+    };
     const auto rewriteCrossBoundaryReads = [&](AstNode* nodep, AstScope* boundaryScopep,
                                                LogicByScope* ownerp, AstSenTree* senTreep) {
         if (!snapshotCrossBoundaryReads) return;
         nodep->foreach([&](AstVarRef* refp) {
             if (refp->access() != VAccess::READ) return;
             AstVarScope* const sourceVscp = refp->varScopep();
-            AstScope* const sourceBoundaryp = boundaryScopeFor(sourceVscp->scopep());
-            const bool snapshotBoundaryInput
-                = sourceBoundaryp == boundaryScopep && sourceVscp->scopep() == boundaryScopep
-                  && sourceVscp->varp()->isIO() && sourceVscp->varp()->direction().isNonOutput();
-            if (!sourceBoundaryp || (sourceBoundaryp == boundaryScopep && !snapshotBoundaryInput))
-                return;
+            AstScope* const sourceScopep = sourceVscp->scopep();
+            const bool snapshotBoundaryInput = sourceScopep == boundaryScopep
+                                               && sourceVscp->varp()->isIO()
+                                               && sourceVscp->varp()->direction().isNonOutput();
+            const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
+            if (!snapshotBoundaryInput && !snapshotExternalRead) return;
             addSnapshotRequirement(ownerp, senTreep, sourceVscp);
             AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
             refp->replaceWith(new AstVarRef{refp->fileline(), snapshotVscp, VAccess::READ});
