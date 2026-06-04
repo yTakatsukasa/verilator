@@ -102,11 +102,18 @@ class OrderGraphBuilder final : public VNVisitor {
     AstSenTree* m_domainp = nullptr;
     // Sensitivity list for hybrid logic, nullptr for everything else
     AstSenTree* m_hybridp = nullptr;
+    AstVarScope* m_subgraphPostBarrierVscp = nullptr;
+    AstVarScope* m_subgraphSnapshotBarrierVscp = nullptr;
 
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
     bool m_inPost = false;  // Underneath AstAlwaysPost
+    bool m_isSubgraphCommitPostLogic = false;  // Post logic commits delayed top state
+    bool m_isSubgraphSnapshotLogic = false;  // Procedure snapshots cross-boundary values
+    bool m_isSubgraphWrapperLogic = false;  // Procedure wraps a subgraph eval call
+    V3Sched::util::VarScopeSet m_externallyConsumedSubgraphVars;
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
+    V3Sched::util::VarScopeSet m_subgraphDerivedExternalVars;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
 
     // METHODS
@@ -122,6 +129,18 @@ class OrderGraphBuilder final : public VNVisitor {
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
         // Gather variable dependencies based on usage
         iterateChildren(nodep);
+        if (v3Global.opt.subgraphSchedule()) {
+            if (m_inPost && m_isSubgraphCommitPostLogic) {
+                addVarUsage(getSubgraphPostBarrierVscp(), false, true, nodep);
+            }
+            if (m_isSubgraphSnapshotLogic) {
+                addVarUsage(getSubgraphSnapshotBarrierVscp(), false, true, nodep);
+            }
+            if (m_isSubgraphWrapperLogic && m_inClocked && !m_inPost) {
+                addVarUsage(getSubgraphPostBarrierVscp(), true, false, nodep);
+                addVarUsage(getSubgraphSnapshotBarrierVscp(), true, false, nodep);
+            }
+        }
         // Finished with this logic
         m_logicVxp = nullptr;
         m_forceReadEdgeIgnores.clear();
@@ -131,9 +150,54 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
     }
 
+    AstVarScope* getSubgraphPostBarrierVscp() {
+        if (m_subgraphPostBarrierVscp) return m_subgraphPostBarrierVscp;
+        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+        constexpr const char* kBarrierName = "__VsubgraphPostBarrier";
+        for (AstVarScope* vscp = topScopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp()->name() == kBarrierName) {
+                m_subgraphPostBarrierVscp = vscp;
+                return vscp;
+            }
+        }
+        m_subgraphPostBarrierVscp = topScopep->createTemp(kBarrierName, 1);
+        return m_subgraphPostBarrierVscp;
+    }
+
+    AstVarScope* getSubgraphSnapshotBarrierVscp() {
+        if (m_subgraphSnapshotBarrierVscp) return m_subgraphSnapshotBarrierVscp;
+        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+        constexpr const char* kBarrierName = "__VsubgraphSnapshotBarrier";
+        for (AstVarScope* vscp = topScopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp()->name() == kBarrierName) {
+                m_subgraphSnapshotBarrierVscp = vscp;
+                return vscp;
+            }
+        }
+        m_subgraphSnapshotBarrierVscp = topScopep->createTemp(kBarrierName, 1);
+        return m_subgraphSnapshotBarrierVscp;
+    }
+
     bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
         return isUnderScope(vscp->scopep(), subgraphScopep)
                && 0 == vscp->varp()->name().rfind("__Vdly", 0);
+    }
+
+    AstScope* subgraphBoundaryScope(AstScope* scopep) const {
+        for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp->modp()->subgraphBoundary()) return scanp;
+        }
+        return nullptr;
+    }
+
+    bool hasDelayedShadowVar(AstVarScope* vscp) const {
+        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+        const std::string shadowName = "__Vdly__" + vscp->varp()->name();
+        for (AstVarScope* scanp = topScopep->varsp(); scanp;
+             scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->varp()->name() == shadowName) return true;
+        }
+        return false;
     }
 
     bool isSubgraphWrapperCall(AstCCall* nodep) const {
@@ -271,6 +335,78 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
+    void addCoarseVarUsage(AstVarScope* varscp, bool isRead, bool isWrite, AstNode* nodep) {
+        UASSERT_OBJ(m_logicVxp, nodep, "Var usage not under logic");
+        UASSERT_OBJ(varscp, nodep, "Var didn't get varscoped in V3Scope.cpp");
+
+        const bool prevGen = varscp->user2() & VU_GEN;
+        const bool prevCon = varscp->user2() & VU_CON;
+        const bool gen = !prevGen && isWrite && !varscp->varp()->ignoreSchedWrite();
+
+        bool con = false;
+        if (!prevCon && isRead) {
+            con = true;
+            if (m_forceReadEdgeIgnores.count(varscp) || !m_readTriggersCombLogic(varscp)) {
+                con = false;
+            }
+        }
+
+        if (gen) {
+            varscp->user2Or(VU_GEN);
+            OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+            m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+        }
+        if (con) {
+            varscp->user2Or(VU_CON);
+            OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+            m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
+        }
+    }
+
+    void collectSubgraphDerivedExternalVars(const std::vector<V3Sched::LogicByScope*>& coll) {
+        for (const V3Sched::LogicByScope* const lbsp : coll) {
+            for (const auto& pair : *lbsp) {
+                AstActive* const activep = pair.second;
+                for (AstNode* stmtp = activep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                    bool readsBoundaryValue = false;
+                    stmtp->foreach([&](AstVarRef* refp) {
+                        if (readsBoundaryValue || !refp->access().isReadOrRW()) return;
+                        if (subgraphBoundaryScope(refp->varScopep()->scopep())) {
+                            readsBoundaryValue = true;
+                        }
+                    });
+                    if (!readsBoundaryValue) continue;
+                    stmtp->foreach([&](AstVarRef* refp) {
+                        if (refp->access().isWriteOrRW()) {
+                            m_subgraphDerivedExternalVars.insert(refp->varScopep());
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    void collectExternallyConsumedSubgraphVars(const std::vector<V3Sched::LogicByScope*>& coll) {
+        for (const V3Sched::LogicByScope* const lbsp : coll) {
+            for (const auto& pair : *lbsp) {
+                AstScope* const logicScopep = pair.first;
+                AstScope* const logicBoundaryp = subgraphBoundaryScope(logicScopep);
+                AstActive* const activep = pair.second;
+                for (AstNode* stmtp = activep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                    stmtp->foreach([&](AstVarRef* refp) {
+                        if (!refp->access().isReadOrRW()) return;
+                        AstVarScope* const vscp = refp->varScopep();
+                        AstScope* const varBoundaryp = subgraphBoundaryScope(vscp->scopep());
+                        if (!varBoundaryp || varBoundaryp == logicBoundaryp) return;
+                        if (vscp->scopep() == varBoundaryp && !vscp->varp()->isIO()) {
+                            m_externallyConsumedSubgraphVars.insert(vscp);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
     void addSubgraphCallPortUsage(AstCCall* nodep) {
         if (!isSubgraphWrapperCall(nodep)) return;
         AstCFunc* const funcp = nodep->funcp();
@@ -279,7 +415,13 @@ class OrderGraphBuilder final : public VNVisitor {
             AstVar* const varp = vscp->varp();
             if (!varp->isIO()) continue;
             const VDirection direction = varp->direction();
-            if (direction.isNonOutput()) addVarUsage(vscp, true, false, nodep, false, true);
+            if (direction.isNonOutput()) {
+                if (m_subgraphDerivedExternalVars.count(vscp)) {
+                    addCoarseVarUsage(vscp, true, false, nodep);
+                } else {
+                    addVarUsage(vscp, true, false, nodep, false, true);
+                }
+            }
             if (direction.isWritable()) addVarUsage(vscp, false, true, nodep, true);
         }
 
@@ -289,9 +431,23 @@ class OrderGraphBuilder final : public VNVisitor {
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
                 const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
-                if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar) return;
-                addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(), nodep,
-                            false, !internalOrderVar && refp->access().isReadOrRW());
+                const bool exportedInternalVar = m_externallyConsumedSubgraphVars.count(vscp);
+                if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar
+                    && !exportedInternalVar) {
+                    return;
+                }
+                AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
+                if (internalOrderVar) {
+                    addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(),
+                                nodep);
+                } else if ((sourceBoundaryp && sourceBoundaryp != scopep)
+                           || m_subgraphDerivedExternalVars.count(vscp)) {
+                    addCoarseVarUsage(vscp, refp->access().isReadOrRW(),
+                                      refp->access().isWriteOrRW(), nodep);
+                } else {
+                    addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(),
+                                nodep, false, refp->access().isReadOrRW());
+                }
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
@@ -312,6 +468,41 @@ class OrderGraphBuilder final : public VNVisitor {
             });
         }
         return sawCall;
+    }
+
+    bool isSubgraphWrapperProcedure(AstNodeProcedure* nodep) const {
+        bool sawCall = false;
+        nodep->foreach([&](AstCCall* callp) {
+            if (isSubgraphWrapperCall(callp)) sawCall = true;
+        });
+        return sawCall;
+    }
+
+    bool isSubgraphCommitPostProcedure(AstNodeProcedure* nodep) const {
+        bool commitsDelayedState = false;
+        nodep->foreach([&](AstVarRef* refp) {
+            if (commitsDelayedState) return;
+            AstVarScope* const vscp = refp->varScopep();
+            if (refp->access().isReadOrRW() && 0 == vscp->varp()->name().rfind("__Vdly__", 0)) {
+                commitsDelayedState = true;
+                return;
+            }
+            if (refp->access().isWriteOrRW() && hasDelayedShadowVar(vscp)) {
+                commitsDelayedState = true;
+            }
+        });
+        return commitsDelayedState;
+    }
+
+    bool isSubgraphSnapshotProcedure(AstNodeProcedure* nodep) const {
+        bool snapshotsBoundaryValue = false;
+        nodep->foreach([&](AstVarRef* refp) {
+            if (snapshotsBoundaryValue || !refp->access().isWriteOrRW()) return;
+            if (0 == refp->varScopep()->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
+                snapshotsBoundaryValue = true;
+            }
+        });
+        return snapshotsBoundaryValue;
     }
 
     // VISITORS
@@ -381,32 +572,58 @@ class OrderGraphBuilder final : public VNVisitor {
     }  // LCOV_EXCL_STOP
     void visit(AstInitialAutomatic* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlways* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPre* nodep) override {
         if (m_logicVxp) return iterateChildren(nodep);
         UASSERT_OBJ(!m_inPre, nodep, "Should not nest");
         VL_RESTORER(m_inPre);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_inPre = true;
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPost* nodep) override {
         if (m_logicVxp) return iterateChildren(nodep);
         UASSERT_OBJ(!m_inPost, nodep, "Should not nest");
         VL_RESTORER(m_inPost);
+        VL_RESTORER(m_isSubgraphCommitPostLogic);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_inPost = true;
+        m_isSubgraphCommitPostLogic = isSubgraphCommitPostProcedure(nodep);
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysObserved* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysReactive* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
+        VL_RESTORER(m_isSubgraphSnapshotLogic);
+        VL_RESTORER(m_isSubgraphWrapperLogic);
+        m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
+        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstFinal* nodep) override {  // LCOV_EXCL_START
@@ -440,6 +657,10 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
                       const V3Order::TrigToSenMap& trigToSen)
         : m_trigToSen{trigToSen} {
+        if (v3Global.opt.subgraphSchedule()) {
+            collectExternallyConsumedSubgraphVars(coll);
+            collectSubgraphDerivedExternalVars(coll);
+        }
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
