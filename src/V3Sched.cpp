@@ -69,6 +69,25 @@ std::vector<const AstSenTree*> getSenTreesUsedBy(const std::vector<const LogicBy
     return result;
 }
 
+AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::string& nameSuffix,
+                                 bool slow) {
+    AstNode* bodyp = funcp->stmtsp();
+    if (AstIf* const ifp = VN_CAST(bodyp, If)) {
+        if (!ifp->nextp() && !ifp->elsesp() && ifp->thensp()) bodyp = ifp->thensp();
+    }
+    AstCFunc* const clonep
+        = new AstCFunc{funcp->fileline(), funcp->name() + nameSuffix, scopep, ""};
+    clonep->dontCombine(true);
+    clonep->isStatic(false);
+    clonep->isLoose(true);
+    clonep->slow(slow);
+    clonep->isConst(false);
+    clonep->declPrivate(true);
+    scopep->addBlocksp(clonep);
+    if (bodyp) clonep->addStmtsp(bodyp->cloneTree(true));
+    return clonep;
+}
+
 void remapSensitivities(const LogicByScope& lbs,
                         const std::unordered_map<const AstSenTree*, AstSenTree*>& senTreeMap) {
     for (const auto& pair : lbs) {
@@ -529,6 +548,83 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         return nullptr;
     };
 
+    const bool snapshotCrossBoundaryReads = tag == "nba";
+    std::unordered_map<AstVarScope*, AstVarScope*> snapshotVars;
+    struct SnapshotBucket final {
+        LogicByScope* m_ownerp = nullptr;
+        AstSenTree* m_senTreep = nullptr;
+        std::vector<AstVarScope*> m_sourceVars;
+        std::unordered_set<AstVarScope*> m_seen;
+    };
+    std::vector<SnapshotBucket> snapshotBuckets;
+    const auto getSnapshotVar = [&](AstVarScope* vscp) -> AstVarScope* {
+        const auto it = snapshotVars.find(vscp);
+        if (it != snapshotVars.end()) return it->second;
+        const string name = "__VsubgraphSnapshot__" + vscp->scopep()->nameDotless() + "__"
+                            + vscp->varp()->shortName();
+        AstVarScope* const snapshotp = vscp->scopep()->createTempLike(name, vscp);
+        snapshotVars.emplace(vscp, snapshotp);
+        return snapshotp;
+    };
+    const auto getSnapshotBucket
+        = [&](LogicByScope* ownerp, AstSenTree* senTreep) -> SnapshotBucket& {
+        for (SnapshotBucket& bucket : snapshotBuckets) {
+            if (bucket.m_ownerp == ownerp && bucket.m_senTreep == senTreep) return bucket;
+        }
+        snapshotBuckets.emplace_back();
+        SnapshotBucket& bucket = snapshotBuckets.back();
+        bucket.m_ownerp = ownerp;
+        bucket.m_senTreep = senTreep;
+        return bucket;
+    };
+    const auto addSnapshotRequirement
+        = [&](LogicByScope* ownerp, AstSenTree* senTreep, AstVarScope* sourceVscp) {
+              SnapshotBucket& bucket = getSnapshotBucket(ownerp, senTreep);
+              if (!bucket.m_seen.insert(sourceVscp).second) return;
+              bucket.m_sourceVars.push_back(sourceVscp);
+          };
+    const auto rewriteCrossBoundaryReads = [&](AstNode* nodep, AstScope* boundaryScopep,
+                                               LogicByScope* ownerp, AstSenTree* senTreep) {
+        if (!snapshotCrossBoundaryReads) return;
+        nodep->foreach([&](AstVarRef* refp) {
+            if (refp->access() != VAccess::READ) return;
+            AstVarScope* const sourceVscp = refp->varScopep();
+            AstScope* const sourceBoundaryp = boundaryScopeFor(sourceVscp->scopep());
+            if (!sourceBoundaryp || sourceBoundaryp == boundaryScopep) return;
+            addSnapshotRequirement(ownerp, senTreep, sourceVscp);
+            AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
+            refp->replaceWith(new AstVarRef{refp->fileline(), snapshotVscp, VAccess::READ});
+            VL_DO_DANGLING(refp->deleteTree(), refp);
+        });
+    };
+    const auto rewriteCrossBoundaryReadsInLogic
+        = [&](LogicByScope& subgraphLogic, AstScope* boundaryScopep, LogicByScope* ownerp,
+              AstSenTree* senTreep) {
+              subgraphLogic.foreachLogic([&](AstNode* logicp) {
+                  rewriteCrossBoundaryReads(logicp, boundaryScopep, ownerp, senTreep);
+              });
+          };
+    const auto cloneTailFuncForNba = [&](AstCFunc* tailFuncp, AstScope* boundaryScopep,
+                                         LogicByScope* ownerp, AstSenTree* senTreep) -> AstCFunc* {
+        static unsigned s_tailCloneIndex = 0;
+        AstCFunc* const clonep = new AstCFunc{
+            tailFuncp->fileline(), tailFuncp->name() + "__nba_" + cvtToStr(s_tailCloneIndex++),
+            boundaryScopep, ""};
+        clonep->dontCombine(true);
+        clonep->isStatic(false);
+        clonep->isLoose(true);
+        clonep->slow(slow);
+        clonep->isConst(false);
+        clonep->declPrivate(true);
+        boundaryScopep->addBlocksp(clonep);
+        if (tailFuncp->stmtsp()) {
+            AstNode* const bodyp = tailFuncp->stmtsp()->cloneTree(true);
+            rewriteCrossBoundaryReads(bodyp, boundaryScopep, ownerp, senTreep);
+            clonep->addStmtsp(bodyp);
+        }
+        return clonep;
+    };
+
     std::vector<SubgraphGroup> groups;
     const auto findGroup
         = [&](LogicByScope* ownerp, AstScope* scopep, AstSenTree* senTreep) -> SubgraphGroup& {
@@ -579,28 +675,19 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         *lbsp = std::move(lowered);
     }
 
+    if (snapshotCrossBoundaryReads) {
+        for (SubgraphGroup& group : groups) {
+            rewriteCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
+                                             group.m_senTreep);
+            rewriteCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep, group.m_ownerp,
+                                             group.m_senTreep);
+        }
+    }
+
     unsigned subgraphIndex = 0;
     for (SubgraphGroup& group : groups) {
         FileLine* const flp = group.m_flp;
         AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
-        const auto makeUnguardedTailFunc = [&](AstCFunc* funcp) {
-            AstNode* bodyp = funcp->stmtsp();
-            if (AstIf* const ifp = VN_CAST(bodyp, If)) {
-                if (!ifp->nextp() && !ifp->elsesp() && ifp->thensp()) bodyp = ifp->thensp();
-            }
-            AstCFunc* const tailp
-                = new AstCFunc{funcp->fileline(), funcp->name() + "__tail", group.m_scopep, ""};
-            tailp->dontCombine(true);
-            tailp->isStatic(false);
-            tailp->isLoose(true);
-            tailp->slow(slow);
-            tailp->isConst(false);
-            tailp->declPrivate(true);
-            group.m_scopep->addBlocksp(tailp);
-            if (bodyp) tailp->addStmtsp(bodyp->cloneTree(true));
-            return tailp;
-        };
-
         const auto lowerActiveGroup = [&](LogicByScope& subgraphLogic,
                                           const SubgraphWrapper& wrapper,
                                           const std::vector<AstCFunc*>* tailFuncps = nullptr) {
@@ -610,9 +697,14 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                                    false, slow, externalDomains, group.m_scopep);
             if (funcp) {
                 util::splitCheck(funcp);
-                if (tag == "stl")
-                    s_stlSubgraphFuncs[group.m_scopep].push_back(makeUnguardedTailFunc(funcp));
-                AstNodeStmt* const callp = util::callVoidFunc(funcp);
+                AstCFunc* callFuncp = funcp;
+                if (tag == "stl") {
+                    AstCFunc* const tailFuncp
+                        = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
+                    s_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
+                    callFuncp = tailFuncp;
+                }
+                AstNodeStmt* const callp = util::callVoidFunc(callFuncp);
                 if (tailFuncps) {
                     for (AstCFunc* const tailFuncp : *tailFuncps) {
                         callp->addNext(util::callVoidFunc(tailFuncp));
@@ -636,9 +728,21 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             }
             disableLifePostForExternalReads(group.m_lateLogic, group.m_scopep);
             const std::vector<AstCFunc*>* tailFuncps = nullptr;
+            std::vector<AstCFunc*> nbaTailFuncps;
             if (tag != "stl" && tag != "ico") {
                 const auto it = s_stlSubgraphFuncs.find(group.m_scopep);
-                if (it != s_stlSubgraphFuncs.end()) tailFuncps = &it->second;
+                if (it != s_stlSubgraphFuncs.end()) {
+                    if (snapshotCrossBoundaryReads) {
+                        nbaTailFuncps.reserve(it->second.size());
+                        for (AstCFunc* const tailFuncp : it->second) {
+                            nbaTailFuncps.push_back(cloneTailFuncForNba(
+                                tailFuncp, group.m_scopep, group.m_ownerp, group.m_senTreep));
+                        }
+                        tailFuncps = &nbaTailFuncps;
+                    } else {
+                        tailFuncps = &it->second;
+                    }
+                }
             }
             lowerActiveGroup(group.m_lateLogic, wrapper, tailFuncps);
         }
@@ -648,11 +752,26 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             wrapperActivep->deleteTree();
         }
     }
+
+    for (SnapshotBucket& bucket : snapshotBuckets) {
+        if (bucket.m_sourceVars.empty()) continue;
+        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+        AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
+                                               VAlwaysKwd::ALWAYS, nullptr, nullptr};
+        for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+            AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
+            procp->addStmtsp(
+                new AstAssign{sourceVscp->fileline(),
+                              new AstVarRef{sourceVscp->fileline(), snapshotVscp, VAccess::WRITE},
+                              new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
+        }
+        bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
+    }
 }
 
 // Order the combinational logic to create the settle loop
-void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilder& senExprBulider,
-                  LogicClasses& logicClasses) {
+AstCFunc* createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp,
+                       SenExprBuilder& senExprBulider, LogicClasses& logicClasses) {
     AstCFunc* const funcp = util::makeTopFunction(netlistp, "_eval_settle", true);
 
     // Clone, because ordering is destructive, but we still need them for "_eval"
@@ -661,7 +780,7 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
 
     // Nothing to do if there is no logic.
     // While this is rare in real designs, it reduces noise in small tests.
-    if (comb.empty() && hybrid.empty()) return;
+    if (comb.empty() && hybrid.empty()) return nullptr;
 
     // We have an extra trigger denoting this is the first iteration of the settle loop
     TriggerKit::ExtraTriggers extraTriggers;
@@ -692,6 +811,11 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
         netlistp, {&comb, &hybrid}, trigToSen, "stl", false, true,
         [=](const AstVarScope*, std::vector<AstSenTree*>& out) { out.push_back(inputChanged); });
     util::splitCheck(stlFuncp);
+    AstCFunc* const stlRefreshFuncp
+        = v3Global.opt.subgraphSchedule()
+              ? cloneUnguardedFuncBody(stlFuncp, netlistp->topScopep()->scopep(),
+                                       "_refresh__subgraph", true)
+              : nullptr;
 
     // Create the eval loop
     const EvalLoop stlLoop = createEvalLoop(  //
@@ -715,6 +839,7 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
 
     // Add the eval loop to the top function
     funcp->addStmtsp(stlLoop.stmtsp);
+    return stlRefreshFuncp;
 }
 
 //============================================================================
@@ -900,6 +1025,7 @@ struct EvalKit final {
 
 void createEval(AstNetlist* netlistp,  //
                 AstNode* icoLoop,  //
+                AstCFunc* settleRefreshFuncp,  //
                 const TriggerKit& trigKit,  //
                 const EvalKit& actKit,  //
                 const EvalKit& nbaKit,  //
@@ -1023,6 +1149,9 @@ void createEval(AstNetlist* netlistp,  //
             }
             // Invoke the 'nba' function
             workp = AstNode::addNext(workp, util::callVoidFunc(nbaKit.m_funcp));
+            if (settleRefreshFuncp) {
+                workp = AstNode::addNext(workp, util::callVoidFunc(settleRefreshFuncp));
+            }
             // Clear the 'nba' triggers
             workp = AstNode::addNext(workp, trigKit.newClearCall(nbaKit.m_vscp));
             //
@@ -1211,7 +1340,8 @@ void schedule(AstNetlist* netlistp) {
     SenExprBuilder senExprBuilder{scopeTopp};
 
     // Step 4: Create 'settle' region that restores the combinational invariant
-    createSettle(netlistp, staticp, senExprBuilder, logicClasses);
+    AstCFunc* const settleRefreshFuncp
+        = createSettle(netlistp, staticp, senExprBuilder, logicClasses);
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-settle");
 
     // Step 5: Partition the clocked and combinational (including hybrid) logic into pre/act/nba.
@@ -1403,8 +1533,8 @@ void schedule(AstNetlist* netlistp) {
     auto* const postponedFuncp = createPostponed(netlistp, logicClasses);
 
     // Step 14: Bolt it all together to create the '_eval' function
-    createEval(netlistp, icoLoopp, trigKit, actKit, nbaKit, obsKit, reactKit, postponedFuncp,
-               timingKit);
+    createEval(netlistp, icoLoopp, settleRefreshFuncp, trigKit, actKit, nbaKit, obsKit, reactKit,
+               postponedFuncp, timingKit);
 
     // Step 15: Add neccessary evaluation before awaits
     if (AstCCall* const readyp = timingKit.createReady(netlistp)) {
