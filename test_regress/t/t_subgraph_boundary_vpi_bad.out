@@ -1,0 +1,5 @@
+%Error: t/t_subgraph_boundary_vpi_bad.v:17:8: Subgraph boundary module 'bad_vpi' is unsupported with --vpi
+   17 | module bad_vpi (
+      |        ^~~~~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to
