@@ -656,6 +656,106 @@ class SubgraphConstraintVisitor final {
         std::unordered_set<string> m_safeNames;
     };
 
+    class ExternalHierAccessVisitor final : public VNVisitor {
+        SubgraphConstraintVisitor& m_parent;
+        AstNodeModule* const m_boundaryModp;
+        AstNodeModule* m_modp = nullptr;
+        bool m_reported = false;
+
+        static AstScope* boundaryScope(AstScope* scopep) {
+            for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+                if (scanp->modp()->subgraphBoundary()) return scanp;
+            }
+            return nullptr;
+        }
+        static std::vector<string> dottedComponents(string dotted) {
+            std::vector<string> components;
+            size_t pos = 0;
+            while (true) {
+                const size_t dotPos = dotted.find("__DOT__", pos);
+                const size_t plainPos = dotted.find('.', pos);
+                size_t nextPos = string::npos;
+                size_t step = 0;
+                if (dotPos == string::npos) {
+                    nextPos = plainPos;
+                    step = 1;
+                } else if (plainPos == string::npos || dotPos < plainPos) {
+                    nextPos = dotPos;
+                    step = 7;
+                } else {
+                    nextPos = plainPos;
+                    step = 1;
+                }
+                components.push_back(dotted.substr(pos, nextPos - pos));
+                if (nextPos == string::npos) break;
+                pos = nextPos + step;
+            }
+            return components;
+        }
+        AstNodeModule* boundaryModuleFromDotted(const string& dotted) const {
+            if (!m_modp) return nullptr;
+            AstNodeModule* modp = m_modp;
+            const std::vector<string> components = dottedComponents(dotted);
+            for (const string& component : components) {
+                if (component.empty()) continue;
+                if (component == modp->name() || component == modp->prettyName()) continue;
+                AstCell* cellp = nullptr;
+                for (AstCell* const scanp : m_parent.info(modp).m_cellps) {
+                    if (scanp->name() == component) {
+                        cellp = scanp;
+                        break;
+                    }
+                }
+                if (!cellp) return nullptr;
+                modp = cellp->modp();
+                if (modp->subgraphBoundary()) return modp;
+            }
+            return nullptr;
+        }
+
+        void visit(AstNodeModule* nodep) override {
+            if (m_reported) return;
+            VL_RESTORER(m_modp);
+            m_modp = nodep;
+            iterateChildren(nodep);
+        }
+        void visit(AstVarXRef* nodep) override {
+            if (m_reported || !m_modp) return;
+            AstNodeModule* const boundaryModp = boundaryModuleFromDotted(nodep->dotted());
+            if (boundaryModp != m_boundaryModp) return;
+            nodep->v3error("Subgraph boundary module '"
+                           << m_boundaryModp->prettyName() << "' variable '"
+                           << nodep->varp()->prettyName()
+                           << "' is accessed hierarchically from outside the subgraph");
+            m_reported = true;
+        }
+        void visit(AstNodeVarRef* nodep) override {
+            if (m_reported || !m_modp || !nodep->varScopep()) return;
+            AstScope* const boundaryp = boundaryScope(nodep->varScopep()->scopep());
+            if (!boundaryp || boundaryp->modp() != m_boundaryModp || m_modp == m_boundaryModp) {
+                return;
+            }
+            nodep->v3error("Subgraph boundary module '"
+                           << m_boundaryModp->prettyName() << "' variable '"
+                           << nodep->varp()->prettyName()
+                           << "' is accessed hierarchically from outside the subgraph");
+            m_reported = true;
+        }
+        void visit(AstNode* nodep) override {
+            if (m_reported) return;
+            iterateChildren(nodep);
+        }
+
+    public:
+        explicit ExternalHierAccessVisitor(SubgraphConstraintVisitor& parent, AstNetlist* rootp,
+                                           AstNodeModule* boundaryModp)
+            : m_parent{parent}
+            , m_boundaryModp{boundaryModp} {
+            iterate(rootp);
+        }
+        ~ExternalHierAccessVisitor() override = default;
+    };
+
     AstNetlist* const m_rootp;
     std::unordered_map<AstNodeModule*, ModuleInfo> m_infos;
 
@@ -769,6 +869,61 @@ class SubgraphConstraintVisitor final {
         }
     }
 
+    void checkDpiUsage(AstNodeModule* modp) {
+        bool reported = false;
+        modp->foreach([&](AstNodeFTask* nodep) {
+            if (reported) return;
+            if (!nodep->dpiImport() && !nodep->dpiExport()) return;
+            nodep->v3error("Subgraph boundary module '" << modp->prettyName()
+                                                        << "' uses DPI-C function/task '"
+                                                        << nodep->prettyName() << "'");
+            reported = true;
+        });
+        modp->foreach([&](AstNodeFTaskRef* nodep) {
+            if (reported) return;
+            AstNodeFTask* const taskp = nodep->taskp();
+            if (!taskp || (!taskp->dpiImport() && !taskp->dpiExport())) return;
+            nodep->v3error("Subgraph boundary module '" << modp->prettyName()
+                                                        << "' uses DPI-C function/task '"
+                                                        << taskp->prettyName() << "'");
+            reported = true;
+        });
+    }
+
+    void checkExternalHierarchicalAccess(AstNodeModule* modp) {
+        ExternalHierAccessVisitor{*this, m_rootp, modp};
+    }
+
+    void checkTimingUsage(AstNodeModule* modp) {
+        if (!v3Global.opt.timing()) return;
+
+        bool reported = false;
+        modp->foreach([&](AstNodeAssign* nodep) {
+            if (reported || !nodep->timingControlp()) return;
+            nodep->timingControlp()->v3error("Subgraph boundary module '"
+                                             << modp->prettyName()
+                                             << "' uses timing control or dynamic event logic");
+            reported = true;
+        });
+        modp->foreach([&](AstNode* nodep) {
+            if (reported) return;
+            if (!VN_IS(nodep, Delay) && !VN_IS(nodep, EventControl) && !VN_IS(nodep, FireEvent)
+                && !VN_IS(nodep, Wait) && !VN_IS(nodep, WaitFork) && !VN_IS(nodep, CAwait)) {
+                return;
+            }
+            nodep->v3error("Subgraph boundary module '"
+                           << modp->prettyName()
+                           << "' uses timing control or dynamic event logic");
+            reported = true;
+        });
+    }
+
+    void checkVpiUsage(AstNodeModule* modp) {
+        if (!v3Global.opt.vpi()) return;
+        modp->v3error("Subgraph boundary module '" << modp->prettyName()
+                                                   << "' is unsupported with --vpi");
+    }
+
     const ModuleInfo& info(AstNodeModule* modp) {
         ModuleInfo& inf = m_infos[modp];
         if (inf.m_done || inf.m_busy) return inf;
@@ -812,8 +967,12 @@ class SubgraphConstraintVisitor final {
     void validate(AstNodeModule* modp) {
         if (!modp->subgraphBoundary()) return;
 
+        checkDpiUsage(modp);
+        checkExternalHierarchicalAccess(modp);
         std::unordered_set<AstNodeModule*> seen;
         checkNested(modp, modp, seen);
+        checkTimingUsage(modp);
+        checkVpiUsage(modp);
 
         const ModuleInfo& inf = info(modp);
         for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
