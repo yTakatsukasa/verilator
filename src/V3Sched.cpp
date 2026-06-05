@@ -676,6 +676,19 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         }
         return clonep;
     };
+    const auto tailNeedsNbaClone = [&](AstCFunc* tailFuncp, AstScope* boundaryScopep) {
+        bool needClone = false;
+        tailFuncp->foreach([&](AstVarRef* refp) {
+            if (needClone || refp->access() != VAccess::READ) return;
+            AstVarScope* const sourceVscp = refp->varScopep();
+            AstScope* const sourceScopep = sourceVscp->scopep();
+            const bool boundaryInput = sourceScopep == boundaryScopep && sourceVscp->varp()->isIO()
+                                       && sourceVscp->varp()->direction().isNonOutput();
+            const bool externalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
+            if (boundaryInput || externalRead) needClone = true;
+        });
+        return needClone;
+    };
     const auto computeDomainShape = [&](const LogicByScope& logic, AstScope* boundaryScopep) {
         std::vector<uintptr_t> result;
         logic.foreachLogic([&](AstNode* logicp) {
@@ -1008,17 +1021,20 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             }
             disableLifePostForExternalReads(group.m_lateLogic, group.m_scopep);
             const std::vector<AstCFunc*>* tailFuncps = nullptr;
-            std::vector<AstCFunc*> nbaTailFuncps;
+            std::vector<AstCFunc*> activeTailFuncps;
             if (tag != "stl" && tag != "ico") {
                 const auto it = s_stlSubgraphFuncs.find(group.m_scopep);
                 if (it != s_stlSubgraphFuncs.end()) {
                     if (snapshotCrossBoundaryReads) {
-                        nbaTailFuncps.reserve(it->second.size());
+                        activeTailFuncps.reserve(it->second.size());
                         for (AstCFunc* const tailFuncp : it->second) {
-                            nbaTailFuncps.push_back(cloneTailFuncForNba(
-                                tailFuncp, group.m_scopep, group.m_ownerp, group.m_senTreep));
+                            activeTailFuncps.push_back(
+                                tailNeedsNbaClone(tailFuncp, group.m_scopep)
+                                    ? cloneTailFuncForNba(tailFuncp, group.m_scopep,
+                                                          group.m_ownerp, group.m_senTreep)
+                                    : tailFuncp);
                         }
-                        tailFuncps = &nbaTailFuncps;
+                        tailFuncps = &activeTailFuncps;
                     } else {
                         tailFuncps = &it->second;
                     }
