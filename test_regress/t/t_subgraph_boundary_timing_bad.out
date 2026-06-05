@@ -1,0 +1,8 @@
+%Error: t/t_subgraph_boundary_timing_bad.v:26:32: Subgraph boundary module 'bad_timing_delay' uses timing control or dynamic event logic
+   26 |   always @(posedge clk) out <= #1 in;
+      |                                ^
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_subgraph_boundary_timing_bad.v:41:25: Subgraph boundary module 'bad_timing_event' uses timing control or dynamic event logic
+   41 |   always @(posedge clk) -> e;
+      |                         ^~
+%Error: Exiting due to

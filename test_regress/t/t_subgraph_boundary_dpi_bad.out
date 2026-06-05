@@ -1,0 +1,5 @@
+%Error: t/t_subgraph_boundary_dpi_bad.v:26:33: Subgraph boundary module 'bad_dpi' uses DPI-C function/task 'dpi_add1'
+   26 |   always_ff @(posedge clk) q <= dpi_add1(q);
+      |                                 ^~~~~~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to
