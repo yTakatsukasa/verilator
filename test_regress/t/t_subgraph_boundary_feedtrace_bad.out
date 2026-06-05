@@ -1,0 +1,4 @@
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:20:16: Subgraph boundary module 'bad_concat_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+   20 |   output logic out
+      |                ^~~
+%Error: Exiting due to
