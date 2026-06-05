@@ -26,6 +26,7 @@
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
 
+#include <unordered_map>
 #include <unordered_set>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -79,6 +80,12 @@ class OrderGraphBuilder final : public VNVisitor {
     // TYPES
     enum VarUsage : uint8_t { VU_CON = 0x1, VU_GEN = 0x2 };
     using VarVertexType = OrderUser::VarVertexType;
+    struct SubgraphCallUsage final {
+        AstVarScope* m_varscp = nullptr;
+        bool m_read = false;
+        bool m_write = false;
+    };
+    using SubgraphCallUsageCache = std::unordered_map<AstCFunc*, std::vector<SubgraphCallUsage>>;
 
     // NODE STATE
     //  AstVarScope::user1    -> OrderUser instance for variable (via m_orderUser)
@@ -115,6 +122,7 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_isSubgraphWrapperLogic = false;  // Procedure wraps a subgraph eval call
     V3Sched::util::VarScopeSet m_externallyConsumedSubgraphVars;
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
+    SubgraphCallUsageCache m_subgraphCallUsageCache;
     V3Sched::util::VarScopeSet m_subgraphDerivedExternalVars;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
 
@@ -468,56 +476,68 @@ class OrderGraphBuilder final : public VNVisitor {
                 addVarUsage(vscp, false, true, nodep, true);
             }
         }
+        for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
+            AstVarScope* const vscp = use.m_varscp;
+            const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
+            const bool exportedInternalVar = m_externallyConsumedSubgraphVars.count(vscp);
+            const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
+            if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar
+                && !exportedInternalVar) {
+                continue;
+            }
+            AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
+            if (hideClockedBoundaryContract && (internalOrderVar || exportedInternalVar)) continue;
+            if (hideClockedBoundaryContract && sourceBoundaryp == scopep
+                && vscp->scopep() == scopep && vscp->varp()->isIO()
+                && vscp->varp()->direction().isNonOutput()) {
+                continue;
+            }
+            if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
+                continue;
+            }
+            if (internalOrderVar) {
+                addVarUsage(vscp, use.m_read, use.m_write, nodep);
+            } else if (m_inPre && exportedInternalVar) {
+                continue;
+            } else if ((sourceBoundaryp && sourceBoundaryp != scopep)
+                       || m_subgraphDerivedExternalVars.count(vscp)) {
+                const bool coarseRead = use.m_read;
+                const bool coarseWrite = publishBoundaryWrites && use.m_write;
+                if (coarseRead || coarseWrite) {
+                    addCoarseVarUsage(vscp, coarseRead, coarseWrite, nodep);
+                }
+            } else {
+                addVarUsage(vscp, use.m_read, use.m_write, nodep, false, use.m_read);
+            }
+        }
+    }
 
+    const std::vector<SubgraphCallUsage>& getSubgraphCallUsage(AstCFunc* funcp) {
+        const auto it = m_subgraphCallUsageCache.find(funcp);
+        if (it != m_subgraphCallUsageCache.end()) return it->second;
+
+        std::vector<SubgraphCallUsage> uses;
+        std::unordered_map<AstVarScope*, size_t> useIndices;
         std::unordered_set<AstCFunc*> seen;
-        std::function<void(AstCFunc*)> addCalleeUsage = [&](AstCFunc* scanFuncp) {
+        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
             if (!seen.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
-                const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
-                const bool exportedInternalVar = m_externallyConsumedSubgraphVars.count(vscp);
-                const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
-                if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar
-                    && !exportedInternalVar) {
-                    return;
-                }
-                AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
-                if (hideClockedBoundaryContract && (internalOrderVar || exportedInternalVar)) {
-                    return;
-                }
-                if (hideClockedBoundaryContract && sourceBoundaryp == scopep
-                    && vscp->scopep() == scopep && vscp->varp()->isIO()
-                    && vscp->varp()->direction().isNonOutput()) {
-                    return;
-                }
-                if (hideClockedBoundaryContract && externalToSubgraph
-                    && refp->access().isReadOrRW() && !refp->access().isWriteOrRW()) {
-                    return;
-                }
-                if (internalOrderVar) {
-                    addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(),
-                                nodep);
-                } else if (m_inPre && exportedInternalVar) {
-                    return;
-                } else if ((sourceBoundaryp && sourceBoundaryp != scopep)
-                           || m_subgraphDerivedExternalVars.count(vscp)) {
-                    const bool coarseRead = refp->access().isReadOrRW();
-                    const bool coarseWrite = publishBoundaryWrites && refp->access().isWriteOrRW();
-                    if (coarseRead || coarseWrite) {
-                        addCoarseVarUsage(vscp, coarseRead, coarseWrite, nodep);
-                    }
-                } else {
-                    addVarUsage(vscp, refp->access().isReadOrRW(), refp->access().isWriteOrRW(),
-                                nodep, false, refp->access().isReadOrRW());
-                }
+                const auto pair = useIndices.emplace(vscp, uses.size());
+                if (pair.second) uses.push_back(SubgraphCallUsage{vscp, false, false});
+                SubgraphCallUsage& use = uses[pair.first->second];
+                use.m_read |= refp->access().isReadOrRW();
+                use.m_write |= refp->access().isWriteOrRW();
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
                 if (calledFuncp->entryPoint()) return;
-                addCalleeUsage(calledFuncp);
+                gather(calledFuncp);
             });
         };
-        addCalleeUsage(funcp);
+        gather(funcp);
+
+        return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
     }
 
     bool shouldGroupSubgraphWrapperActive(AstActive* nodep) const {
