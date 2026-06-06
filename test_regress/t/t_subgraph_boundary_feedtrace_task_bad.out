@@ -1,0 +1,10 @@
+%Error: t/t_subgraph_boundary_feedtrace_task_bad.v:24:16: Subgraph boundary module 'bad_task_positional_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                             : ... note: In instance 't.i_bad_positional'
+   24 |   output logic out
+      |                ^~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_subgraph_boundary_feedtrace_task_bad.v:44:16: Subgraph boundary module 'bad_task_named_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                        : ... note: In instance 't.i_bad_named'
+   44 |   output logic out
+      |                ^~~
+%Error: Exiting due to

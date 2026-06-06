@@ -1,14 +1,30 @@
-%Error: t/t_subgraph_boundary_feedtrace_bad.v:28:16: Subgraph boundary module 'bad_concat_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:45:16: Subgraph boundary module 'bad_concat_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
                                                    : ... note: In instance 't.i_bad_concat'
-   28 |   output logic out
+   45 |   output logic out
       |                ^~~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
-%Error: t/t_subgraph_boundary_feedtrace_bad.v:53:16: Subgraph boundary module 'bad_func_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:70:16: Subgraph boundary module 'bad_func_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
                                                    : ... note: In instance 't.i_bad_func'
-   53 |   output logic out
-      |                ^~~
-%Error: t/t_subgraph_boundary_feedtrace_bad.v:70:16: Subgraph boundary module 'bad_func_cond_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
-                                                   : ... note: In instance 't.i_bad_func_cond'
    70 |   output logic out
+      |                ^~~
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:87:16: Subgraph boundary module 'bad_func_arg_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                   : ... note: In instance 't.i_bad_func_arg'
+   87 |   output logic out
+      |                ^~~
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:104:16: Subgraph boundary module 'bad_func_cond_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                    : ... note: In instance 't.i_bad_func_cond'
+  104 |   output logic out
+      |                ^~~
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:121:16: Subgraph boundary module 'bad_func_named_arg_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                    : ... note: In instance 't.i_bad_func_named_arg'
+  121 |   output logic out
+      |                ^~~
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:138:16: Subgraph boundary module 'bad_child_direct_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                    : ... note: In instance 't.i_bad_child_direct'
+  138 |   output logic out
+      |                ^~~
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:161:16: Subgraph boundary module 'bad_grandchild_direct_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                    : ... note: In instance 't.i_bad_grandchild_direct'
+  161 |   output logic out
       |                ^~~
 %Error: Exiting due to
