@@ -908,6 +908,10 @@ class SubgraphConstraintVisitor final {
             collectLhsNames(selp->fromp(), requireWrite, names);
             return;
         }
+        if (AstSelBit* const selbitp = VN_CAST(nodep, SelBit)) {
+            collectLhsNames(selbitp->fromp(), requireWrite, names);
+            return;
+        }
     }
 
     static DrivenNames lhsNames(AstNodeExpr* nodep, bool requireWrite) {
