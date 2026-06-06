@@ -867,6 +867,13 @@ class SubgraphConstraintVisitor final {
                 ++positional;
             }
         }
+        for (AstVar* const formalp : finfo.m_formalp) {
+            if (!formalp->isInput() || formalp->isWritable()) continue;
+            if (bindings.count(formalp->name())) continue;
+            if (AstNodeExpr* const defaultp = VN_CAST(formalp->valuep(), NodeExpr)) {
+                bindings[formalp->name()] = defaultp;
+            }
+        }
         return bindings;
     }
 
