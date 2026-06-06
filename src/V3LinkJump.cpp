@@ -1064,17 +1064,18 @@ class SubgraphConstraintVisitor final {
     }
 
     void collectExprInputs(AstNodeModule* modp, AstNodeExpr* exprp, std::set<string>& inputs,
-                           TraceSeen& seen, AstNodeFTask* taskp = nullptr,
+                           std::set<string>& nonstates, TraceSeen& seen,
+                           AstNodeFTask* taskp = nullptr,
                            const ArgBindings* argBindingsp = nullptr,
                            FunctionNameSeen* funcSeenp = nullptr) {
         if (AstVarRef* const refp = VN_CAST(exprp, VarRef)) {
             if (!refp->access().isReadOrRW()) return;
             if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
                 FunctionNameSeen localSeen;
-                collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, seen,
+                collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, nonstates, seen,
                                       argBindingsp, funcSeenp ? *funcSeenp : localSeen);
             } else {
-                collectNameInputs(modp, refp->varp()->name(), inputs, seen);
+                collectNameInputs(modp, refp->varp()->name(), inputs, nonstates, seen);
             }
             return;
         }
@@ -1082,10 +1083,10 @@ class SubgraphConstraintVisitor final {
             if (!refp->access().isReadOrRW()) return;
             if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
                 FunctionNameSeen localSeen;
-                collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, seen,
+                collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, nonstates, seen,
                                       argBindingsp, funcSeenp ? *funcSeenp : localSeen);
             } else {
-                collectNameInputs(modp, refp->varp()->name(), inputs, seen);
+                collectNameInputs(modp, refp->varp()->name(), inputs, nonstates, seen);
             }
         });
         exprp->foreach([&](AstNodeFTaskRef* refp) {
@@ -1094,8 +1095,8 @@ class SubgraphConstraintVisitor final {
             const FunctionInfo& finfo = functionInfo(calledTaskp);
             const ArgBindings bindings = bindActualArgs(refp, finfo);
             FunctionNameSeen localSeen;
-            collectFuncNameInputs(modp, calledTaskp, calledTaskp->name(), inputs, seen, &bindings,
-                                  funcSeenp ? *funcSeenp : localSeen);
+            collectFuncNameInputs(modp, calledTaskp, calledTaskp->name(), inputs, nonstates, seen,
+                                  &bindings, funcSeenp ? *funcSeenp : localSeen);
         });
     }
 
@@ -1127,34 +1128,36 @@ class SubgraphConstraintVisitor final {
     }
 
     void collectFuncNameInputs(AstNodeModule* modp, AstNodeFTask* taskp, const string& name,
-                               std::set<string>& inputs, TraceSeen& seen,
-                               const ArgBindings* argBindingsp, FunctionNameSeen& funcSeen) {
+                               std::set<string>& inputs, std::set<string>& nonstates,
+                               TraceSeen& seen, const ArgBindings* argBindingsp,
+                               FunctionNameSeen& funcSeen) {
         if (!funcSeen.emplace(taskp, name).second) return;
 
         if (argBindingsp) {
             const auto argIt = argBindingsp->find(name);
             const FunctionInfo& finfo = functionInfo(taskp);
             if (formalUsesBinding(finfo, name) && argIt != argBindingsp->end() && argIt->second) {
-                collectExprInputs(modp, argIt->second, inputs, seen, taskp, argBindingsp,
-                                  &funcSeen);
+                collectExprInputs(modp, argIt->second, inputs, nonstates, seen, taskp,
+                                  argBindingsp, &funcSeen);
                 return;
             }
         }
 
         const FunctionInfo& finfo = functionInfo(taskp);
         if (!finfo.m_localNames.count(name)) {
-            collectNameInputs(modp, name, inputs, seen);
+            collectNameInputs(modp, name, inputs, nonstates, seen);
             return;
         }
 
         for (const auto& pair : finfo.m_assignments) {
             if (pair.first != name) continue;
-            collectExprInputs(modp, pair.second, inputs, seen, taskp, argBindingsp, &funcSeen);
+            collectExprInputs(modp, pair.second, inputs, nonstates, seen, taskp, argBindingsp,
+                              &funcSeen);
         }
     }
 
     void collectNameInputs(AstNodeModule* modp, const string& name, std::set<string>& inputs,
-                           TraceSeen& seen) {
+                           std::set<string>& nonstates, TraceSeen& seen) {
         if (!seen.emplace(modp, name).second) return;
 
         const ModuleInfo& inf = info(modp);
@@ -1164,8 +1167,11 @@ class SubgraphConstraintVisitor final {
         }
         if (inf.m_safeNames.count(name)) return;
 
+        const size_t inputsBefore = inputs.size();
+        const size_t nonstatesBefore = nonstates.size();
+
         for (const auto& pair : inf.m_assignments) {
-            if (pair.first == name) collectExprInputs(modp, pair.second, inputs, seen);
+            if (pair.first == name) collectExprInputs(modp, pair.second, inputs, nonstates, seen);
         }
 
         for (AstNodeFTaskRef* const refp : inf.m_taskRefps) {
@@ -1179,8 +1185,8 @@ class SubgraphConstraintVisitor final {
                 if (itBinding == bindings.end() || !itBinding->second) continue;
                 if (!lhsNames(itBinding->second, false).count(name)) continue;
                 FunctionNameSeen funcSeen;
-                collectFuncNameInputs(modp, taskp, formalp->name(), inputs, seen, &bindings,
-                                      funcSeen);
+                collectFuncNameInputs(modp, taskp, formalp->name(), inputs, nonstates, seen,
+                                      &bindings, funcSeen);
             }
         }
 
@@ -1192,33 +1198,61 @@ class SubgraphConstraintVisitor final {
                 if (!lhsNames(exprp, false).count(name)) continue;
 
                 std::set<string> childInputs;
+                std::set<string> childNonstates;
                 TraceSeen childSeen;
-                collectNameInputs(cellp->modp(), portp->name(), childInputs, childSeen);
+                collectNameInputs(cellp->modp(), portp->name(), childInputs, childNonstates,
+                                  childSeen);
                 for (const string& childInput : childInputs) {
                     for (AstPin* inputPinp = cellp->pinsp(); inputPinp;
                          inputPinp = VN_AS(inputPinp->nextp(), Pin)) {
                         AstVar* const inputPortp = inputPinp->modVarp();
                         AstNodeExpr* const inputExprp = VN_CAST(inputPinp->exprp(), NodeExpr);
                         if (inputPortp && inputExprp && inputPortp->name() == childInput) {
-                            collectExprInputs(modp, inputExprp, inputs, seen);
+                            collectExprInputs(modp, inputExprp, inputs, nonstates, seen);
                         }
                     }
                 }
+                for (const string& childNonstate : childNonstates) {
+                    nonstates.insert(cellp->name() + "." + childNonstate);
+                }
             }
+        }
+
+        if (inputs.size() == inputsBefore && nonstates.size() == nonstatesBefore) {
+            nonstates.insert(name);
         }
     }
 
     string feedthroughSourceText(AstNodeModule* modp, const string& name) {
         std::set<string> inputs;
+        std::set<string> nonstates;
         TraceSeen seen;
-        collectNameInputs(modp, name, inputs, seen);
-        if (inputs.empty()) return "non-state logic";
+        collectNameInputs(modp, name, inputs, nonstates, seen);
+        if (inputs.empty() && nonstates.empty()) return "non-state logic";
 
         std::ostringstream os;
-        os << "input port(s): ";
+        if (!inputs.empty()) {
+            os << "input port(s): ";
+            const char* sep = "";
+            for (const string& input : inputs) {
+                os << sep << "'" << input << "'";
+                sep = ", ";
+            }
+            if (nonstates.empty()) return os.str();
+            os << " (non-state node(s): ";
+            const char* nodeSep = "";
+            for (const string& nonstate : nonstates) {
+                os << nodeSep << "'" << nonstate << "'";
+                nodeSep = ", ";
+            }
+            os << ")";
+            return os.str();
+        }
+
+        os << "non-state node(s): ";
         const char* sep = "";
-        for (const string& input : inputs) {
-            os << sep << "'" << input << "'";
+        for (const string& nonstate : nonstates) {
+            os << sep << "'" << nonstate << "'";
             sep = ", ";
         }
         return os.str();
