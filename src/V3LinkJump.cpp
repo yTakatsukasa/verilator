@@ -613,6 +613,7 @@ public:
 
 class SubgraphConstraintVisitor final {
     using Assignments = std::vector<std::pair<string, AstNodeExpr*>>;
+    using DrivenNames = std::set<string>;
     using TraceSeen = std::set<std::pair<AstNodeModule*, string>>;
 
     class ModuleScanVisitor final : public VNVisitorConst {
@@ -623,12 +624,12 @@ class SubgraphConstraintVisitor final {
 
         // METHODS
         void addAssignment(AstNodeExpr* lhsp, AstNodeExpr* rhsp) {
-            const string name = lhsName(lhsp, true);
-            if (!name.empty()) m_assignments.emplace_back(name, rhsp);
+            const DrivenNames names = lhsNames(lhsp, true);
+            for (const string& name : names) m_assignments.emplace_back(name, rhsp);
         }
         void addSafeLhs(AstNodeExpr* lhsp) {
-            const string name = lhsName(lhsp, true);
-            if (!name.empty()) m_safeNames.insert(name);
+            const DrivenNames names = lhsNames(lhsp, true);
+            for (const string& name : names) m_safeNames.insert(name);
         }
 
         // VISITORS
@@ -774,17 +775,43 @@ class SubgraphConstraintVisitor final {
         return safe;
     }
 
-    static string lhsName(AstNodeExpr* nodep, bool requireWrite) {
+    static void collectLhsNames(AstNode* nodep, bool requireWrite, DrivenNames& names) {
         if (AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
-            if (!requireWrite || refp->access().isWriteOrRW()) return refp->varp()->name();
+            if (!requireWrite || refp->access().isWriteOrRW()) names.insert(refp->varp()->name());
+            return;
         }
-        string name;
-        nodep->foreach([&](AstVarRef* refp) {  //
-            if (name.empty() && (!requireWrite || refp->access().isWriteOrRW())) {
-                name = refp->varp()->name();
-            }
-        });
-        return name;
+        if (AstArraySel* const selp = VN_CAST(nodep, ArraySel)) {
+            collectLhsNames(selp->fromp(), requireWrite, names);
+            return;
+        }
+        if (AstConcat* const concatp = VN_CAST(nodep, Concat)) {
+            collectLhsNames(concatp->lhsp(), requireWrite, names);
+            collectLhsNames(concatp->rhsp(), requireWrite, names);
+            return;
+        }
+        if (AstConcatN* const concatp = VN_CAST(nodep, ConcatN)) {
+            collectLhsNames(concatp->lhsp(), requireWrite, names);
+            collectLhsNames(concatp->rhsp(), requireWrite, names);
+            return;
+        }
+        if (AstMemberSel* const memberselp = VN_CAST(nodep, MemberSel)) {
+            collectLhsNames(memberselp->fromp(), requireWrite, names);
+            return;
+        }
+        if (AstReplicate* const replicatep = VN_CAST(nodep, Replicate)) {
+            collectLhsNames(replicatep->srcp(), requireWrite, names);
+            return;
+        }
+        if (AstSel* const selp = VN_CAST(nodep, Sel)) {
+            collectLhsNames(selp->fromp(), requireWrite, names);
+            return;
+        }
+    }
+
+    static DrivenNames lhsNames(AstNodeExpr* nodep, bool requireWrite) {
+        DrivenNames names;
+        collectLhsNames(nodep, requireWrite, names);
+        return names;
     }
 
     void collectExprInputs(AstNodeModule* modp, AstNodeExpr* exprp, std::set<string>& inputs,
@@ -820,7 +847,7 @@ class SubgraphConstraintVisitor final {
                 AstVar* const portp = pinp->modVarp();
                 AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
                 if (!portp || !exprp || !portp->isWritable()) continue;
-                if (lhsName(exprp, false) != name) continue;
+                if (!lhsNames(exprp, false).count(name)) continue;
 
                 std::set<string> childInputs;
                 TraceSeen childSeen;
@@ -948,8 +975,10 @@ class SubgraphConstraintVisitor final {
                     AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
                     if (!portp || !exprp || !portp->isWritable()) continue;
                     if (!childInfo.m_safeNames.count(portp->name())) continue;
-                    const string name = lhsName(exprp, false);
-                    if (!name.empty() && inf.m_safeNames.insert(name).second) changed = true;
+                    const DrivenNames names = lhsNames(exprp, false);
+                    for (const string& name : names) {
+                        if (inf.m_safeNames.insert(name).second) changed = true;
+                    }
                 }
             }
             for (const auto& pair : inf.m_assignments) {
@@ -1008,9 +1037,12 @@ public:
 
 void V3LinkJump::linkJump(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
-    {
-        LinkJumpVisitor{nodep};
-        if (v3Global.opt.subgraphSchedule()) SubgraphConstraintVisitor{nodep};
-    }  // Destruct before checking
+    LinkJumpVisitor{nodep};
     V3Global::dumpCheckGlobalTree("linkjump", 0, dumpTreeEitherLevel() >= 3);
+}
+
+void V3LinkJump::checkSubgraphs(AstNetlist* nodep) {
+    UINFO(2, __FUNCTION__ << ":");
+    if (v3Global.opt.subgraphSchedule()) SubgraphConstraintVisitor{nodep};
+    V3Global::dumpCheckGlobalTree("subgraphcheck", 0, dumpTreeEitherLevel() >= 3);
 }

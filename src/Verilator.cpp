@@ -184,6 +184,8 @@ static void process() {
         V3LinkDot::linkDotParamed(v3Global.rootp());  // Cleanup as made new modules
         V3Param::finalizeDeferredParams(v3Global.rootp());
         V3LinkLValue::linkLValue(v3Global.rootp());  // Resolve new VarRefs
+        V3LinkJump::checkSubgraphs(v3Global.rootp());
+        V3Error::abortIfErrors();
 
         // Link cleanup of 'with' as final link phase before V3Width
         // (called only once, not when width a single params)
