@@ -1,11 +1,14 @@
 %Error: t/t_subgraph_boundary_bad.v:28:22: Subgraph boundary module 'bad_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                         : ... note: In instance 't.i_feedthrough'
    28 |   output logic [7:0] out
       |                      ^~~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
 %Error: t/t_subgraph_boundary_bad.v:54:25: Subgraph boundary module 'bad_nested_grandparent' instantiates subgraph boundary module 'bad_nested_grandchild'
+                                         : ... note: In instance 't.i_grandchild.i_middle'
    54 |   bad_nested_grandchild i_grandchild (.clk(clk), .in(in), .out(out));
       |                         ^~~~~~~~~~~~
 %Error: t/t_subgraph_boundary_bad.v:74:20: Subgraph boundary module 'bad_nested_parent' instantiates subgraph boundary module 'bad_nested_child'
+                                         : ... note: In instance 't.i_nested'
    74 |   bad_nested_child i_child (.clk(clk), .in(in), .out(out));
       |                    ^~~~~~~
 %Error: Exiting due to

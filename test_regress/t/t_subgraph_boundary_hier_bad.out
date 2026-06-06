@@ -1,4 +1,5 @@
 %Error: t/t_subgraph_boundary_hier_bad.v:16:41: Subgraph boundary module 'bad_hier' variable 'q' is accessed hierarchically from outside the subgraph
+                                              : ... note: In instance 't'
    16 |   always_ff @(posedge clk) tap <= i_bad.q;
       |                                         ^
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
