@@ -26,6 +26,7 @@ class AstNetlist;
 
 class V3LinkJump final {
 public:
+    static void checkSubgraphs(AstNetlist* nodep) VL_MT_DISABLED;
     static void linkJump(AstNetlist* nodep) VL_MT_DISABLED;
 };
 
