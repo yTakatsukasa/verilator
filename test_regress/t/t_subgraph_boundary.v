@@ -21,15 +21,15 @@ module t (
 
   int cyc;
   logic [7:0] in;
-  logic [63:0] out0;
-  logic [63:0] out1;
-  logic [63:0] ref0;
-  logic [63:0] ref1;
+  logic [87:0] out0;
+  logic [87:0] out1;
+  logic [87:0] ref0;
+  logic [87:0] ref1;
 
-  sub i_sub0 (.clk(clk), .in(in), .out_child_comb(out0[63:56]), .out_child_direct(out0[55:48]), .out_func_default(out0[47:40]), .out_func_local_init(out0[39:32]), .out_func_return(out0[31:24]), .out_reg_child_comb(out0[23:16]), .out_reg_child_func(out0[15:8]), .out_reg_comb(out0[7:0]));
-  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out_child_comb(out1[63:56]), .out_child_direct(out1[55:48]), .out_func_default(out1[47:40]), .out_func_local_init(out1[39:32]), .out_func_return(out1[31:24]), .out_reg_child_comb(out1[23:16]), .out_reg_child_func(out1[15:8]), .out_reg_comb(out1[7:0]));
-  sub_ref i_ref0 (.clk(clk), .in(in), .out_child_comb(ref0[63:56]), .out_child_direct(ref0[55:48]), .out_func_default(ref0[47:40]), .out_func_local_init(ref0[39:32]), .out_func_return(ref0[31:24]), .out_reg_child_comb(ref0[23:16]), .out_reg_child_func(ref0[15:8]), .out_reg_comb(ref0[7:0]));
-  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out_child_comb(ref1[63:56]), .out_child_direct(ref1[55:48]), .out_func_default(ref1[47:40]), .out_func_local_init(ref1[39:32]), .out_func_return(ref1[31:24]), .out_reg_child_comb(ref1[23:16]), .out_reg_child_func(ref1[15:8]), .out_reg_comb(ref1[7:0]));
+  sub i_sub0 (.clk(clk), .in(in), .out_child_comb(out0[87:80]), .out_child_direct(out0[79:72]), .out_func_default(out0[71:64]), .out_func_local_init(out0[63:56]), .out_func_return(out0[55:48]), .out_gen_always_comb(out0[47:40]), .out_gen_assign(out0[39:32]), .out_gen_child(out0[31:24]), .out_reg_child_comb(out0[23:16]), .out_reg_child_func(out0[15:8]), .out_reg_comb(out0[7:0]));
+  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out_child_comb(out1[87:80]), .out_child_direct(out1[79:72]), .out_func_default(out1[71:64]), .out_func_local_init(out1[63:56]), .out_func_return(out1[55:48]), .out_gen_always_comb(out1[47:40]), .out_gen_assign(out1[39:32]), .out_gen_child(out1[31:24]), .out_reg_child_comb(out1[23:16]), .out_reg_child_func(out1[15:8]), .out_reg_comb(out1[7:0]));
+  sub_ref i_ref0 (.clk(clk), .in(in), .out_child_comb(ref0[87:80]), .out_child_direct(ref0[79:72]), .out_func_default(ref0[71:64]), .out_func_local_init(ref0[63:56]), .out_func_return(ref0[55:48]), .out_gen_always_comb(ref0[47:40]), .out_gen_assign(ref0[39:32]), .out_gen_child(ref0[31:24]), .out_reg_child_comb(ref0[23:16]), .out_reg_child_func(ref0[15:8]), .out_reg_comb(ref0[7:0]));
+  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out_child_comb(ref1[87:80]), .out_child_direct(ref1[79:72]), .out_func_default(ref1[71:64]), .out_func_local_init(ref1[63:56]), .out_func_return(ref1[55:48]), .out_gen_always_comb(ref1[47:40]), .out_gen_assign(ref1[39:32]), .out_gen_child(ref1[31:24]), .out_reg_child_comb(ref1[23:16]), .out_reg_child_func(ref1[15:8]), .out_reg_comb(ref1[7:0]));
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
@@ -59,12 +59,16 @@ module sub (
   output logic [7:0] out_func_default,
   output logic [7:0] out_func_local_init,
   output logic [7:0] out_func_return,
+  output logic [7:0] out_gen_always_comb,
+  output logic [7:0] out_gen_assign,
+  output logic [7:0] out_gen_child,
   output logic [7:0] out_reg_child_comb,
   output logic [7:0] out_reg_child_func,
   output logic [7:0] out_reg_comb
 ); `SUBGRAPH_BOUNDARY
 
   logic [7:0] child_comb_out;
+  logic [7:0] gen_child_out [2];
   logic [7:0] q;
   logic [7:0] q_child_in;
   logic [7:0] reg_child_out;
@@ -76,6 +80,18 @@ module sub (
   sub_leaf i_reg_child (.in(q_child_in), .out(reg_child_out));
   sub_leaf_func i_reg_child_func (.in(q_child_in), .out(reg_child_func_out));
   sub_leaf i_leaf (.in(in), .out(leaf_out));
+
+  for (genvar gi = 0; gi < 2; ++gi) begin : gen_child
+    sub_leaf_func i_leaf_gen (.in(q_child_in ^ (gi ? 8'hf0 : 8'h0f)), .out(gen_child_out[gi]));
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_assign
+    assign out_gen_assign[gi] = q[gi] ^ q[(gi + 3) % 8];
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_always
+    always_comb out_gen_always_comb[gi] = q[gi] ^ q[(gi + 5) % 8] ^ 1'b1;
+  end
 
   function automatic logic [7:0] rotmix(input logic [7:0] value);
     return {value[2:0], value[7:3]} ^ 8'h96;
@@ -96,6 +112,7 @@ module sub (
   assign out_func_default = add_bias(q);
   assign out_func_local_init = mix_local_init(q);
   assign out_func_return = rotmix(q);
+  assign out_gen_child = gen_child_out[0] ^ {gen_child_out[1][6:0], gen_child_out[1][7]};
   assign out_reg_child_comb = reg_child_out ^ 8'h42;
   assign out_reg_child_func = reg_child_func_out ^ 8'h24;
   assign out_reg_comb = {q[6:0], q[7]} ^ 8'h11;
@@ -110,12 +127,16 @@ module sub_ref (
   output logic [7:0] out_func_default,
   output logic [7:0] out_func_local_init,
   output logic [7:0] out_func_return,
+  output logic [7:0] out_gen_always_comb,
+  output logic [7:0] out_gen_assign,
+  output logic [7:0] out_gen_child,
   output logic [7:0] out_reg_child_comb,
   output logic [7:0] out_reg_child_func,
   output logic [7:0] out_reg_comb
 );
 
   logic [7:0] child_comb_out;
+  logic [7:0] gen_child_out [2];
   logic [7:0] q;
   logic [7:0] q_child_in;
   logic [7:0] reg_child_out;
@@ -127,6 +148,18 @@ module sub_ref (
   sub_leaf i_reg_child (.in(q_child_in), .out(reg_child_out));
   sub_leaf_func i_reg_child_func (.in(q_child_in), .out(reg_child_func_out));
   sub_leaf i_leaf (.in(in), .out(leaf_out));
+
+  for (genvar gi = 0; gi < 2; ++gi) begin : gen_child
+    sub_leaf_func i_leaf_gen (.in(q_child_in ^ (gi ? 8'hf0 : 8'h0f)), .out(gen_child_out[gi]));
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_assign
+    assign out_gen_assign[gi] = q[gi] ^ q[(gi + 3) % 8];
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_always
+    always_comb out_gen_always_comb[gi] = q[gi] ^ q[(gi + 5) % 8] ^ 1'b1;
+  end
 
   function automatic logic [7:0] rotmix(input logic [7:0] value);
     return {value[2:0], value[7:3]} ^ 8'h96;
@@ -147,6 +180,7 @@ module sub_ref (
   assign out_func_default = add_bias(q);
   assign out_func_local_init = mix_local_init(q);
   assign out_func_return = rotmix(q);
+  assign out_gen_child = gen_child_out[0] ^ {gen_child_out[1][6:0], gen_child_out[1][7]};
   assign out_reg_child_comb = reg_child_out ^ 8'h42;
   assign out_reg_child_func = reg_child_func_out ^ 8'h24;
   assign out_reg_comb = {q[6:0], q[7]} ^ 8'h11;
