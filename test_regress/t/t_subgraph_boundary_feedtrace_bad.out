@@ -1,6 +1,16 @@
-%Error: t/t_subgraph_boundary_feedtrace_bad.v:20:16: Subgraph boundary module 'bad_concat_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
-                                                   : ... note: In instance 't.i_bad'
-   20 |   output logic out
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:28:16: Subgraph boundary module 'bad_concat_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                   : ... note: In instance 't.i_bad_concat'
+   28 |   output logic out
+      |                ^~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:50:16: Subgraph boundary module 'bad_func_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                   : ... note: In instance 't.i_bad_func'
+   50 |   output logic out
+      |                ^~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_subgraph_boundary_feedtrace_bad.v:66:16: Subgraph boundary module 'bad_func_cond_feedthrough' output 'out' has a feedthrough path from input port(s): 'in'
+                                                   : ... note: In instance 't.i_bad_func_cond'
+   66 |   output logic out
       |                ^~~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
 %Error: Exiting due to
