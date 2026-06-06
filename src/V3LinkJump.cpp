@@ -616,6 +616,8 @@ class SubgraphConstraintVisitor final {
     using Assignments = std::vector<std::pair<string, AstNodeExpr*>>;
     using DrivenNames = std::set<string>;
     using FunctionNameSeen = std::set<std::pair<AstNodeFTask*, string>>;
+    using SafeContextCache = std::unordered_map<string, std::unordered_set<string>>;
+    using SafeInputNames = std::set<string>;
     using TraceSeen = std::set<std::pair<AstNodeModule*, string>>;
 
     class ModuleScanVisitor final : public VNVisitorConst {
@@ -623,6 +625,8 @@ class SubgraphConstraintVisitor final {
         Assignments& m_assignments;
         std::vector<AstCell*>& m_cellps;
         std::unordered_set<string>& m_safeNames;
+        std::vector<AstNodeFTaskRef*>& m_taskRefps;
+        int m_ftaskDepth = 0;
 
         // METHODS
         void addAssignment(AstNodeExpr* lhsp, AstNodeExpr* rhsp) {
@@ -639,14 +643,25 @@ class SubgraphConstraintVisitor final {
         void visit(AstAssignDly* nodep) override { addSafeLhs(nodep->lhsp()); }
         void visit(AstAssignW* nodep) override { addAssignment(nodep->lhsp(), nodep->rhsp()); }
         void visit(AstCell* nodep) override { m_cellps.push_back(nodep); }
+        void visit(AstNodeFTask* nodep) override {
+            ++m_ftaskDepth;
+            iterateChildrenConst(nodep);
+            --m_ftaskDepth;
+        }
+        void visit(AstNodeFTaskRef* nodep) override {
+            if (m_ftaskDepth == 0 && VN_IS(nodep, TaskRef)) m_taskRefps.push_back(nodep);
+            iterateChildrenConst(nodep);
+        }
         void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
 
     public:
         ModuleScanVisitor(AstNodeModule* modp, Assignments& assignments,
-                          std::vector<AstCell*>& cellps, std::unordered_set<string>& safeNames)
+                          std::vector<AstCell*>& cellps, std::unordered_set<string>& safeNames,
+                          std::vector<AstNodeFTaskRef*>& taskRefps)
             : m_assignments{assignments}
             , m_cellps{cellps}
-            , m_safeNames{safeNames} {
+            , m_safeNames{safeNames}
+            , m_taskRefps{taskRefps} {
             iterateAndNextConstNull(modp->inlinesp());
             iterateAndNextConstNull(modp->stmtsp());
         }
@@ -660,6 +675,7 @@ class SubgraphConstraintVisitor final {
         bool m_done = false;
         std::unordered_set<string> m_inputNames;
         std::unordered_set<string> m_safeNames;
+        std::vector<AstNodeFTaskRef*> m_taskRefps;
     };
 
     class FunctionScanVisitor final : public VNVisitorConst {
@@ -682,7 +698,7 @@ class SubgraphConstraintVisitor final {
         void visit(AstVar* nodep) override {
             if (!nodep->isFuncLocal() && !nodep->isFuncReturn()) return;
             m_localNames.insert(nodep->name());
-            if (nodep->isInput()) m_formalp.push_back(nodep);
+            if (nodep->isIO() && !nodep->isFuncReturn()) m_formalp.push_back(nodep);
         }
         void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
 
@@ -806,8 +822,27 @@ class SubgraphConstraintVisitor final {
     };
 
     AstNetlist* const m_rootp;
+    std::unordered_map<AstNodeModule*, SafeContextCache> m_contextualSafeCache;
     std::unordered_map<AstNodeFTask*, FunctionInfo> m_functions;
     std::unordered_map<AstNodeModule*, ModuleInfo> m_infos;
+
+    static string safeInputKey(const SafeInputNames& safeInputs) {
+        string key;
+        for (const string& name : safeInputs) key += name + '\n';
+        return key;
+    }
+
+    static AstVar* formalByName(const FunctionInfo& finfo, const string& name) {
+        for (AstVar* const formalp : finfo.m_formalp) {
+            if (formalp->name() == name) return formalp;
+        }
+        return nullptr;
+    }
+
+    static bool formalUsesBinding(const FunctionInfo& finfo, const string& name) {
+        AstVar* const formalp = formalByName(finfo, name);
+        return formalp && formalp->isInput() && !formalp->isWritable();
+    }
 
     const FunctionInfo& functionInfo(AstNodeFTask* taskp) {
         FunctionInfo& info = m_functions[taskp];
@@ -875,6 +910,119 @@ class SubgraphConstraintVisitor final {
         DrivenNames names;
         collectLhsNames(nodep, requireWrite, names);
         return names;
+    }
+
+    void collectTaskRefWrittenNames(AstNodeFTaskRef* refp, std::set<string>& names) {
+        AstNodeFTask* const taskp = refp->taskp();
+        if (!taskp) return;
+        const FunctionInfo& finfo = functionInfo(taskp);
+        const ArgBindings bindings = bindActualArgs(refp, finfo);
+        for (AstVar* const formalp : finfo.m_formalp) {
+            if (!formalp->isWritable()) continue;
+            const auto it = bindings.find(formalp->name());
+            if (it == bindings.end() || !it->second) continue;
+            const DrivenNames written = lhsNames(it->second, false);
+            names.insert(written.begin(), written.end());
+        }
+    }
+
+    void collectModuleWrittenNames(AstNodeModule* modp, std::set<string>& names) {
+        const ModuleInfo& inf = info(modp);
+        for (const auto& pair : inf.m_assignments) names.insert(pair.first);
+        for (AstNodeFTaskRef* const refp : inf.m_taskRefps)
+            collectTaskRefWrittenNames(refp, names);
+        for (AstCell* const cellp : inf.m_cellps) {
+            for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                AstVar* const portp = pinp->modVarp();
+                AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+                if (!portp || !exprp || !portp->isWritable()) continue;
+                const DrivenNames written = lhsNames(exprp, false);
+                names.insert(written.begin(), written.end());
+            }
+        }
+    }
+
+    bool nameSafeWithCurrent(AstNodeModule* modp, const string& name,
+                             const std::unordered_set<string>& safeNames) {
+        if (safeNames.count(name)) return true;
+
+        const ModuleInfo& inf = info(modp);
+        bool anyWriter = false;
+
+        for (const auto& pair : inf.m_assignments) {
+            if (pair.first != name) continue;
+            anyWriter = true;
+            if (!exprSafe(modp, pair.second, safeNames)) return false;
+        }
+
+        for (AstNodeFTaskRef* const refp : inf.m_taskRefps) {
+            AstNodeFTask* const taskp = refp->taskp();
+            if (!taskp) continue;
+            const FunctionInfo& finfo = functionInfo(taskp);
+            const ArgBindings bindings = bindActualArgs(refp, finfo);
+            for (AstVar* const formalp : finfo.m_formalp) {
+                if (!formalp->isWritable()) continue;
+                const auto itBinding = bindings.find(formalp->name());
+                if (itBinding == bindings.end() || !itBinding->second) continue;
+                if (!lhsNames(itBinding->second, false).count(name)) continue;
+                anyWriter = true;
+                FunctionNameSeen seen;
+                if (!funcNameSafe(modp, taskp, formalp->name(), safeNames, &bindings, seen)) {
+                    return false;
+                }
+            }
+        }
+
+        for (AstCell* const cellp : inf.m_cellps) {
+            SafeInputNames childSafeInputs;
+            for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                AstVar* const portp = pinp->modVarp();
+                AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+                if (!portp || !exprp || !portp->isInput()) continue;
+                if (exprSafe(modp, exprp, safeNames)) childSafeInputs.insert(portp->name());
+            }
+            const std::unordered_set<string>& childSafe
+                = contextualSafeNames(cellp->modp(), childSafeInputs);
+            for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                AstVar* const portp = pinp->modVarp();
+                AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+                if (!portp || !exprp || !portp->isWritable()) continue;
+                if (!lhsNames(exprp, false).count(name)) continue;
+                anyWriter = true;
+                if (!childSafe.count(portp->name())) return false;
+            }
+        }
+
+        return anyWriter;
+    }
+
+    const std::unordered_set<string>& contextualSafeNames(AstNodeModule* modp,
+                                                          const SafeInputNames& safeInputs) {
+        SafeContextCache& byKey = m_contextualSafeCache[modp];
+        const string key = safeInputKey(safeInputs);
+        auto it = byKey.find(key);
+        if (it != byKey.end()) return it->second;
+
+        std::unordered_set<string>& safeNames = byKey[key];
+        const ModuleInfo& inf = info(modp);
+        safeNames = inf.m_safeNames;
+        safeNames.insert(safeInputs.begin(), safeInputs.end());
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            std::set<string> candidates;
+            collectModuleWrittenNames(modp, candidates);
+            for (const string& name : candidates) {
+                if (safeNames.count(name)) continue;
+                if (nameSafeWithCurrent(modp, name, safeNames)) {
+                    safeNames.insert(name);
+                    changed = true;
+                }
+            }
+        }
+
+        return safeNames;
     }
 
     bool exprSafe(AstNodeModule* modp, AstNodeExpr* nodep,
@@ -960,9 +1108,12 @@ class SubgraphConstraintVisitor final {
         if (!seen.emplace(taskp, name).second) return true;
 
         if (argBindingsp) {
-            const auto argIt = argBindingsp->find(name);
-            if (argIt != argBindingsp->end() && argIt->second) {
-                return exprSafe(modp, argIt->second, safeNames, taskp, argBindingsp, &seen);
+            const FunctionInfo& finfo = functionInfo(taskp);
+            if (formalUsesBinding(finfo, name)) {
+                const auto argIt = argBindingsp->find(name);
+                if (argIt != argBindingsp->end() && argIt->second) {
+                    return exprSafe(modp, argIt->second, safeNames, taskp, argBindingsp, &seen);
+                }
             }
         }
 
@@ -985,7 +1136,8 @@ class SubgraphConstraintVisitor final {
 
         if (argBindingsp) {
             const auto argIt = argBindingsp->find(name);
-            if (argIt != argBindingsp->end() && argIt->second) {
+            const FunctionInfo& finfo = functionInfo(taskp);
+            if (formalUsesBinding(finfo, name) && argIt != argBindingsp->end() && argIt->second) {
                 collectExprInputs(modp, argIt->second, inputs, seen, taskp, argBindingsp,
                                   &funcSeen);
                 return;
@@ -1017,6 +1169,22 @@ class SubgraphConstraintVisitor final {
 
         for (const auto& pair : inf.m_assignments) {
             if (pair.first == name) collectExprInputs(modp, pair.second, inputs, seen);
+        }
+
+        for (AstNodeFTaskRef* const refp : inf.m_taskRefps) {
+            AstNodeFTask* const taskp = refp->taskp();
+            if (!taskp) continue;
+            const FunctionInfo& finfo = functionInfo(taskp);
+            const ArgBindings bindings = bindActualArgs(refp, finfo);
+            for (AstVar* const formalp : finfo.m_formalp) {
+                if (!formalp->isWritable()) continue;
+                const auto itBinding = bindings.find(formalp->name());
+                if (itBinding == bindings.end() || !itBinding->second) continue;
+                if (!lhsNames(itBinding->second, false).count(name)) continue;
+                FunctionNameSeen funcSeen;
+                collectFuncNameInputs(modp, taskp, formalp->name(), inputs, seen, &bindings,
+                                      funcSeen);
+            }
         }
 
         for (AstCell* const cellp : inf.m_cellps) {
@@ -1136,7 +1304,7 @@ class SubgraphConstraintVisitor final {
         if (inf.m_done || inf.m_busy) return inf;
 
         inf.m_busy = true;
-        ModuleScanVisitor{modp, inf.m_assignments, inf.m_cellps, inf.m_safeNames};
+        ModuleScanVisitor{modp, inf.m_assignments, inf.m_cellps, inf.m_safeNames, inf.m_taskRefps};
         for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
             AstVar* const varp = VN_CAST(stmtp, Var);
             if (varp && varp->isInput()) inf.m_inputNames.insert(varp->name());
@@ -1145,23 +1313,11 @@ class SubgraphConstraintVisitor final {
         bool changed = true;
         while (changed) {
             changed = false;
-            for (AstCell* const cellp : inf.m_cellps) {
-                const ModuleInfo& childInfo = info(cellp->modp());
-                for (AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
-                    AstVar* const portp = pinp->modVarp();
-                    AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
-                    if (!portp || !exprp || !portp->isWritable()) continue;
-                    if (!childInfo.m_safeNames.count(portp->name())) continue;
-                    const DrivenNames names = lhsNames(exprp, false);
-                    for (const string& name : names) {
-                        if (inf.m_safeNames.insert(name).second) changed = true;
-                    }
-                }
-            }
-            for (const auto& pair : inf.m_assignments) {
-                const string& name = pair.first;
+            std::set<string> candidates;
+            collectModuleWrittenNames(modp, candidates);
+            for (const string& name : candidates) {
                 if (inf.m_safeNames.count(name)) continue;
-                if (exprSafe(modp, pair.second, inf.m_safeNames)) {
+                if (nameSafeWithCurrent(modp, name, inf.m_safeNames)) {
                     inf.m_safeNames.insert(name);
                     changed = true;
                 }
