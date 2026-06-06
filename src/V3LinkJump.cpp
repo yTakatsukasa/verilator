@@ -915,6 +915,14 @@ class SubgraphConstraintVisitor final {
             collectLhsNames(selbitp->fromp(), requireWrite, names);
             return;
         }
+        if (AstSelMinus* const selminusp = VN_CAST(nodep, SelMinus)) {
+            collectLhsNames(selminusp->fromp(), requireWrite, names);
+            return;
+        }
+        if (AstSelPlus* const selplusp = VN_CAST(nodep, SelPlus)) {
+            collectLhsNames(selplusp->fromp(), requireWrite, names);
+            return;
+        }
     }
 
     static DrivenNames lhsNames(AstNodeExpr* nodep, bool requireWrite) {
