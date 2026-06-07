@@ -1053,6 +1053,20 @@ class SubgraphConstraintVisitor final {
         return safeNames;
     }
 
+    static bool isCompileTimeConstAttr(const AstAttrOf* attrp) {
+        if (!attrp) return false;
+        switch (attrp->attrType()) {
+        case VAttrType::DIM_BITS:
+        case VAttrType::DIM_HIGH:
+        case VAttrType::DIM_LEFT:
+        case VAttrType::DIM_LOW:
+        case VAttrType::DIM_RIGHT:
+        case VAttrType::DIM_INCREMENT:
+        case VAttrType::DIM_SIZE: return true;
+        default: return false;
+        }
+    }
+
     bool exprSafe(AstNodeModule* modp, AstNodeExpr* nodep,
                   const std::unordered_set<string>& safeNames, AstNodeFTask* taskp = nullptr,
                   const ArgBindings* argBindingsp = nullptr, FunctionNameSeen* seenp = nullptr) {
@@ -1065,33 +1079,80 @@ class SubgraphConstraintVisitor final {
             }
             return safeNames.count(refp->varp()->name());
         }
+        if (AstAttrOf* const attrp = VN_CAST(nodep, AttrOf)) {
+            if (isCompileTimeConstAttr(attrp)) {
+                return !attrp->dimp()
+                       || exprSafe(modp, attrp->dimp(), safeNames, taskp, argBindingsp, seenp);
+            }
+        }
 
-        bool safe = true;
-        nodep->foreach([&](AstVarRef* refp) {
-            if (!safe || !refp->access().isReadOrRW()) return;
-            if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
-                FunctionNameSeen localSeen;
-                if (!funcNameSafe(modp, taskp, refp->varp()->name(), safeNames, argBindingsp,
-                                  seenp ? *seenp : localSeen)) {
-                    safe = false;
+        class ExprSafeVisitor final : public VNVisitorConst {
+            SubgraphConstraintVisitor& m_parent;
+            AstNodeModule* const m_modp;
+            const std::unordered_set<string>& m_safeNames;
+            AstNodeFTask* const m_taskp;
+            const ArgBindings* const m_argBindingsp;
+            FunctionNameSeen* const m_seenp;
+            bool m_safe = true;
+
+            void visit(AstAttrOf* nodep) override {
+                if (!m_safe) return;
+                if (isCompileTimeConstAttr(nodep)) {
+                    iterateAndNextConstNull(nodep->dimp());
+                    return;
                 }
-            } else if (!safeNames.count(refp->varp()->name())) {
-                safe = false;
+                iterateChildrenConst(nodep);
             }
-        });
-        nodep->foreach([&](AstNodeFTaskRef* refp) {
-            if (!safe) return;
-            AstNodeFTask* const calledTaskp = refp->taskp();
-            if (!calledTaskp || !calledTaskp->isFunction()) return;
-            const FunctionInfo& finfo = functionInfo(calledTaskp);
-            const ArgBindings bindings = bindActualArgs(refp, finfo);
-            FunctionNameSeen localSeen;
-            if (!funcNameSafe(modp, calledTaskp, calledTaskp->name(), safeNames, &bindings,
-                              seenp ? *seenp : localSeen)) {
-                safe = false;
+            void visit(AstNodeFTaskRef* nodep) override {
+                if (!m_safe) return;
+                AstNodeFTask* const calledTaskp = nodep->taskp();
+                if (calledTaskp && calledTaskp->isFunction()) {
+                    const FunctionInfo& finfo = m_parent.functionInfo(calledTaskp);
+                    const ArgBindings bindings = bindActualArgs(nodep, finfo);
+                    FunctionNameSeen localSeen;
+                    if (!m_parent.funcNameSafe(m_modp, calledTaskp, calledTaskp->name(),
+                                               m_safeNames, &bindings,
+                                               m_seenp ? *m_seenp : localSeen)) {
+                        m_safe = false;
+                        return;
+                    }
+                }
+                iterateChildrenConst(nodep);
             }
-        });
-        return safe;
+            void visit(AstVarRef* nodep) override {
+                if (!m_safe || !nodep->access().isReadOrRW()) return;
+                if (m_taskp && (nodep->varp()->isFuncLocal() || nodep->varp()->isFuncReturn())) {
+                    FunctionNameSeen localSeen;
+                    if (!m_parent.funcNameSafe(m_modp, m_taskp, nodep->varp()->name(), m_safeNames,
+                                               m_argBindingsp, m_seenp ? *m_seenp : localSeen)) {
+                        m_safe = false;
+                    }
+                } else if (!m_safeNames.count(nodep->varp()->name())) {
+                    m_safe = false;
+                }
+            }
+            void visit(AstNode* nodep) override {
+                if (!m_safe) return;
+                iterateChildrenConst(nodep);
+            }
+
+        public:
+            ExprSafeVisitor(SubgraphConstraintVisitor& parent, AstNodeModule* modp,
+                            AstNodeExpr* nodep, const std::unordered_set<string>& safeNames,
+                            AstNodeFTask* taskp, const ArgBindings* argBindingsp,
+                            FunctionNameSeen* seenp)
+                : m_parent{parent}
+                , m_modp{modp}
+                , m_safeNames{safeNames}
+                , m_taskp{taskp}
+                , m_argBindingsp{argBindingsp}
+                , m_seenp{seenp} {
+                iterateConst(nodep);
+            }
+            bool safe() const { return m_safe; }
+        };
+
+        return ExprSafeVisitor{*this, modp, nodep, safeNames, taskp, argBindingsp, seenp}.safe();
     }
 
     void collectExprInputs(AstNodeModule* modp, AstNodeExpr* exprp, std::set<string>& inputs,
@@ -1110,25 +1171,78 @@ class SubgraphConstraintVisitor final {
             }
             return;
         }
-        exprp->foreach([&](AstVarRef* refp) {
-            if (!refp->access().isReadOrRW()) return;
-            if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
-                FunctionNameSeen localSeen;
-                collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, nonstates, seen,
-                                      argBindingsp, funcSeenp ? *funcSeenp : localSeen);
-            } else {
-                collectNameInputs(modp, refp->varp()->name(), inputs, nonstates, seen);
+        if (AstAttrOf* const attrp = VN_CAST(exprp, AttrOf)) {
+            if (isCompileTimeConstAttr(attrp)) {
+                if (attrp->dimp()) {
+                    collectExprInputs(modp, attrp->dimp(), inputs, nonstates, seen, taskp,
+                                      argBindingsp, funcSeenp);
+                }
+                return;
             }
-        });
-        exprp->foreach([&](AstNodeFTaskRef* refp) {
-            AstNodeFTask* const calledTaskp = refp->taskp();
-            if (!calledTaskp || !calledTaskp->isFunction()) return;
-            const FunctionInfo& finfo = functionInfo(calledTaskp);
-            const ArgBindings bindings = bindActualArgs(refp, finfo);
-            FunctionNameSeen localSeen;
-            collectFuncNameInputs(modp, calledTaskp, calledTaskp->name(), inputs, nonstates, seen,
-                                  &bindings, funcSeenp ? *funcSeenp : localSeen);
-        });
+        }
+
+        class ExprInputVisitor final : public VNVisitorConst {
+            SubgraphConstraintVisitor& m_parent;
+            AstNodeModule* const m_modp;
+            std::set<string>& m_inputs;
+            std::set<string>& m_nonstates;
+            TraceSeen& m_seen;
+            AstNodeFTask* const m_taskp;
+            const ArgBindings* const m_argBindingsp;
+            FunctionNameSeen* const m_funcSeenp;
+
+            void visit(AstAttrOf* nodep) override {
+                if (isCompileTimeConstAttr(nodep)) {
+                    iterateAndNextConstNull(nodep->dimp());
+                    return;
+                }
+                iterateChildrenConst(nodep);
+            }
+            void visit(AstNodeFTaskRef* nodep) override {
+                AstNodeFTask* const calledTaskp = nodep->taskp();
+                if (calledTaskp && calledTaskp->isFunction()) {
+                    const FunctionInfo& finfo = m_parent.functionInfo(calledTaskp);
+                    const ArgBindings bindings = bindActualArgs(nodep, finfo);
+                    FunctionNameSeen localSeen;
+                    m_parent.collectFuncNameInputs(m_modp, calledTaskp, calledTaskp->name(),
+                                                   m_inputs, m_nonstates, m_seen, &bindings,
+                                                   m_funcSeenp ? *m_funcSeenp : localSeen);
+                }
+                iterateChildrenConst(nodep);
+            }
+            void visit(AstVarRef* nodep) override {
+                if (!nodep->access().isReadOrRW()) return;
+                if (m_taskp && (nodep->varp()->isFuncLocal() || nodep->varp()->isFuncReturn())) {
+                    FunctionNameSeen localSeen;
+                    m_parent.collectFuncNameInputs(m_modp, m_taskp, nodep->varp()->name(),
+                                                   m_inputs, m_nonstates, m_seen, m_argBindingsp,
+                                                   m_funcSeenp ? *m_funcSeenp : localSeen);
+                } else {
+                    m_parent.collectNameInputs(m_modp, nodep->varp()->name(), m_inputs,
+                                               m_nonstates, m_seen);
+                }
+            }
+            void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+
+        public:
+            ExprInputVisitor(SubgraphConstraintVisitor& parent, AstNodeModule* modp,
+                             AstNodeExpr* exprp, std::set<string>& inputs,
+                             std::set<string>& nonstates, TraceSeen& seen, AstNodeFTask* taskp,
+                             const ArgBindings* argBindingsp, FunctionNameSeen* funcSeenp)
+                : m_parent{parent}
+                , m_modp{modp}
+                , m_inputs{inputs}
+                , m_nonstates{nonstates}
+                , m_seen{seen}
+                , m_taskp{taskp}
+                , m_argBindingsp{argBindingsp}
+                , m_funcSeenp{funcSeenp} {
+                iterateConst(exprp);
+            }
+        };
+
+        ExprInputVisitor{*this, modp,  exprp,        inputs,   nonstates,
+                         seen,  taskp, argBindingsp, funcSeenp};
     }
 
     bool funcNameSafe(AstNodeModule* modp, AstNodeFTask* taskp, const string& name,
