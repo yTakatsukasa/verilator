@@ -26,15 +26,15 @@ module t (
 
   int cyc;
   logic [7:0] in;
-  logic [151:0] out0;
-  logic [151:0] out1;
-  logic [151:0] ref0;
-  logic [151:0] ref1;
+  logic [167:0] out0;
+  logic [167:0] out1;
+  logic [167:0] ref0;
+  logic [167:0] ref1;
 
-  sub i_sub0 (.clk(clk), .in(in), .out_child_comb(out0[95:88]), .out_child_direct(out0[87:80]), .out_func_default(out0[79:72]), .out_func_local_init(out0[71:64]), .out_func_return(out0[63:56]), .out_gen_always_comb(out0[55:48]), .out_gen_assign(out0[47:40]), .out_gen_child(out0[39:32]), .out_gen_concat(out0[111:104]), .out_gen_packed_func(out0[103:96]), .out_gen_param_const(out0[143:136]), .out_gen_param_partsel(out0[151:144]), .out_gen_partsel(out0[119:112]), .out_gen_struct(out0[127:120]), .out_gen_unpacked(out0[135:128]), .out_genvar_value(out0[31:24]), .out_reg_child_comb(out0[23:16]), .out_reg_child_func(out0[15:8]), .out_reg_comb(out0[7:0]));
-  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out_child_comb(out1[95:88]), .out_child_direct(out1[87:80]), .out_func_default(out1[79:72]), .out_func_local_init(out1[71:64]), .out_func_return(out1[63:56]), .out_gen_always_comb(out1[55:48]), .out_gen_assign(out1[47:40]), .out_gen_child(out1[39:32]), .out_gen_concat(out1[111:104]), .out_gen_packed_func(out1[103:96]), .out_gen_param_const(out1[143:136]), .out_gen_param_partsel(out1[151:144]), .out_gen_partsel(out1[119:112]), .out_gen_struct(out1[127:120]), .out_gen_unpacked(out1[135:128]), .out_genvar_value(out1[31:24]), .out_reg_child_comb(out1[23:16]), .out_reg_child_func(out1[15:8]), .out_reg_comb(out1[7:0]));
-  sub_ref i_ref0 (.clk(clk), .in(in), .out_child_comb(ref0[95:88]), .out_child_direct(ref0[87:80]), .out_func_default(ref0[79:72]), .out_func_local_init(ref0[71:64]), .out_func_return(ref0[63:56]), .out_gen_always_comb(ref0[55:48]), .out_gen_assign(ref0[47:40]), .out_gen_child(ref0[39:32]), .out_gen_concat(ref0[111:104]), .out_gen_packed_func(ref0[103:96]), .out_gen_param_const(ref0[143:136]), .out_gen_param_partsel(ref0[151:144]), .out_gen_partsel(ref0[119:112]), .out_gen_struct(ref0[127:120]), .out_gen_unpacked(ref0[135:128]), .out_genvar_value(ref0[31:24]), .out_reg_child_comb(ref0[23:16]), .out_reg_child_func(ref0[15:8]), .out_reg_comb(ref0[7:0]));
-  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out_child_comb(ref1[95:88]), .out_child_direct(ref1[87:80]), .out_func_default(ref1[79:72]), .out_func_local_init(ref1[71:64]), .out_func_return(ref1[63:56]), .out_gen_always_comb(ref1[55:48]), .out_gen_assign(ref1[47:40]), .out_gen_child(ref1[39:32]), .out_gen_concat(ref1[111:104]), .out_gen_packed_func(ref1[103:96]), .out_gen_param_const(ref1[143:136]), .out_gen_param_partsel(ref1[151:144]), .out_gen_partsel(ref1[119:112]), .out_gen_struct(ref1[127:120]), .out_gen_unpacked(ref1[135:128]), .out_genvar_value(ref1[31:24]), .out_reg_child_comb(ref1[23:16]), .out_reg_child_func(ref1[15:8]), .out_reg_comb(ref1[7:0]));
+  sub i_sub0 (.clk(clk), .in(in), .out_child_comb(out0[95:88]), .out_child_direct(out0[87:80]), .out_func_default(out0[79:72]), .out_func_local_init(out0[71:64]), .out_func_return(out0[63:56]), .out_gen_always_comb(out0[55:48]), .out_gen_assign(out0[47:40]), .out_gen_child(out0[39:32]), .out_gen_concat(out0[111:104]), .out_gen_localparam_const(out0[159:152]), .out_gen_localparam_partsel(out0[167:160]), .out_gen_packed_func(out0[103:96]), .out_gen_param_const(out0[143:136]), .out_gen_param_partsel(out0[151:144]), .out_gen_partsel(out0[119:112]), .out_gen_struct(out0[127:120]), .out_gen_unpacked(out0[135:128]), .out_genvar_value(out0[31:24]), .out_reg_child_comb(out0[23:16]), .out_reg_child_func(out0[15:8]), .out_reg_comb(out0[7:0]));
+  sub i_sub1 (.clk(clk), .in(in + 8'd1), .out_child_comb(out1[95:88]), .out_child_direct(out1[87:80]), .out_func_default(out1[79:72]), .out_func_local_init(out1[71:64]), .out_func_return(out1[63:56]), .out_gen_always_comb(out1[55:48]), .out_gen_assign(out1[47:40]), .out_gen_child(out1[39:32]), .out_gen_concat(out1[111:104]), .out_gen_localparam_const(out1[159:152]), .out_gen_localparam_partsel(out1[167:160]), .out_gen_packed_func(out1[103:96]), .out_gen_param_const(out1[143:136]), .out_gen_param_partsel(out1[151:144]), .out_gen_partsel(out1[119:112]), .out_gen_struct(out1[127:120]), .out_gen_unpacked(out1[135:128]), .out_genvar_value(out1[31:24]), .out_reg_child_comb(out1[23:16]), .out_reg_child_func(out1[15:8]), .out_reg_comb(out1[7:0]));
+  sub_ref i_ref0 (.clk(clk), .in(in), .out_child_comb(ref0[95:88]), .out_child_direct(ref0[87:80]), .out_func_default(ref0[79:72]), .out_func_local_init(ref0[71:64]), .out_func_return(ref0[63:56]), .out_gen_always_comb(ref0[55:48]), .out_gen_assign(ref0[47:40]), .out_gen_child(ref0[39:32]), .out_gen_concat(ref0[111:104]), .out_gen_localparam_const(ref0[159:152]), .out_gen_localparam_partsel(ref0[167:160]), .out_gen_packed_func(ref0[103:96]), .out_gen_param_const(ref0[143:136]), .out_gen_param_partsel(ref0[151:144]), .out_gen_partsel(ref0[119:112]), .out_gen_struct(ref0[127:120]), .out_gen_unpacked(ref0[135:128]), .out_genvar_value(ref0[31:24]), .out_reg_child_comb(ref0[23:16]), .out_reg_child_func(ref0[15:8]), .out_reg_comb(ref0[7:0]));
+  sub_ref i_ref1 (.clk(clk), .in(in + 8'd1), .out_child_comb(ref1[95:88]), .out_child_direct(ref1[87:80]), .out_func_default(ref1[79:72]), .out_func_local_init(ref1[71:64]), .out_func_return(ref1[63:56]), .out_gen_always_comb(ref1[55:48]), .out_gen_assign(ref1[47:40]), .out_gen_child(ref1[39:32]), .out_gen_concat(ref1[111:104]), .out_gen_localparam_const(ref1[159:152]), .out_gen_localparam_partsel(ref1[167:160]), .out_gen_packed_func(ref1[103:96]), .out_gen_param_const(ref1[143:136]), .out_gen_param_partsel(ref1[151:144]), .out_gen_partsel(ref1[119:112]), .out_gen_struct(ref1[127:120]), .out_gen_unpacked(ref1[135:128]), .out_genvar_value(ref1[31:24]), .out_reg_child_comb(ref1[23:16]), .out_reg_child_func(ref1[15:8]), .out_reg_comb(ref1[7:0]));
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
@@ -72,6 +72,8 @@ module sub #(
   output logic [7:0] out_gen_assign,
   output logic [7:0] out_gen_child,
   output logic [7:0] out_gen_concat,
+  output logic [7:0] out_gen_localparam_const,
+  output logic [7:0] out_gen_localparam_partsel,
   output logic [7:0] out_gen_packed_func,
   output logic [7:0] out_gen_param_const,
   output logic [7:0] out_gen_param_partsel,
@@ -102,7 +104,8 @@ module sub #(
   sub_leaf i_leaf (.in(in), .out(leaf_out));
 
   for (genvar gi = 0; gi < 2; ++gi) begin : gen_child
-    sub_leaf_func i_leaf_gen (.in(q_child_in ^ (gi * 8'h33)), .out(gen_child_out[gi]));
+    localparam int unsigned LOC = gi * 8'h33;
+    sub_leaf_func i_leaf_gen (.in(q_child_in ^ LOC), .out(gen_child_out[gi]));
   end
 
   for (genvar gi = 0; gi < 8; ++gi) begin : gen_assign
@@ -119,6 +122,18 @@ module sub #(
 
   for (genvar gi = 0; gi < 4; ++gi) begin : gen_concat_assign
     assign {out_gen_concat[(2 * gi) + 1], out_gen_concat[2 * gi]} = {2{q[(gi + 2) % 8]}};
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_localparam_const_assign
+    localparam int unsigned IDX = (gi + 2) % 8;
+    localparam logic MIX = ((gi * 3) & 1) != 0;
+    assign out_gen_localparam_const[gi] = q[IDX] ^ MIX;
+  end
+
+  for (genvar gi = 0; gi < 4; ++gi) begin : gen_localparam_partsel_assign
+    localparam int unsigned TOP = 7 - (2 * gi);
+    localparam int unsigned W = 2;
+    assign out_gen_localparam_partsel[2 * gi +: 2] = q[TOP -: W] ^ {2{TOP[0]}};
   end
 
   for (genvar gi = 0; gi < 4; ++gi) begin : gen_packed_func_assign
@@ -194,6 +209,8 @@ module sub_ref #(
   output logic [7:0] out_gen_assign,
   output logic [7:0] out_gen_child,
   output logic [7:0] out_gen_concat,
+  output logic [7:0] out_gen_localparam_const,
+  output logic [7:0] out_gen_localparam_partsel,
   output logic [7:0] out_gen_packed_func,
   output logic [7:0] out_gen_param_const,
   output logic [7:0] out_gen_param_partsel,
@@ -241,6 +258,18 @@ module sub_ref #(
 
   for (genvar gi = 0; gi < 4; ++gi) begin : gen_concat_assign
     assign {out_gen_concat[(2 * gi) + 1], out_gen_concat[2 * gi]} = {2{q[(gi + 2) % 8]}};
+  end
+
+  for (genvar gi = 0; gi < 8; ++gi) begin : gen_localparam_const_assign
+    localparam int unsigned IDX = (gi + 2) % 8;
+    localparam logic MIX = ((gi * 3) & 1) != 0;
+    assign out_gen_localparam_const[gi] = q[IDX] ^ MIX;
+  end
+
+  for (genvar gi = 0; gi < 4; ++gi) begin : gen_localparam_partsel_assign
+    localparam int unsigned TOP = 7 - (2 * gi);
+    localparam int unsigned W = 2;
+    assign out_gen_localparam_partsel[2 * gi +: 2] = q[TOP -: W] ^ {2{TOP[0]}};
   end
 
   for (genvar gi = 0; gi < 4; ++gi) begin : gen_packed_func_assign
