@@ -120,7 +120,6 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_isSubgraphCommitPostLogic = false;  // Post logic commits delayed top state
     bool m_isSubgraphSnapshotLogic = false;  // Procedure snapshots cross-boundary values
     bool m_isSubgraphWrapperLogic = false;  // Procedure wraps a subgraph eval call
-    V3Sched::util::VarScopeSet m_externallyConsumedSubgraphVars;
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     SubgraphCallUsageCache m_subgraphCallUsageCache;
     V3Sched::util::VarScopeSet m_subgraphDerivedExternalVars;
@@ -422,27 +421,6 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
-    void collectExternallyConsumedSubgraphVars(const std::vector<V3Sched::LogicByScope*>& coll) {
-        for (const V3Sched::LogicByScope* const lbsp : coll) {
-            for (const auto& pair : *lbsp) {
-                AstScope* const logicScopep = pair.first;
-                AstScope* const logicBoundaryp = subgraphBoundaryScope(logicScopep);
-                AstActive* const activep = pair.second;
-                for (AstNode* stmtp = activep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-                    stmtp->foreach([&](AstVarRef* refp) {
-                        if (!refp->access().isReadOrRW()) return;
-                        AstVarScope* const vscp = refp->varScopep();
-                        AstScope* const varBoundaryp = subgraphBoundaryScope(vscp->scopep());
-                        if (!varBoundaryp || varBoundaryp == logicBoundaryp) return;
-                        if (vscp->scopep() == varBoundaryp && !vscp->varp()->isIO()) {
-                            m_externallyConsumedSubgraphVars.insert(vscp);
-                        }
-                    });
-                }
-            }
-        }
-    }
-
     void addSubgraphCallPortUsage(AstCCall* nodep) {
         if (!isSubgraphWrapperCall(nodep)) return;
         AstCFunc* const funcp = nodep->funcp();
@@ -467,14 +445,10 @@ class OrderGraphBuilder final : public VNVisitor {
         for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
             AstVarScope* const vscp = use.m_varscp;
             const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
-            const bool exportedInternalVar = m_externallyConsumedSubgraphVars.count(vscp);
             const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
-            if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar
-                && !exportedInternalVar) {
-                continue;
-            }
+            if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar) { continue; }
             AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
-            if (hideClockedBoundaryContract && (internalOrderVar || exportedInternalVar)) continue;
+            if (hideClockedBoundaryContract && internalOrderVar) continue;
             if (hideClockedBoundaryContract && sourceBoundaryp == scopep
                 && vscp->scopep() == scopep && vscp->varp()->isIO()
                 && vscp->varp()->direction().isNonOutput()) {
@@ -485,8 +459,6 @@ class OrderGraphBuilder final : public VNVisitor {
             }
             if (internalOrderVar) {
                 addVarUsage(vscp, use.m_read, use.m_write, nodep);
-            } else if (m_inPre && exportedInternalVar) {
-                continue;
             } else if ((sourceBoundaryp && sourceBoundaryp != scopep)
                        || m_subgraphDerivedExternalVars.count(vscp)) {
                 const bool coarseRead = use.m_read;
@@ -737,10 +709,7 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
                       const V3Order::TrigToSenMap& trigToSen)
         : m_trigToSen{trigToSen} {
-        if (v3Global.opt.subgraphSchedule()) {
-            collectExternallyConsumedSubgraphVars(coll);
-            collectSubgraphDerivedExternalVars(coll);
-        }
+        if (v3Global.opt.subgraphSchedule()) { collectSubgraphDerivedExternalVars(coll); }
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
