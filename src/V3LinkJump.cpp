@@ -675,6 +675,10 @@ class SubgraphConstraintVisitor final {
         std::vector<AstNodeFTaskRef*> m_taskRefps;
     };
 
+    static bool isCompileTimeConstVar(const AstVar* varp) {
+        return varp && (varp->isParam() || varp->isGenVar());
+    }
+
     class FunctionScanVisitor final : public VNVisitorConst {
         AstNodeFTask* const m_rootp;
         Assignments& m_assignments;
@@ -1358,6 +1362,7 @@ class SubgraphConstraintVisitor final {
         for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
             AstVar* const varp = VN_CAST(stmtp, Var);
             if (varp && varp->isInput()) inf.m_inputNames.insert(varp->name());
+            if (isCompileTimeConstVar(varp)) inf.m_safeNames.insert(varp->name());
         }
 
         bool changed = true;
