@@ -81,6 +81,73 @@
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
+namespace {
+AstScope* orderGraphSubgraphBoundaryScope(AstScope* scopep) {
+    for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp->modp()->subgraphBoundary()) return scanp;
+    }
+    return nullptr;
+}
+
+string orderGraphFilelineSummary(FileLine* flp) {
+    if (!flp) return "";
+    return " file='" + flp->filebasename() + ":" + cvtToStr(flp->lineno()) + "'";
+}
+
+string orderGraphSubgraphVarKind(const string& name) {
+    if (name == "__VsubgraphClockedBarrier") return "subgraph-clocked-barrier";
+    if (name == "__VsubgraphPostBarrier") return "subgraph-post-barrier";
+    if (name == "__VsubgraphPreBarrier") return "subgraph-pre-barrier";
+    if (name == "__VsubgraphSnapshotBarrier") return "subgraph-snapshot-barrier";
+    if (0 == name.rfind("__VsubgraphSnapshot__", 0)) return "subgraph-snapshot";
+    if (0 == name.rfind("__Vdly__", 0)) return "delayed-shadow";
+    return "";
+}
+}  // namespace
+
+string OrderGraph::loopsVertexCb(V3GraphVertex* vertexp) {
+    if (const auto* const logicp = dynamic_cast<const OrderLogicVertex*>(vertexp)) {
+        string msg = "-Loop-Logic: type='" + string{logicp->nodep()->typeName()} + "'";
+        if (const auto* const ccallp = VN_CAST(logicp->nodep(), CCall)) {
+            msg += " func='" + ccallp->funcp()->name() + "'";
+        }
+        msg += " scope='" + logicp->scopep()->prettyName() + "'";
+        if (AstScope* const boundaryp = orderGraphSubgraphBoundaryScope(logicp->scopep())) {
+            msg += " subgraph='" + boundaryp->modp()->prettyName() + "'";
+        }
+        msg += orderGraphFilelineSummary(logicp->nodep()->fileline());
+        return msg + "\n";
+    }
+    if (const auto* const varp = dynamic_cast<const OrderVarVertex*>(vertexp)) {
+        const string role = varp->nameSuffix().empty() ? "STD" : varp->nameSuffix();
+        string msg = "-Loop-Var: name='" + varp->vscp()->name() + "' role='" + role + "'";
+        if (const string kind = orderGraphSubgraphVarKind(varp->vscp()->varp()->name());
+            !kind.empty()) {
+            msg += " kind='" + kind + "'";
+        }
+        msg += " scope='" + varp->vscp()->scopep()->prettyName() + "'";
+        if (AstScope* const boundaryp = orderGraphSubgraphBoundaryScope(varp->vscp()->scopep())) {
+            msg += " subgraph='" + boundaryp->modp()->prettyName() + "'";
+        }
+        msg += orderGraphFilelineSummary(varp->vscp()->fileline());
+        return msg + "\n";
+    }
+    return V3Graph::loopsVertexCb(vertexp);
+}
+
+void OrderGraph::loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) {
+    const string loops = reportLoops(edgeFuncp, vertexp);
+    const bool subgraphRelated = loops.find("subgraph='") != string::npos
+                                 || loops.find("kind='subgraph-") != string::npos;
+    vertexp->v3fatalSrc(
+        "Loops detected in graph: "
+        << vertexp << "\n"
+        << (subgraphRelated
+                ? "Possible false circularity through subgraph scheduling; loop trace follows.\n"
+                : "")
+        << loops);
+}
+
 void V3Order::orderOrderGraph(OrderGraph& graph, const std::string& tag) {
     // Dump data
     if (dumpGraphLevel()) graph.dumpDotFilePrefixed(tag + "_orderg_pre");
