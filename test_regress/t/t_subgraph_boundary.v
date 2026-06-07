@@ -104,7 +104,7 @@ module sub #(
   sub_leaf i_leaf (.in(in), .out(leaf_out));
 
   for (genvar gi = 0; gi < 2; ++gi) begin : gen_child
-    localparam int unsigned LOC = gi * 8'h33;
+    localparam logic [7:0] LOC = gi * 8'h33;
     sub_leaf_func i_leaf_gen (.in(q_child_in ^ LOC), .out(gen_child_out[gi]));
   end
 

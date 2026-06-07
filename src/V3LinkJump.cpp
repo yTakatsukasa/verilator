@@ -649,6 +649,11 @@ class SubgraphConstraintVisitor final {
             if (m_ftaskDepth == 0 && VN_IS(nodep, TaskRef)) m_taskRefps.push_back(nodep);
             iterateChildrenConst(nodep);
         }
+        void visit(AstVar* nodep) override {
+            if (m_ftaskDepth == 0 && isCompileTimeConstVar(nodep)) {
+                m_safeNames.insert(nodep->name());
+            }
+        }
         void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
 
     public:
