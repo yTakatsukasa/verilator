@@ -100,6 +100,8 @@ public:
                             int weight) VL_MT_DISABLED;
     inline void addSoftEdge(OrderVarVertex* fromp, OrderLogicVertex* top,
                             int weight) VL_MT_DISABLED;
+    string loopsVertexCb(V3GraphVertex* vertexp) override;
+    void loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) override;
 };
 
 //======================================================================
