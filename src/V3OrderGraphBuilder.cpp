@@ -122,7 +122,7 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_isSubgraphWrapperLogic = false;  // Procedure wraps a subgraph eval call
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     SubgraphCallUsageCache m_subgraphCallUsageCache;
-    V3Sched::util::VarScopeSet m_subgraphDerivedExternalVars;
+    V3Sched::util::VarScopeSet m_subgraphDerivedBoundaryInputs;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
 
     // METHODS
@@ -398,7 +398,7 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
-    void collectSubgraphDerivedExternalVars(const std::vector<V3Sched::LogicByScope*>& coll) {
+    void collectSubgraphDerivedBoundaryInputs(const std::vector<V3Sched::LogicByScope*>& coll) {
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
                 AstActive* const activep = pair.second;
@@ -412,9 +412,13 @@ class OrderGraphBuilder final : public VNVisitor {
                     });
                     if (!readsBoundaryValue) continue;
                     stmtp->foreach([&](AstVarRef* refp) {
-                        if (refp->access().isWriteOrRW()) {
-                            m_subgraphDerivedExternalVars.insert(refp->varScopep());
+                        if (!refp->access().isWriteOrRW()) return;
+                        AstVarScope* const vscp = refp->varScopep();
+                        if (!vscp->varp()->isIO() || !vscp->varp()->direction().isNonOutput()) {
+                            return;
                         }
+                        if (!vscp->scopep()->modp()->subgraphBoundary()) return;
+                        m_subgraphDerivedBoundaryInputs.insert(vscp);
                     });
                 }
             }
@@ -432,7 +436,7 @@ class OrderGraphBuilder final : public VNVisitor {
             if (!varp->isIO()) continue;
             const VDirection direction = varp->direction();
             if (!hideClockedBoundaryContract && direction.isNonOutput()) {
-                if (m_subgraphDerivedExternalVars.count(vscp)) {
+                if (m_subgraphDerivedBoundaryInputs.count(vscp)) {
                     addCoarseVarUsage(vscp, true, false, nodep);
                 } else {
                     addVarUsage(vscp, true, false, nodep, false, true);
@@ -459,8 +463,7 @@ class OrderGraphBuilder final : public VNVisitor {
             }
             if (internalOrderVar) {
                 addVarUsage(vscp, use.m_read, use.m_write, nodep);
-            } else if ((sourceBoundaryp && sourceBoundaryp != scopep)
-                       || m_subgraphDerivedExternalVars.count(vscp)) {
+            } else if (sourceBoundaryp && sourceBoundaryp != scopep) {
                 const bool coarseRead = use.m_read;
                 const bool coarseWrite = publishBoundaryWrites && use.m_write;
                 if (coarseRead || coarseWrite) {
@@ -709,7 +712,7 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
                       const V3Order::TrigToSenMap& trigToSen)
         : m_trigToSen{trigToSen} {
-        if (v3Global.opt.subgraphSchedule()) { collectSubgraphDerivedExternalVars(coll); }
+        if (v3Global.opt.subgraphSchedule()) { collectSubgraphDerivedBoundaryInputs(coll); }
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
