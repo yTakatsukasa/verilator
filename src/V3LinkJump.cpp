@@ -687,6 +687,10 @@ class SubgraphConstraintVisitor final {
         return varp && (varp->isParam() || varp->isGenVar());
     }
 
+    static bool isCompileTimeConstRef(const AstNodeVarRef* refp) {
+        return refp && isCompileTimeConstVar(refp->varp());
+    }
+
     class FunctionScanVisitor final : public VNVisitorConst {
         AstNodeFTask* const m_rootp;
         Assignments& m_assignments;
@@ -1070,8 +1074,9 @@ class SubgraphConstraintVisitor final {
     bool exprSafe(AstNodeModule* modp, AstNodeExpr* nodep,
                   const std::unordered_set<string>& safeNames, AstNodeFTask* taskp = nullptr,
                   const ArgBindings* argBindingsp = nullptr, FunctionNameSeen* seenp = nullptr) {
-        if (AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
+        if (AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
             if (!refp->access().isReadOrRW()) return true;
+            if (isCompileTimeConstRef(refp)) return true;
             if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
                 FunctionNameSeen localSeen;
                 return funcNameSafe(modp, taskp, refp->varp()->name(), safeNames, argBindingsp,
@@ -1119,8 +1124,9 @@ class SubgraphConstraintVisitor final {
                 }
                 iterateChildrenConst(nodep);
             }
-            void visit(AstVarRef* nodep) override {
+            void visit(AstNodeVarRef* nodep) override {
                 if (!m_safe || !nodep->access().isReadOrRW()) return;
+                if (isCompileTimeConstRef(nodep)) return;
                 if (m_taskp && (nodep->varp()->isFuncLocal() || nodep->varp()->isFuncReturn())) {
                     FunctionNameSeen localSeen;
                     if (!m_parent.funcNameSafe(m_modp, m_taskp, nodep->varp()->name(), m_safeNames,
@@ -1160,8 +1166,9 @@ class SubgraphConstraintVisitor final {
                            AstNodeFTask* taskp = nullptr,
                            const ArgBindings* argBindingsp = nullptr,
                            FunctionNameSeen* funcSeenp = nullptr) {
-        if (AstVarRef* const refp = VN_CAST(exprp, VarRef)) {
+        if (AstNodeVarRef* const refp = VN_CAST(exprp, NodeVarRef)) {
             if (!refp->access().isReadOrRW()) return;
+            if (isCompileTimeConstRef(refp)) return;
             if (taskp && (refp->varp()->isFuncLocal() || refp->varp()->isFuncReturn())) {
                 FunctionNameSeen localSeen;
                 collectFuncNameInputs(modp, taskp, refp->varp()->name(), inputs, nonstates, seen,
@@ -1210,8 +1217,9 @@ class SubgraphConstraintVisitor final {
                 }
                 iterateChildrenConst(nodep);
             }
-            void visit(AstVarRef* nodep) override {
+            void visit(AstNodeVarRef* nodep) override {
                 if (!nodep->access().isReadOrRW()) return;
+                if (isCompileTimeConstRef(nodep)) return;
                 if (m_taskp && (nodep->varp()->isFuncLocal() || nodep->varp()->isFuncReturn())) {
                     FunctionNameSeen localSeen;
                     m_parent.collectFuncNameInputs(m_modp, m_taskp, nodep->varp()->name(),
