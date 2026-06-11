@@ -55,7 +55,7 @@ class EmitCLazyDecls final : public VNVisitorConst {
         // Check if this kind of function is lazily declared
         if (!(funcp->isMethod() && funcp->isLoose()) && !funcp->dpiImportPrototype()) return;
         // Already declared manually
-        if (m_emittedManually.count(funcp->nameProtect())) return;
+        if (m_emittedManually.count(EmitCBaseVisitorConst::funcNameProtect(funcp))) return;
         // Needs lazy declaration, emit one
         m_emitter.emitCFuncDecl(funcp, EmitCParentModule::get(funcp), funcp->dpiImportPrototype());
         m_needsBlankLine = true;
