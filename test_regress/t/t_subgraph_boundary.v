@@ -22,7 +22,7 @@ typedef struct packed {
 
 package subgraph_param_pkg;
   parameter logic [7:0] PKG_BIAS = 8'ha7;
-  localparam int unsigned PKG_TOP = 6;
+  localparam int unsigned PKG_TOP = 5;
   localparam int unsigned PKG_MID = 3;
   localparam int unsigned PKG_LOW = PKG_TOP - PKG_MID + 1;
 endpackage
