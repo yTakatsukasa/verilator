@@ -20,7 +20,8 @@ test.compile(verilator_flags2=["--subgraph-schedule --dump-tree-json --no-json-e
 test.execute()
 
 test.file_grep(tree_filename, r'"name":"sg_prog_dev".*"subgraphBoundary":true')
-test.file_grep(cpp_filename, r"Vt_subgraph_program_sg_prog_dev__Pz\d+___nba_sequent__TOP__t__DOT__i_dev0_sub__")
+test.file_grep(cpp_filename,
+               r"Vt_subgraph_program_sg_prog_dev__Pz\d+___nba_sequent__TOP__t__DOT__i_dev0_sub__")
 test.file_grep(sub_cpp_filename, r"___nba_sequent__TOP__t__DOT__i_dev0_sub__")
 
 with open(tree_filename, "r", encoding="utf8") as fh:
