@@ -541,9 +541,21 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         LogicByScope* m_ownerp = nullptr;
     };
 
+    struct SubgraphLogicRefSig final {
+        uintptr_t m_access = 0;
+        const AstVarScope* m_vscp = nullptr;
+    };
+
+    struct SubgraphLogicNodeSig final {
+        uintptr_t m_type = 0;
+        std::vector<SubgraphLogicRefSig> m_refs;
+    };
+
+    using SubgraphLogicSig = std::vector<SubgraphLogicNodeSig>;
+
     struct SubgraphOrderCacheEntry final {
         AstCFunc* m_funcp = nullptr;
-        LogicByScope m_templateLogic;
+        SubgraphLogicSig m_logicSig;
     };
 
     struct SubgraphOrderCacheKey final {
@@ -707,44 +719,48 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         });
         return result;
     };
+    const auto buildLogicSig = [](const LogicByScope& logic) {
+        SubgraphLogicSig result;
+        logic.foreachLogic([&](AstNode* logicp) {
+            SubgraphLogicNodeSig& nodeSig = result.emplace_back();
+            nodeSig.m_type = static_cast<uintptr_t>(logicp->type());
+            logicp->foreach([&](AstVarRef* refp) {
+                nodeSig.m_refs.push_back(
+                    {static_cast<uintptr_t>(refp->access()), refp->varScopep()});
+            });
+        });
+        return result;
+    };
     const auto buildTemplateVarScopeMap
-        = [](const LogicByScope& templateLogic, const LogicByScope& currentLogic,
+        = [](const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
              std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
-              auto fillLogicNodes = [](const LogicByScope& logic, std::vector<AstNode*>& out) {
-                  logic.foreachLogic([&](AstNode* logicp) { out.push_back(logicp); });
-              };
-              auto fillVarRefs = [](AstNode* logicp, std::vector<AstVarRef*>& out) {
-                  logicp->foreach([&](AstVarRef* refp) { out.push_back(refp); });
-              };
-
-              std::vector<AstNode*> templateNodes;
               std::vector<AstNode*> currentNodes;
-              fillLogicNodes(templateLogic, templateNodes);
-              fillLogicNodes(currentLogic, currentNodes);
-              if (templateNodes.size() != currentNodes.size()) return false;
+              currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
+              if (templateSig.size() != currentNodes.size()) return false;
 
-              for (size_t i = 0; i < templateNodes.size(); ++i) {
-                  AstNode* const templateNodep = templateNodes[i];
+              for (size_t i = 0; i < templateSig.size(); ++i) {
+                  const SubgraphLogicNodeSig& templateNode = templateSig[i];
                   AstNode* const currentNodep = currentNodes[i];
-                  if (templateNodep->type() != currentNodep->type()) return false;
+                  if (templateNode.m_type != static_cast<uintptr_t>(currentNodep->type())) {
+                      return false;
+                  }
 
-                  std::vector<AstVarRef*> templateRefs;
                   std::vector<AstVarRef*> currentRefs;
-                  fillVarRefs(templateNodep, templateRefs);
-                  fillVarRefs(currentNodep, currentRefs);
-                  if (templateRefs.size() != currentRefs.size()) return false;
+                  currentNodep->foreach([&](AstVarRef* refp) { currentRefs.push_back(refp); });
+                  if (templateNode.m_refs.size() != currentRefs.size()) return false;
 
-                  for (size_t j = 0; j < templateRefs.size(); ++j) {
-                      AstVarRef* const templateRefp = templateRefs[j];
+                  for (size_t j = 0; j < templateNode.m_refs.size(); ++j) {
+                      const SubgraphLogicRefSig& templateRef = templateNode.m_refs[j];
                       AstVarRef* const currentRefp = currentRefs[j];
-                      if (templateRefp->access() != currentRefp->access()) return false;
-                      const AstVarScope* const templateVscp = templateRefp->varScopep();
+                      if (templateRef.m_access != static_cast<uintptr_t>(currentRefp->access())) {
+                          return false;
+                      }
                       AstVarScope* const currentVscp = currentRefp->varScopep();
-                      const auto it = result.find(templateVscp);
+                      const auto it = result.find(templateRef.m_vscp);
                       if (it != result.end()) {
                           if (it->second != currentVscp) return false;
                       } else {
-                          result.emplace(templateVscp, currentVscp);
+                          result.emplace(templateRef.m_vscp, currentVscp);
                       }
                   }
               }
@@ -944,68 +960,62 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     for (SubgraphGroup& group : groups) {
         FileLine* const flp = group.m_flp;
         AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
-        const auto lowerActiveGroup
-            = [&](LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper, bool isEarly,
-                  const std::vector<AstCFunc*>* tailFuncps = nullptr) {
-                  if (subgraphLogic.empty()) return;
-                  const bool canShare = canShareSubgraphLogic(subgraphLogic, group.m_scopep);
-                  SubgraphOrderCacheKey cacheKey;
-                  cacheKey.m_domainShape = computeDomainShape(subgraphLogic, group.m_scopep);
-                  cacheKey.m_modp = group.m_scopep->modp();
-                  cacheKey.m_senTreep = group.m_senTreep;
-                  cacheKey.m_isEarly = isEarly;
-                  AstCFunc* funcp = nullptr;
-                  if (canShare) {
-                      const auto cacheIt = subgraphOrderCache.find(cacheKey);
-                      if (cacheIt != subgraphOrderCache.end()) {
-                          std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                          if (buildTemplateVarScopeMap(cacheIt->second.m_templateLogic,
-                                                       subgraphLogic, templateVarMap)) {
-                              funcp = cloneOrderedFuncGraph(cacheIt->second.m_funcp,
-                                                            group.m_scopep, templateVarMap);
-                              if (funcp) discardLogic(subgraphLogic);
-                          }
-                      }
-                  }
-                  if (!funcp) {
-                      LogicByScope templateLogic = subgraphLogic.clone();
-                      funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
-                                             tag + "_subgraph_" + cvtToStr(subgraphIndex++), false,
-                                             slow, externalDomains, group.m_scopep);
-                      if (funcp) {
-                          util::splitCheck(funcp);
-                          if (canShare) {
-                              if (subgraphOrderCache.find(cacheKey) == subgraphOrderCache.end()) {
-                                  subgraphOrderCache.emplace(
-                                      cacheKey,
-                                      SubgraphOrderCacheEntry{funcp, std::move(templateLogic)});
-                              } else {
-                                  discardLogic(templateLogic);
-                              }
-                          } else {
-                              discardLogic(templateLogic);
-                          }
-                      } else {
-                          discardLogic(templateLogic);
-                      }
-                  }
-                  if (funcp) {
-                      AstCFunc* callFuncp = funcp;
-                      if (tag == "stl") {
-                          AstCFunc* const tailFuncp
-                              = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
-                          s_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
-                          callFuncp = tailFuncp;
-                      }
-                      AstNodeStmt* const callp = util::callVoidFunc(callFuncp);
-                      if (tailFuncps) {
-                          for (AstCFunc* const tailFuncp : *tailFuncps) {
-                              callp->addNext(util::callVoidFunc(tailFuncp));
-                          }
-                      }
-                      wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, callp));
-                  }
-              };
+        const auto lowerActiveGroup = [&](LogicByScope& subgraphLogic,
+                                          const SubgraphWrapper& wrapper, bool isEarly,
+                                          const std::vector<AstCFunc*>* tailFuncps = nullptr) {
+            if (subgraphLogic.empty()) return;
+            const bool canShare = canShareSubgraphLogic(subgraphLogic, group.m_scopep);
+            SubgraphOrderCacheKey cacheKey;
+            cacheKey.m_domainShape = computeDomainShape(subgraphLogic, group.m_scopep);
+            cacheKey.m_modp = group.m_scopep->modp();
+            cacheKey.m_senTreep = group.m_senTreep;
+            cacheKey.m_isEarly = isEarly;
+            AstCFunc* funcp = nullptr;
+            if (canShare) {
+                const auto cacheIt = subgraphOrderCache.find(cacheKey);
+                if (cacheIt != subgraphOrderCache.end()) {
+                    std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
+                    if (buildTemplateVarScopeMap(cacheIt->second.m_logicSig, subgraphLogic,
+                                                 templateVarMap)) {
+                        funcp = cloneOrderedFuncGraph(cacheIt->second.m_funcp, group.m_scopep,
+                                                      templateVarMap);
+                        if (funcp) discardLogic(subgraphLogic);
+                    }
+                }
+            }
+            if (!funcp) {
+                SubgraphLogicSig logicSig;
+                if (canShare) logicSig = buildLogicSig(subgraphLogic);
+                funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
+                                       tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
+                                       externalDomains, group.m_scopep);
+                if (funcp) {
+                    util::splitCheck(funcp);
+                    if (canShare) {
+                        if (subgraphOrderCache.find(cacheKey) == subgraphOrderCache.end()) {
+                            subgraphOrderCache.emplace(
+                                cacheKey, SubgraphOrderCacheEntry{funcp, std::move(logicSig)});
+                        }
+                    }
+                }
+            }
+            if (funcp) {
+                AstCFunc* callFuncp = funcp;
+                if (tag == "stl") {
+                    AstCFunc* const tailFuncp
+                        = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
+                    s_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
+                    callFuncp = tailFuncp;
+                }
+                AstNodeStmt* const callp = util::callVoidFunc(callFuncp);
+                if (tailFuncps) {
+                    for (AstCFunc* const tailFuncp : *tailFuncps) {
+                        callp->addNext(util::callVoidFunc(tailFuncp));
+                    }
+                }
+                wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, callp));
+            }
+        };
         if (!group.m_earlyLogic.empty()) {
             lowerActiveGroup(group.m_earlyLogic,
                              wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()), true);
@@ -1048,8 +1058,6 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             wrapperActivep->deleteTree();
         }
     }
-
-    for (auto& pair : subgraphOrderCache) discardLogic(pair.second.m_templateLogic);
 
     for (SnapshotBucket& bucket : snapshotBuckets) {
         if (bucket.m_sourceVars.empty()) continue;
