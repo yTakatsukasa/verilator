@@ -437,7 +437,9 @@ class EmitCImp final : public EmitCFunc {
         // Open output file
         openNextOutputFile(m_uniqueNames.get(m_fileBaseName));
         // Emit all functions
+        std::unordered_set<string> emittedNames;
         for (AstCFunc* const funcp : funcps) {
+            if (!emittedNames.insert(funcNameProtect(funcp)).second) continue;
             VL_RESTORER(m_modp);
             m_modp = EmitCParentModule::get(funcp);
             iterateConst(funcp);
