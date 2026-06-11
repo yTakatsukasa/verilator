@@ -79,6 +79,10 @@ string EmitCUtil::prefixNameProtect(const AstNode* nodep) VL_MT_STABLE {
 
 string EmitCBaseVisitorConst::funcNameProtect(const AstCFunc* nodep, const AstNodeModule* modp) {
     modp = modp ? modp : EmitCParentModule::get(nodep);
+    const bool useSharedCName
+        = nodep->name().find("__sgclone_") != string::npos && !nodep->cname().empty();
+    const string cfuncName
+        = useSharedCName ? VIdProtect::protect(nodep->cname()) : nodep->nameProtect();
     string name;
     if (nodep->isConstructor()) {
         name += "init";
@@ -90,7 +94,7 @@ string EmitCBaseVisitorConst::funcNameProtect(const AstCFunc* nodep, const AstNo
             name += EmitCUtil::prefixNameProtect(modp);
             name += "__";
         }
-        name += nodep->nameProtect();
+        name += cfuncName;
     }
     return name;
 }
