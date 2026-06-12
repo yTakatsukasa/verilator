@@ -137,6 +137,7 @@ class V3OrderProcessDomains final {
 
                 // Add in any external domains of variables
                 if (OrderVarVertex* const varVtxp = fromVtxp->cast<OrderVarVertex>()) {
+                    if (!varVtxp->hasVarScope()) continue;
                     AstVarScope* const vscp = varVtxp->vscp();
                     externalDomainps.clear();
                     m_externalDomains(vscp, externalDomainps);
@@ -189,7 +190,8 @@ class V3OrderProcessDomains final {
 
         for (V3GraphVertex& vtx : m_graph.vertices()) {
             if (OrderVarVertex* const vvertexp = vtx.cast<OrderVarVertex>()) {
-                string name(vvertexp->vscp()->prettyName());
+                string name = vvertexp->hasVarScope() ? vvertexp->vscp()->prettyName()
+                                                      : vvertexp->debugName();
                 if (vtx.is<OrderVarPreVertex>()) {
                     name += " {PRE}";
                 } else if (vtx.is<OrderVarPostVertex>()) {
@@ -199,7 +201,10 @@ class V3OrderProcessDomains final {
                 }
                 std::ostringstream os;
                 os.setf(std::ios::left);
-                os << "  " << cvtToHex(vvertexp->vscp()) << " " << std::setw(50) << name << " ";
+                os << "  "
+                   << cvtToHex(vvertexp->hasVarScope() ? static_cast<const void*>(vvertexp->vscp())
+                                                       : static_cast<const void*>(vvertexp))
+                   << " " << std::setw(50) << name << " ";
                 AstSenTree* const senTreep = vvertexp->domainp();
                 if (senTreep == m_deleteDomainp) {
                     os << "DELETED";

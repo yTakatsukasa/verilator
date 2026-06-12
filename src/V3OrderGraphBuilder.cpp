@@ -110,9 +110,9 @@ class OrderGraphBuilder final : public VNVisitor {
     AstSenTree* m_domainp = nullptr;
     // Sensitivity list for hybrid logic, nullptr for everything else
     AstSenTree* m_hybridp = nullptr;
-    std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphClockedBarrierVscps;
-    std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphPostBarrierVscps;
-    std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphSnapshotBarrierVscps;
+    std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphClockedPhaseVtxps;
+    std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphPostPhaseVtxps;
+    std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphSnapshotPhaseVtxps;
 
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
@@ -142,25 +142,22 @@ class OrderGraphBuilder final : public VNVisitor {
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
             if (m_inClocked && !m_inPost && !m_isSubgraphSnapshotLogic
                 && !m_isSubgraphWrapperLogic) {
-                addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), false, true, nodep);
+                addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
             }
             if (m_inPost && m_isSubgraphCommitPostLogic) {
-                addCoarseVarUsage(getSubgraphPostBarrierVscp(barrierKeyp), true, false, nodep);
+                addPhaseUsage(getSubgraphPostPhaseVtxp(barrierKeyp), true, false, nodep);
             }
             if (m_isSubgraphSnapshotLogic) {
-                addCoarseVarUsage(getSubgraphSnapshotBarrierVscp(barrierKeyp), false, true, nodep);
-                addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), false, true, nodep);
+                addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), false, true, nodep);
+                addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
             }
             if (m_isSubgraphWrapperLogic && m_inClocked && !m_inPost) {
                 if (m_inPre) {
-                    addCoarseVarUsage(getSubgraphSnapshotBarrierVscp(barrierKeyp), true, false,
-                                      nodep);
-                    addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), false, true,
-                                      nodep);
+                    addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), true, false, nodep);
+                    addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
                 } else {
-                    addCoarseVarUsage(getSubgraphPostBarrierVscp(barrierKeyp), false, true, nodep);
-                    addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), true, false,
-                                      nodep);
+                    addPhaseUsage(getSubgraphPostPhaseVtxp(barrierKeyp), false, true, nodep);
+                    addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), true, false, nodep);
                 }
             }
         }
@@ -172,34 +169,31 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
     }
 
-    AstVarScope* getSubgraphClockedBarrierVscp(const AstSenTree* barrierKeyp) {
-        const auto it = m_subgraphClockedBarrierVscps.find(barrierKeyp);
-        if (it != m_subgraphClockedBarrierVscps.end()) return it->second;
-        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        AstVarScope* const vscp = topScopep->createTemp(
-            "__VsubgraphClockedBarrier__" + cvtToStr(m_subgraphClockedBarrierVscps.size()), 1);
-        m_subgraphClockedBarrierVscps.emplace(barrierKeyp, vscp);
-        return vscp;
+    OrderSubgraphPhaseVertex* getSubgraphClockedPhaseVtxp(const AstSenTree* barrierKeyp) {
+        const auto it = m_subgraphClockedPhaseVtxps.find(barrierKeyp);
+        if (it != m_subgraphClockedPhaseVtxps.end()) return it->second;
+        OrderSubgraphPhaseVertex* const vtxp
+            = new OrderSubgraphPhaseVertex{m_graphp, OrderSubgraphPhaseVertex::Kind::CLOCKED};
+        m_subgraphClockedPhaseVtxps.emplace(barrierKeyp, vtxp);
+        return vtxp;
     }
 
-    AstVarScope* getSubgraphPostBarrierVscp(const AstSenTree* barrierKeyp) {
-        const auto it = m_subgraphPostBarrierVscps.find(barrierKeyp);
-        if (it != m_subgraphPostBarrierVscps.end()) return it->second;
-        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        AstVarScope* const vscp = topScopep->createTemp(
-            "__VsubgraphPostBarrier__" + cvtToStr(m_subgraphPostBarrierVscps.size()), 1);
-        m_subgraphPostBarrierVscps.emplace(barrierKeyp, vscp);
-        return vscp;
+    OrderSubgraphPhaseVertex* getSubgraphPostPhaseVtxp(const AstSenTree* barrierKeyp) {
+        const auto it = m_subgraphPostPhaseVtxps.find(barrierKeyp);
+        if (it != m_subgraphPostPhaseVtxps.end()) return it->second;
+        OrderSubgraphPhaseVertex* const vtxp
+            = new OrderSubgraphPhaseVertex{m_graphp, OrderSubgraphPhaseVertex::Kind::POST};
+        m_subgraphPostPhaseVtxps.emplace(barrierKeyp, vtxp);
+        return vtxp;
     }
 
-    AstVarScope* getSubgraphSnapshotBarrierVscp(const AstSenTree* barrierKeyp) {
-        const auto it = m_subgraphSnapshotBarrierVscps.find(barrierKeyp);
-        if (it != m_subgraphSnapshotBarrierVscps.end()) return it->second;
-        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        AstVarScope* const vscp = topScopep->createTemp(
-            "__VsubgraphSnapshotBarrier__" + cvtToStr(m_subgraphSnapshotBarrierVscps.size()), 1);
-        m_subgraphSnapshotBarrierVscps.emplace(barrierKeyp, vscp);
-        return vscp;
+    OrderSubgraphPhaseVertex* getSubgraphSnapshotPhaseVtxp(const AstSenTree* barrierKeyp) {
+        const auto it = m_subgraphSnapshotPhaseVtxps.find(barrierKeyp);
+        if (it != m_subgraphSnapshotPhaseVtxps.end()) return it->second;
+        OrderSubgraphPhaseVertex* const vtxp
+            = new OrderSubgraphPhaseVertex{m_graphp, OrderSubgraphPhaseVertex::Kind::SNAPSHOT};
+        m_subgraphSnapshotPhaseVtxps.emplace(barrierKeyp, vtxp);
+        return vtxp;
     }
 
     bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
@@ -385,6 +379,13 @@ class OrderGraphBuilder final : public VNVisitor {
             OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
             m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
         }
+    }
+
+    void addPhaseUsage(OrderSubgraphPhaseVertex* phaseVtxp, bool isRead, bool isWrite,
+                       AstNode* nodep) {
+        UASSERT_OBJ(m_logicVxp, nodep, "Phase usage not under logic");
+        if (isWrite) m_graphp->addHardEdge(m_logicVxp, phaseVtxp, WEIGHT_NORMAL);
+        if (isRead) m_graphp->addHardEdge(phaseVtxp, m_logicVxp, WEIGHT_MEDIUM);
     }
 
     void addSubgraphCallPortUsage(AstCCall* nodep) {

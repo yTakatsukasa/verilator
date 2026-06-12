@@ -95,9 +95,6 @@ string orderGraphFilelineSummary(FileLine* flp) {
 }
 
 string orderGraphSubgraphVarKind(const string& name) {
-    if (0 == name.rfind("__VsubgraphClockedBarrier__", 0)) return "subgraph-clocked-barrier";
-    if (0 == name.rfind("__VsubgraphPostBarrier__", 0)) return "subgraph-post-barrier";
-    if (0 == name.rfind("__VsubgraphSnapshotBarrier__", 0)) return "subgraph-snapshot-barrier";
     if (0 == name.rfind("__VsubgraphSnapshot__", 0)) return "subgraph-snapshot";
     if (0 == name.rfind("__Vdly__", 0)) return "delayed-shadow";
     return "";
@@ -119,16 +116,44 @@ string OrderGraph::loopsVertexCb(V3GraphVertex* vertexp) {
     }
     if (const auto* const varp = dynamic_cast<const OrderVarVertex*>(vertexp)) {
         const string role = varp->nameSuffix().empty() ? "STD" : varp->nameSuffix();
-        string msg = "-Loop-Var: name='" + varp->vscp()->name() + "' role='" + role + "'";
-        if (const string kind = orderGraphSubgraphVarKind(varp->vscp()->varp()->name());
-            !kind.empty()) {
-            msg += " kind='" + kind + "'";
+        string msg = "-Loop-Var: name='" + varp->debugName() + "' role='" + role + "'";
+        if (const auto* const phasep = dynamic_cast<const OrderSubgraphPhaseVertex*>(varp)) {
+            switch (phasep->kind()) {
+            case OrderSubgraphPhaseVertex::Kind::CLOCKED:
+                msg += " kind='subgraph-clocked-phase'";
+                break;
+            case OrderSubgraphPhaseVertex::Kind::POST: msg += " kind='subgraph-post-phase'"; break;
+            case OrderSubgraphPhaseVertex::Kind::SNAPSHOT:
+                msg += " kind='subgraph-snapshot-phase'";
+                break;
+            }
+        } else if (varp->hasVarScope()) {
+            if (const string kind = orderGraphSubgraphVarKind(varp->vscp()->varp()->name());
+                !kind.empty()) {
+                msg += " kind='" + kind + "'";
+            }
+            msg += " scope='" + varp->vscp()->scopep()->prettyName() + "'";
+            if (AstScope* const boundaryp
+                = orderGraphSubgraphBoundaryScope(varp->vscp()->scopep())) {
+                msg += " subgraph='" + boundaryp->modp()->prettyName() + "'";
+            }
+            msg += orderGraphFilelineSummary(varp->vscp()->fileline());
         }
-        msg += " scope='" + varp->vscp()->scopep()->prettyName() + "'";
-        if (AstScope* const boundaryp = orderGraphSubgraphBoundaryScope(varp->vscp()->scopep())) {
-            msg += " subgraph='" + boundaryp->modp()->prettyName() + "'";
+        if (!varp->hasVarScope()) {
+            for (const V3GraphEdge& edge : vertexp->inEdges()) {
+                const auto* const logicEdgep = &edge;
+                if (const auto* const logicp
+                    = dynamic_cast<const OrderLogicVertex*>(logicEdgep->fromp())) {
+                    msg += " scope='" + logicp->scopep()->prettyName() + "'";
+                    if (AstScope* const boundaryp
+                        = orderGraphSubgraphBoundaryScope(logicp->scopep())) {
+                        msg += " subgraph='" + boundaryp->modp()->prettyName() + "'";
+                    }
+                    msg += orderGraphFilelineSummary(logicp->nodep()->fileline());
+                    break;
+                }
+            }
         }
-        msg += orderGraphFilelineSummary(varp->vscp()->fileline());
         return msg + "\n";
     }
     return V3Graph::loopsVertexCb(vertexp);
