@@ -101,6 +101,7 @@
 #include "V3SplitVar.h"
 #include "V3Stats.h"
 #include "V3String.h"
+#include "V3SubgraphSummary.h"
 #include "V3Subst.h"
 #include "V3TSP.h"
 #include "V3Table.h"
@@ -474,6 +475,12 @@ static void process() {
 
             // Remove SAMPLED
             if (v3Global.hasSampled()) V3Sampled::sampledAll(v3Global.rootp());
+
+            if (v3Global.opt.subgraphSchedule()) {
+                V3SubgraphSummary::build(v3Global.rootp());
+            } else {
+                V3SubgraphSummary::clear();
+            }
 
             if (v3Global.opt.stats()) V3Stats::statsStageAll(v3Global.rootp(), "PreOrder");
 
