@@ -72,6 +72,7 @@
 
 class OrderLogicVertex;
 class OrderVarVertex;
+class OrderSubgraphPhaseVertex;
 
 //======================================================================
 
@@ -187,12 +188,18 @@ public:
 
     // ACCESSORS
     AstVarScope* vscp() const { return m_vscp; }
+    bool hasVarScope() const VL_MT_SAFE { return m_vscp; }
 
     // LCOV_EXCL_START // Debug code
     string dotShape() const override final { return "ellipse"; }
     virtual string nameSuffix() const VL_MT_SAFE = 0;
+    virtual string debugName() const VL_MT_STABLE {
+        return m_vscp ? m_vscp->name() : "<synthetic>";
+    }
     string name() const override final VL_MT_STABLE {
-        return cvtToHex(m_vscp) + " " + nameSuffix() + "\\n " + m_vscp->name();
+        const void* const keyp
+            = m_vscp ? static_cast<const void*>(m_vscp) : static_cast<const void*>(this);
+        return cvtToHex(keyp) + " " + nameSuffix() + "\\n " + debugName();
     }
     // LCOV_EXCL_STOP
 };
@@ -262,6 +269,44 @@ public:
     // LCOV_EXCL_START // Debug code
     string nameSuffix() const override VL_MT_SAFE { return "PORD"; }
     string dotColor() const override { return "blue"; }
+    // LCOV_EXCL_STOP
+};
+
+class OrderSubgraphPhaseVertex final : public OrderVarVertex {
+    VL_RTTI_IMPL(OrderSubgraphPhaseVertex, OrderVarVertex)
+public:
+    enum class Kind : uint8_t { CLOCKED, POST, SNAPSHOT };
+
+private:
+    const Kind m_kind;
+
+public:
+    OrderSubgraphPhaseVertex(OrderGraph* graphp, Kind kind) VL_MT_DISABLED
+        : OrderVarVertex{graphp, nullptr},
+          m_kind{kind} {}
+    ~OrderSubgraphPhaseVertex() override = default;
+
+    bool domainMatters() override { return false; }
+    Kind kind() const VL_MT_SAFE { return m_kind; }
+
+    // LCOV_EXCL_START // Debug code
+    string nameSuffix() const override VL_MT_SAFE { return "PHASE"; }
+    string debugName() const override VL_MT_STABLE {
+        switch (m_kind) {
+        case Kind::CLOCKED: return "__VsubgraphClockedPhase";
+        case Kind::POST: return "__VsubgraphPostPhase";
+        case Kind::SNAPSHOT: return "__VsubgraphSnapshotPhase";
+        }
+        return "__VsubgraphPhase";
+    }
+    string dotColor() const override {
+        switch (m_kind) {
+        case Kind::CLOCKED: return "darkgreen";
+        case Kind::POST: return "darkred";
+        case Kind::SNAPSHOT: return "darkorange";
+        }
+        return "black";
+    }
     // LCOV_EXCL_STOP
 };
 
