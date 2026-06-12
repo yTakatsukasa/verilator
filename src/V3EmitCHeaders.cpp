@@ -597,9 +597,11 @@ class EmitCHeader final : public EmitCConstInit {
             return ap->name() < bp->name();
         });
 
-        std::unordered_set<string> emittedNames;
+        std::unordered_set<string> emittedDecls;
         for (const AstCFunc* const funcp : funcsp) {
-            if (!emittedNames.insert(funcNameProtect(funcp, modp)).second) continue;
+            const string declKey = funcNameProtect(funcp, modp) + "|" + cFuncArgs(funcp) + "|"
+                                   + (funcp->isConst().trueKnown() ? "const" : "");
+            if (!emittedDecls.insert(declKey).second) continue;
             if (inClassBody) ofp()->putsPrivate(funcp->declPrivate());
             emitCFuncDecl(funcp, modp);
         }
