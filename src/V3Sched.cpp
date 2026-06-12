@@ -52,6 +52,10 @@ namespace V3Sched {
 
 namespace {
 
+using SubgraphCallUsageSummaryMap
+    = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
+SubgraphCallUsageSummaryMap s_subgraphCallUsageSummaries;
+
 //============================================================================
 // Utility functions
 
@@ -896,6 +900,37 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
 
         return clonedFuncs.at(funcp);
     };
+    const auto buildSubgraphCallUsageSummary = [&](AstCFunc* funcp, AstScope* boundaryScopep) {
+        std::vector<SubgraphCallUsageSummary> uses;
+        std::unordered_map<AstVarScope*, size_t> useIndices;
+        std::unordered_set<AstCFunc*> seen;
+        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
+            if (!seen.insert(scanFuncp).second) return;
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                const bool internalOrderVar = isUnderBoundaryScope(vscp->scopep(), boundaryScopep)
+                                              && 0 == vscp->varp()->name().rfind("__Vdly", 0);
+                const bool externalToSubgraph
+                    = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
+                if (!internalOrderVar && !externalToSubgraph) return;
+                const auto pair = useIndices.emplace(vscp, uses.size());
+                if (pair.second) uses.push_back(SubgraphCallUsageSummary{vscp, false, false});
+                SubgraphCallUsageSummary& use = uses[pair.first->second];
+                use.m_read |= refp->access().isReadOrRW();
+                use.m_write |= refp->access().isWriteOrRW();
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint()) return;
+                gather(calledFuncp);
+            });
+        };
+        gather(funcp);
+        return uses;
+    };
+    const auto registerSubgraphCallUsageSummary = [&](AstCFunc* funcp, AstScope* boundaryScopep) {
+        s_subgraphCallUsageSummaries[funcp] = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
+    };
 
     std::vector<SubgraphGroup> groups;
     const auto findGroup
@@ -991,6 +1026,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                        externalDomains, group.m_scopep);
                 if (funcp) {
                     util::splitCheck(funcp);
+                    registerSubgraphCallUsageSummary(funcp, group.m_scopep);
                     if (canShare) {
                         if (subgraphOrderCache.find(cacheKey) == subgraphOrderCache.end()) {
                             subgraphOrderCache.emplace(
@@ -1004,6 +1040,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 if (tag == "stl") {
                     AstCFunc* const tailFuncp
                         = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
+                    registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
                     s_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
                     callFuncp = tailFuncp;
                 }
@@ -1038,11 +1075,15 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                     if (snapshotCrossBoundaryReads) {
                         activeTailFuncps.reserve(it->second.size());
                         for (AstCFunc* const tailFuncp : it->second) {
-                            activeTailFuncps.push_back(
-                                tailNeedsNbaClone(tailFuncp, group.m_scopep)
-                                    ? cloneTailFuncForNba(tailFuncp, group.m_scopep,
-                                                          group.m_ownerp, group.m_senTreep)
-                                    : tailFuncp);
+                            AstCFunc* const activeTailFuncp
+                                = tailNeedsNbaClone(tailFuncp, group.m_scopep)
+                                      ? cloneTailFuncForNba(tailFuncp, group.m_scopep,
+                                                            group.m_ownerp, group.m_senTreep)
+                                      : tailFuncp;
+                            activeTailFuncps.push_back(activeTailFuncp);
+                            if (activeTailFuncp != tailFuncp) {
+                                registerSubgraphCallUsageSummary(activeTailFuncp, group.m_scopep);
+                            }
                         }
                         tailFuncps = &activeTailFuncps;
                     } else {
@@ -1495,6 +1536,13 @@ void createEval(AstNetlist* netlistp,  //
 
 }  // namespace
 
+const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const AstCFunc* funcp) {
+    const auto it = s_subgraphCallUsageSummaries.find(funcp);
+    return it == s_subgraphCallUsageSummaries.end() ? nullptr : &it->second;
+}
+
+void clearSubgraphCallUsageSummaries() { s_subgraphCallUsageSummaries.clear(); }
+
 //============================================================================
 // Helper that builds virtual interface trigger sentrees
 
@@ -1542,6 +1590,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 // Top level entry-point to scheduling
 
 void schedule(AstNetlist* netlistp) {
+    clearSubgraphCallUsageSummaries();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;
         lbs.foreachLogic([&](AstNode* nodep) { size += nodep->nodeCount(); });
