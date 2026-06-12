@@ -95,10 +95,9 @@ string orderGraphFilelineSummary(FileLine* flp) {
 }
 
 string orderGraphSubgraphVarKind(const string& name) {
-    if (name == "__VsubgraphClockedBarrier") return "subgraph-clocked-barrier";
-    if (name == "__VsubgraphPostBarrier") return "subgraph-post-barrier";
-    if (name == "__VsubgraphPreBarrier") return "subgraph-pre-barrier";
-    if (name == "__VsubgraphSnapshotBarrier") return "subgraph-snapshot-barrier";
+    if (0 == name.rfind("__VsubgraphClockedBarrier__", 0)) return "subgraph-clocked-barrier";
+    if (0 == name.rfind("__VsubgraphPostBarrier__", 0)) return "subgraph-post-barrier";
+    if (0 == name.rfind("__VsubgraphSnapshotBarrier__", 0)) return "subgraph-snapshot-barrier";
     if (0 == name.rfind("__VsubgraphSnapshot__", 0)) return "subgraph-snapshot";
     if (0 == name.rfind("__Vdly__", 0)) return "delayed-shadow";
     return "";
