@@ -112,7 +112,6 @@ class OrderGraphBuilder final : public VNVisitor {
     AstSenTree* m_hybridp = nullptr;
     std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphClockedBarrierVscps;
     std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphPostBarrierVscps;
-    std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphPreBarrierVscps;
     std::unordered_map<const AstSenTree*, AstVarScope*> m_subgraphSnapshotBarrierVscps;
 
     bool m_inClocked = false;  // Underneath clocked AstActive
@@ -148,21 +147,21 @@ class OrderGraphBuilder final : public VNVisitor {
             if (m_inPost && m_isSubgraphCommitPostLogic) {
                 addCoarseVarUsage(getSubgraphPostBarrierVscp(barrierKeyp), true, false, nodep);
             }
-            if (m_inPre && m_isSubgraphWrapperLogic && m_inClocked) {
-                addCoarseVarUsage(getSubgraphPreBarrierVscp(barrierKeyp), false, true, nodep);
-            }
             if (m_isSubgraphSnapshotLogic) {
                 addCoarseVarUsage(getSubgraphSnapshotBarrierVscp(barrierKeyp), false, true, nodep);
+                addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), false, true, nodep);
             }
             if (m_isSubgraphWrapperLogic && m_inClocked && !m_inPost) {
-                if (!m_inPre)
+                if (m_inPre) {
+                    addCoarseVarUsage(getSubgraphSnapshotBarrierVscp(barrierKeyp), true, false,
+                                      nodep);
+                    addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), false, true,
+                                      nodep);
+                } else {
                     addCoarseVarUsage(getSubgraphPostBarrierVscp(barrierKeyp), false, true, nodep);
-                if (!m_inPre)
                     addCoarseVarUsage(getSubgraphClockedBarrierVscp(barrierKeyp), true, false,
                                       nodep);
-                if (!m_inPre)
-                    addCoarseVarUsage(getSubgraphPreBarrierVscp(barrierKeyp), true, false, nodep);
-                addCoarseVarUsage(getSubgraphSnapshotBarrierVscp(barrierKeyp), true, false, nodep);
+                }
             }
         }
         m_logicVxp = nullptr;
@@ -190,16 +189,6 @@ class OrderGraphBuilder final : public VNVisitor {
         AstVarScope* const vscp = topScopep->createTemp(
             "__VsubgraphPostBarrier__" + cvtToStr(m_subgraphPostBarrierVscps.size()), 1);
         m_subgraphPostBarrierVscps.emplace(barrierKeyp, vscp);
-        return vscp;
-    }
-
-    AstVarScope* getSubgraphPreBarrierVscp(const AstSenTree* barrierKeyp) {
-        const auto it = m_subgraphPreBarrierVscps.find(barrierKeyp);
-        if (it != m_subgraphPreBarrierVscps.end()) return it->second;
-        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        AstVarScope* const vscp = topScopep->createTemp(
-            "__VsubgraphPreBarrier__" + cvtToStr(m_subgraphPreBarrierVscps.size()), 1);
-        m_subgraphPreBarrierVscps.emplace(barrierKeyp, vscp);
         return vscp;
     }
 
@@ -586,13 +575,8 @@ class OrderGraphBuilder final : public VNVisitor {
     }
     void visit(AstNodeVarRef* nodep) override {
         AstVarScope* const varscp = nodep->varScopep();
-        if (m_isSubgraphSnapshotLogic) {
-            if (0 == varscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
-                addCoarseVarUsage(varscp, nodep->access().isReadOrRW(),
-                                  nodep->access().isWriteOrRW(), nodep);
-            }
-            return;
-        }
+        if (0 == varscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) return;
+        if (m_isSubgraphSnapshotLogic) { return; }
         addVarUsage(varscp, nodep->access().isReadOrRW(), nodep->access().isWriteOrRW(), nodep);
     }
     void visit(AstCCall* nodep) override {
