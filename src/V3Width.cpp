@@ -6482,10 +6482,10 @@ class WidthVisitor final : public VNVisitor {
                             v3Global.hasPrintedObjects(true);
                         }
                     } else {
-                        AstNodeDType* nodeDtypep = varRefp->dtypep();
-                        while (nodeDtypep && nodeDtypep->subDTypep()
-                               && nodeDtypep->subDTypep()->skipRefp()) {
-                            nodeDtypep = nodeDtypep->subDTypep()->skipRefp();
+                        for (AstNodeDType* nodeDtypep = varRefp->dtypep()->skipRefp(); nodeDtypep;
+                             nodeDtypep = nodeDtypep->subDTypep()
+                                              ? nodeDtypep->subDTypep()->skipRefp()
+                                              : nullptr) {
                             if (AstNodeUOrStructDType* const uOrStructDTypep
                                 = VN_CAST(nodeDtypep, NodeUOrStructDType)) {
                                 uOrStructDTypep->setEmitToString();
