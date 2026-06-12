@@ -451,8 +451,18 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     const std::vector<SubgraphCallUsage>& getSubgraphCallUsage(AstCFunc* funcp) {
-        const auto it = m_subgraphCallUsageCache.find(funcp);
-        if (it != m_subgraphCallUsageCache.end()) return it->second;
+        const auto cacheIt = m_subgraphCallUsageCache.find(funcp);
+        if (cacheIt != m_subgraphCallUsageCache.end()) return cacheIt->second;
+
+        if (const auto* const summaryp = V3Sched::getSubgraphCallUsageSummary(funcp)) {
+            std::vector<SubgraphCallUsage> uses;
+            uses.reserve(summaryp->size());
+            for (const V3Sched::SubgraphCallUsageSummary& summary : *summaryp) {
+                uses.push_back(
+                    SubgraphCallUsage{summary.m_varscp, summary.m_read, summary.m_write});
+            }
+            return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
+        }
 
         std::vector<SubgraphCallUsage> uses;
         std::unordered_map<AstVarScope*, size_t> useIndices;
