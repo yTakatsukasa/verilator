@@ -34,6 +34,16 @@ class SenExprBuilder;
 
 namespace V3Sched {
 
+struct SubgraphCallUsageSummary final {
+    AstVarScope* m_varscp = nullptr;
+    bool m_read = false;
+    bool m_write = false;
+};
+
+const std::vector<SubgraphCallUsageSummary>*
+getSubgraphCallUsageSummary(const AstCFunc* funcp) VL_MT_DISABLED;
+void clearSubgraphCallUsageSummaries() VL_MT_DISABLED;
+
 namespace util {
 using VarScopeSet = std::unordered_set<const AstVarScope*>;
 
