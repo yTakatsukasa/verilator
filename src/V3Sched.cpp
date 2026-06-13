@@ -80,14 +80,17 @@ AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::s
     if (AstIf* const ifp = VN_CAST(bodyp, If)) {
         if (!ifp->nextp() && !ifp->elsesp() && ifp->thensp()) bodyp = ifp->thensp();
     }
-    AstCFunc* const clonep
-        = new AstCFunc{funcp->fileline(), funcp->name() + nameSuffix, scopep, ""};
+    const bool shareSubgraphHelper = scopep->modp()->subgraphBoundary() && !funcp->cname().empty();
+    const string cloneName = shareSubgraphHelper ? funcp->name() + "__sgclone" + nameSuffix
+                                                 : funcp->name() + nameSuffix;
+    AstCFunc* const clonep = new AstCFunc{funcp->fileline(), cloneName, scopep, ""};
     clonep->dontCombine(true);
     clonep->isStatic(false);
     clonep->isLoose(true);
     clonep->slow(slow);
     clonep->isConst(false);
     clonep->declPrivate(true);
+    if (shareSubgraphHelper) clonep->cname(funcp->cname() + nameSuffix);
     scopep->addBlocksp(clonep);
     if (bodyp) clonep->addStmtsp(bodyp->cloneTree(true));
     return clonep;
@@ -696,15 +699,21 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     const auto cloneTailFuncForNba = [&](AstCFunc* tailFuncp, AstScope* boundaryScopep,
                                          LogicByScope* ownerp, AstSenTree* senTreep) -> AstCFunc* {
         static unsigned s_tailCloneIndex = 0;
-        AstCFunc* const clonep = new AstCFunc{
-            tailFuncp->fileline(), tailFuncp->name() + "__nba_" + cvtToStr(s_tailCloneIndex++),
-            boundaryScopep, ""};
+        const bool shareSubgraphHelper
+            = boundaryScopep->modp()->subgraphBoundary() && !tailFuncp->cname().empty();
+        const string cloneName
+            = shareSubgraphHelper
+                  ? tailFuncp->name() + "__sgclone__nba_" + cvtToStr(s_tailCloneIndex++)
+                  : tailFuncp->name() + "__nba_" + cvtToStr(s_tailCloneIndex++);
+        AstCFunc* const clonep
+            = new AstCFunc{tailFuncp->fileline(), cloneName, boundaryScopep, ""};
         clonep->dontCombine(true);
         clonep->isStatic(false);
         clonep->isLoose(true);
         clonep->slow(slow);
         clonep->isConst(false);
         clonep->declPrivate(true);
+        if (shareSubgraphHelper) clonep->cname(tailFuncp->cname() + "__nba");
         boundaryScopep->addBlocksp(clonep);
         if (tailFuncp->stmtsp()) {
             AstNode* const bodyp = tailFuncp->stmtsp()->cloneTree(true);
