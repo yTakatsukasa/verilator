@@ -413,6 +413,12 @@ static void process() {
             V3Dead::deadifyDTypesScoped(v3Global.rootp());
             v3Global.checkTree();
 
+            if (v3Global.opt.subgraphSchedule()) {
+                V3SubgraphSummary::buildModules(v3Global.rootp());
+            } else {
+                V3SubgraphSummary::clear();
+            }
+
             // Move assignments/sensitives into a SBLOCK for each unique sensitivity list
             // (May convert some ALWAYS to combo blocks, so should be before V3Gate step.)
             V3Active::activeAll(v3Global.rootp());
@@ -477,9 +483,7 @@ static void process() {
             if (v3Global.hasSampled()) V3Sampled::sampledAll(v3Global.rootp());
 
             if (v3Global.opt.subgraphSchedule()) {
-                V3SubgraphSummary::build(v3Global.rootp());
-            } else {
-                V3SubgraphSummary::clear();
+                V3SubgraphSummary::bindScopes(v3Global.rootp());
             }
 
             if (v3Global.opt.stats()) V3Stats::statsStageAll(v3Global.rootp(), "PreOrder");
