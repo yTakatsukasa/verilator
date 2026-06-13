@@ -611,23 +611,19 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     const bool snapshotCrossBoundaryReads = tag == "nba";
     std::unordered_map<SubgraphOrderCacheKey, SubgraphOrderCacheEntry, SubgraphOrderCacheKeyHash>
         subgraphOrderCache;
-    std::unordered_map<AstVarScope*, AstVarScope*> snapshotVars;
+    struct SnapshotRef final {
+        AstVarScope* m_snapshotVscp = nullptr;
+        uint32_t m_elemIndex = 0;
+        bool m_isBundle = false;
+    };
     struct SnapshotBucket final {
         LogicByScope* m_ownerp = nullptr;
         AstSenTree* m_senTreep = nullptr;
         std::vector<AstVarScope*> m_sourceVars;
         std::unordered_set<AstVarScope*> m_seen;
+        std::unordered_map<AstVarScope*, SnapshotRef> m_snapshotRefs;
     };
     std::vector<SnapshotBucket> snapshotBuckets;
-    const auto getSnapshotVar = [&](AstVarScope* vscp) -> AstVarScope* {
-        const auto it = snapshotVars.find(vscp);
-        if (it != snapshotVars.end()) return it->second;
-        const string name = "__VsubgraphSnapshot__" + vscp->scopep()->nameDotless() + "__"
-                            + vscp->varp()->shortName();
-        AstVarScope* const snapshotp = vscp->scopep()->createTempLike(name, vscp);
-        snapshotVars.emplace(vscp, snapshotp);
-        return snapshotp;
-    };
     const auto getSnapshotBucket
         = [&](LogicByScope* ownerp, AstSenTree* senTreep) -> SnapshotBucket& {
         for (SnapshotBucket& bucket : snapshotBuckets) {
@@ -645,6 +641,20 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
               if (!bucket.m_seen.insert(sourceVscp).second) return;
               bucket.m_sourceVars.push_back(sourceVscp);
           };
+    const auto getSnapshotRef = [&](LogicByScope* ownerp, AstSenTree* senTreep,
+                                    AstVarScope* sourceVscp) -> const SnapshotRef& {
+        SnapshotBucket& bucket = getSnapshotBucket(ownerp, senTreep);
+        const auto it = bucket.m_snapshotRefs.find(sourceVscp);
+        UASSERT_OBJ(it != bucket.m_snapshotRefs.end(), sourceVscp,
+                    "Missing subgraph snapshot reference");
+        return it->second;
+    };
+    const auto makeSnapshotExpr
+        = [&](const SnapshotRef& snapshotRef, FileLine* flp, VAccess access) -> AstNodeExpr* {
+        AstNodeExpr* const refp = new AstVarRef{flp, snapshotRef.m_snapshotVscp, access};
+        if (!snapshotRef.m_isBundle) return refp;
+        return new AstArraySel{flp, refp, static_cast<int>(snapshotRef.m_elemIndex)};
+    };
     const auto isUnderBoundaryScope = [](AstScope* scopep, AstScope* boundaryScopep) {
         for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
             if (scanp == boundaryScopep) return true;
@@ -684,8 +694,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                                && sourceVscp->varp()->direction().isNonOutput();
             const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
             if (!snapshotBoundaryInput && !snapshotExternalRead) return;
-            AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
-            refp->replaceWith(new AstVarRef{refp->fileline(), snapshotVscp, VAccess::READ});
+            const SnapshotRef& snapshotRef = getSnapshotRef(ownerp, senTreep, sourceVscp);
+            refp->replaceWith(makeSnapshotExpr(snapshotRef, refp->fileline(), VAccess::READ));
             VL_DO_DANGLING(refp->deleteTree(), refp);
         });
     };
@@ -1033,7 +1043,40 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             }
         }
         for (SnapshotBucket& bucket : snapshotBuckets) {
-            for (AstVarScope* const sourceVscp : bucket.m_sourceVars) getSnapshotVar(sourceVscp);
+            std::unordered_map<AstNodeDType*, std::vector<AstVarScope*>> dtypeGroups;
+            for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+                dtypeGroups[sourceVscp->dtypep()].push_back(sourceVscp);
+            }
+            unsigned bundleIndex = 0;
+            for (const auto& pair : dtypeGroups) {
+                const std::vector<AstVarScope*>& groupedVars = pair.second;
+                if (groupedVars.size() == 1) {
+                    AstVarScope* const sourceVscp = groupedVars.front();
+                    const string name = "__VsubgraphSnapshot__"
+                                        + sourceVscp->scopep()->nameDotless() + "__"
+                                        + sourceVscp->varp()->shortName();
+                    AstVarScope* const snapshotp
+                        = sourceVscp->scopep()->createTempLike(name, sourceVscp);
+                    bucket.m_snapshotRefs.emplace(sourceVscp, SnapshotRef{snapshotp, 0, false});
+                    continue;
+                }
+
+                FileLine* const flp = groupedVars.front()->fileline();
+                AstRange* const rangep
+                    = new AstRange{flp, static_cast<int>(groupedVars.size() - 1), 0};
+                AstNodeDType* const bundleDTypep
+                    = new AstUnpackArrayDType{flp, pair.first, rangep};
+                v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
+                const string bundleName = "__VsubgraphSnapshot__"
+                                          + groupedVars.front()->scopep()->nameDotless()
+                                          + "__bundle" + cvtToStr(bundleIndex++);
+                AstVarScope* const bundleVscp
+                    = groupedVars.front()->scopep()->createTemp(bundleName, bundleDTypep);
+                for (uint32_t i = 0; i < groupedVars.size(); ++i) {
+                    bucket.m_snapshotRefs.emplace(groupedVars[i],
+                                                  SnapshotRef{bundleVscp, i, true});
+                }
+            }
         }
         for (SubgraphGroup& group : groups) {
             rewriteCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
@@ -1158,11 +1201,12 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
                                                VAlwaysKwd::ALWAYS, nullptr, nullptr};
         for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
-            AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
-            procp->addStmtsp(
-                new AstAssign{sourceVscp->fileline(),
-                              new AstVarRef{sourceVscp->fileline(), snapshotVscp, VAccess::WRITE},
-                              new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
+            const SnapshotRef& snapshotRef
+                = getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
+            procp->addStmtsp(new AstAssign{
+                sourceVscp->fileline(),
+                makeSnapshotExpr(snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
+                new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
         }
         s_subgraphSnapshotProcedures.insert(procp);
         bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
