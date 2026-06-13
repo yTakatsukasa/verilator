@@ -55,6 +55,7 @@ namespace {
 using SubgraphCallUsageSummaryMap
     = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
 SubgraphCallUsageSummaryMap s_subgraphCallUsageSummaries;
+std::unordered_set<const AstNodeProcedure*> s_subgraphSnapshotProcedures;
 
 //============================================================================
 // Utility functions
@@ -647,6 +648,27 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         }
         return false;
     };
+    const auto collectCrossBoundaryReads = [&](AstNode* nodep, AstScope* boundaryScopep,
+                                               LogicByScope* ownerp, AstSenTree* senTreep) {
+        nodep->foreach([&](AstVarRef* refp) {
+            if (refp->access() != VAccess::READ) return;
+            AstVarScope* const sourceVscp = refp->varScopep();
+            AstScope* const sourceScopep = sourceVscp->scopep();
+            const bool snapshotBoundaryInput = sourceScopep == boundaryScopep
+                                               && sourceVscp->varp()->isIO()
+                                               && sourceVscp->varp()->direction().isNonOutput();
+            const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
+            if (!snapshotBoundaryInput && !snapshotExternalRead) return;
+            addSnapshotRequirement(ownerp, senTreep, sourceVscp);
+        });
+    };
+    const auto collectCrossBoundaryReadsInLogic
+        = [&](LogicByScope& subgraphLogic, AstScope* boundaryScopep, LogicByScope* ownerp,
+              AstSenTree* senTreep) {
+              subgraphLogic.foreachLogic([&](AstNode* logicp) {
+                  collectCrossBoundaryReads(logicp, boundaryScopep, ownerp, senTreep);
+              });
+          };
     const auto rewriteCrossBoundaryReads = [&](AstNode* nodep, AstScope* boundaryScopep,
                                                LogicByScope* ownerp, AstSenTree* senTreep) {
         if (!snapshotCrossBoundaryReads) return;
@@ -659,7 +681,6 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                                && sourceVscp->varp()->direction().isNonOutput();
             const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
             if (!snapshotBoundaryInput && !snapshotExternalRead) return;
-            addSnapshotRequirement(ownerp, senTreep, sourceVscp);
             AstVarScope* const snapshotVscp = getSnapshotVar(sourceVscp);
             refp->replaceWith(new AstVarRef{refp->fileline(), snapshotVscp, VAccess::READ});
             VL_DO_DANGLING(refp->deleteTree(), refp);
@@ -984,6 +1005,28 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
 
     if (snapshotCrossBoundaryReads) {
         for (SubgraphGroup& group : groups) {
+            collectCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
+                                             group.m_senTreep);
+            collectCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep, group.m_ownerp,
+                                             group.m_senTreep);
+            if (tag != "stl" && tag != "ico") {
+                const auto it = s_stlSubgraphFuncs.find(group.m_scopep);
+                if (it != s_stlSubgraphFuncs.end()) {
+                    for (AstCFunc* const tailFuncp : it->second) {
+                        if (!tailNeedsNbaClone(tailFuncp, group.m_scopep)
+                            || !tailFuncp->stmtsp()) {
+                            continue;
+                        }
+                        collectCrossBoundaryReads(tailFuncp->stmtsp(), group.m_scopep,
+                                                  group.m_ownerp, group.m_senTreep);
+                    }
+                }
+            }
+        }
+        for (SnapshotBucket& bucket : snapshotBuckets) {
+            for (AstVarScope* const sourceVscp : bucket.m_sourceVars) getSnapshotVar(sourceVscp);
+        }
+        for (SubgraphGroup& group : groups) {
             rewriteCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
                                              group.m_senTreep);
             rewriteCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep, group.m_ownerp,
@@ -1101,8 +1144,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     }
 
     for (SnapshotBucket& bucket : snapshotBuckets) {
-        if (bucket.m_sourceVars.empty()) continue;
         AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+        if (bucket.m_sourceVars.empty()) continue;
         AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
                                                VAlwaysKwd::ALWAYS, nullptr, nullptr};
         for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
@@ -1112,6 +1155,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                               new AstVarRef{sourceVscp->fileline(), snapshotVscp, VAccess::WRITE},
                               new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
         }
+        s_subgraphSnapshotProcedures.insert(procp);
         bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
     }
 }
@@ -1543,6 +1587,10 @@ const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const A
 
 void clearSubgraphCallUsageSummaries() { s_subgraphCallUsageSummaries.clear(); }
 
+bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
+    return s_subgraphSnapshotProcedures.count(procp);
+}
+
 //============================================================================
 // Helper that builds virtual interface trigger sentrees
 
@@ -1591,6 +1639,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 
 void schedule(AstNetlist* netlistp) {
     clearSubgraphCallUsageSummaries();
+    s_subgraphSnapshotProcedures.clear();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;
         lbs.foreachLogic([&](AstNode* nodep) { size += nodep->nodeCount(); });

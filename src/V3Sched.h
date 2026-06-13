@@ -43,6 +43,7 @@ struct SubgraphCallUsageSummary final {
 const std::vector<SubgraphCallUsageSummary>*
 getSubgraphCallUsageSummary(const AstCFunc* funcp) VL_MT_DISABLED;
 void clearSubgraphCallUsageSummaries() VL_MT_DISABLED;
+bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
 
 namespace util {
 using VarScopeSet = std::unordered_set<const AstVarScope*>;
