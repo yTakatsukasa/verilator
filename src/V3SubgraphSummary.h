@@ -33,7 +33,8 @@ public:
         std::vector<AstVarScope*> m_writablePorts;
     };
 
-    static void build(AstNetlist* nodep) VL_MT_DISABLED;
+    static void bindScopes(AstNetlist* nodep) VL_MT_DISABLED;
+    static void buildModules(AstNetlist* nodep) VL_MT_DISABLED;
     static void clear() VL_MT_DISABLED;
     static const ScopeSummary* getScopeSummary(const AstScope* scopep) VL_MT_DISABLED;
     static bool isDerivedBoundaryInput(const AstVarScope* vscp) VL_MT_DISABLED;
