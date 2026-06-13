@@ -515,14 +515,7 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     bool isSubgraphSnapshotProcedure(AstNodeProcedure* nodep) const {
-        bool snapshotsBoundaryValue = false;
-        nodep->foreach([&](AstVarRef* refp) {
-            if (snapshotsBoundaryValue || !refp->access().isWriteOrRW()) return;
-            if (0 == refp->varScopep()->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
-                snapshotsBoundaryValue = true;
-            }
-        });
-        return snapshotsBoundaryValue;
+        return V3Sched::isSubgraphSnapshotProcedure(nodep);
     }
 
     // VISITORS
