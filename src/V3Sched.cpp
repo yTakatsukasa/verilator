@@ -655,6 +655,19 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         if (!snapshotRef.m_isBundle) return refp;
         return new AstArraySel{flp, refp, static_cast<int>(snapshotRef.m_elemIndex)};
     };
+    const auto newSnapshotHelperArg
+        = [](AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
+             VDirection direction) -> AstVarScope* {
+        FileLine* const flp = funcp->fileline();
+        AstScope* const scopep = funcp->scopep();
+        AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, name, dtypep};
+        varp->funcLocal(true);
+        varp->direction(direction);
+        funcp->addArgsp(varp);
+        AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
+        scopep->addVarsp(vscp);
+        return vscp;
+    };
     const auto isUnderBoundaryScope = [](AstScope* scopep, AstScope* boundaryScopep) {
         for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
             if (scanp == boundaryScopep) return true;
@@ -1196,11 +1209,61 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     }
 
     for (SnapshotBucket& bucket : snapshotBuckets) {
+        static unsigned s_snapshotHelperIndex = 0;
         AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
         if (bucket.m_sourceVars.empty()) continue;
         AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
                                                VAlwaysKwd::ALWAYS, nullptr, nullptr};
+        std::unordered_map<AstScope*, std::vector<AstVarScope*>> localBoundarySources;
         for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+            if (sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
+                && sourceVscp->varp()->direction().isNonOutput()) {
+                localBoundarySources[sourceVscp->scopep()].push_back(sourceVscp);
+            }
+        }
+        for (const auto& pair : localBoundarySources) {
+            AstScope* const boundaryScopep = pair.first;
+            const std::vector<AstVarScope*>& sourceVscps = pair.second;
+            FileLine* const flp = sourceVscps.front()->fileline();
+            std::string helperCName = "__VsubgraphSnapshotHelper";
+            for (AstVarScope* const sourceVscp : sourceVscps) {
+                helperCName += "__" + sourceVscp->varp()->shortName();
+            }
+            AstCFunc* const funcp = new AstCFunc{
+                flp, "__VsubgraphSnapshotHelper__sgclone_" + cvtToStr(s_snapshotHelperIndex++),
+                boundaryScopep, ""};
+            funcp->dontCombine(true);
+            funcp->isStatic(false);
+            funcp->isLoose(true);
+            funcp->slow(slow);
+            funcp->isConst(false);
+            funcp->declPrivate(true);
+            funcp->cname(helperCName);
+            boundaryScopep->addBlocksp(funcp);
+
+            AstCCall* const callp = new AstCCall{flp, funcp};
+            callp->dtypeSetVoid();
+            for (size_t i = 0; i < sourceVscps.size(); ++i) {
+                AstVarScope* const sourceVscp = sourceVscps[i];
+                const SnapshotRef& snapshotRef
+                    = getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
+                AstVarScope* const outArgVscp = newSnapshotHelperArg(
+                    funcp, sourceVscp->dtypep(), "out" + cvtToStr(i), VDirection::OUTPUT);
+                AstVarScope* const inArgVscp = newSnapshotHelperArg(
+                    funcp, sourceVscp->dtypep(), "in" + cvtToStr(i), VDirection::CONSTREF);
+                funcp->addStmtsp(new AstAssign{flp, new AstVarRef{flp, outArgVscp, VAccess::WRITE},
+                                               new AstVarRef{flp, inArgVscp, VAccess::READ}});
+                callp->addArgsp(makeSnapshotExpr(snapshotRef, flp, VAccess::WRITE));
+                callp->addArgsp(new AstVarRef{flp, sourceVscp, VAccess::READ});
+            }
+            procp->addStmtsp(callp->makeStmt());
+        }
+        for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+            if (localBoundarySources.count(sourceVscp->scopep())
+                && sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
+                && sourceVscp->varp()->direction().isNonOutput()) {
+                continue;
+            }
             const SnapshotRef& snapshotRef
                 = getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
             procp->addStmtsp(new AstAssign{
