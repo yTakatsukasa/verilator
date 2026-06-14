@@ -624,6 +624,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         std::unordered_map<AstVarScope*, SnapshotRef> m_snapshotRefs;
     };
     std::vector<SnapshotBucket> snapshotBuckets;
+    std::unordered_set<AstVarScope*> regionWrittenVars;
     const auto getSnapshotBucket
         = [&](LogicByScope* ownerp, AstSenTree* senTreep) -> SnapshotBucket& {
         for (SnapshotBucket& bucket : snapshotBuckets) {
@@ -674,17 +675,26 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         }
         return false;
     };
+    const auto needsCrossBoundarySnapshot
+        = [&](AstScope* boundaryScopep, AstVarScope* sourceVscp) -> bool {
+        AstScope* const sourceScopep = sourceVscp->scopep();
+        const bool boundaryInput = sourceScopep == boundaryScopep && sourceVscp->varp()->isIO()
+                                   && sourceVscp->varp()->direction().isNonOutput();
+        const bool externalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
+        if (!boundaryInput && !externalRead) return false;
+
+        // Reads of another subgraph's scoped state or outputs can change when its wrapper runs.
+        if (sourceScopep != boundaryScopep && boundaryScopeFor(sourceScopep)) return true;
+
+        // Otherwise only snapshot sources that are rewritten by non-subgraph logic in this region.
+        return regionWrittenVars.count(sourceVscp);
+    };
     const auto collectCrossBoundaryReads = [&](AstNode* nodep, AstScope* boundaryScopep,
                                                LogicByScope* ownerp, AstSenTree* senTreep) {
         nodep->foreach([&](AstVarRef* refp) {
             if (refp->access() != VAccess::READ) return;
             AstVarScope* const sourceVscp = refp->varScopep();
-            AstScope* const sourceScopep = sourceVscp->scopep();
-            const bool snapshotBoundaryInput = sourceScopep == boundaryScopep
-                                               && sourceVscp->varp()->isIO()
-                                               && sourceVscp->varp()->direction().isNonOutput();
-            const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
-            if (!snapshotBoundaryInput && !snapshotExternalRead) return;
+            if (!needsCrossBoundarySnapshot(boundaryScopep, sourceVscp)) return;
             addSnapshotRequirement(ownerp, senTreep, sourceVscp);
         });
     };
@@ -701,12 +711,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         nodep->foreach([&](AstVarRef* refp) {
             if (refp->access() != VAccess::READ) return;
             AstVarScope* const sourceVscp = refp->varScopep();
-            AstScope* const sourceScopep = sourceVscp->scopep();
-            const bool snapshotBoundaryInput = sourceScopep == boundaryScopep
-                                               && sourceVscp->varp()->isIO()
-                                               && sourceVscp->varp()->direction().isNonOutput();
-            const bool snapshotExternalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
-            if (!snapshotBoundaryInput && !snapshotExternalRead) return;
+            if (!needsCrossBoundarySnapshot(boundaryScopep, sourceVscp)) return;
             const SnapshotRef& snapshotRef = getSnapshotRef(ownerp, senTreep, sourceVscp);
             refp->replaceWith(makeSnapshotExpr(snapshotRef, refp->fileline(), VAccess::READ));
             VL_DO_DANGLING(refp->deleteTree(), refp);
@@ -749,12 +754,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         bool needClone = false;
         tailFuncp->foreach([&](AstVarRef* refp) {
             if (needClone || refp->access() != VAccess::READ) return;
-            AstVarScope* const sourceVscp = refp->varScopep();
-            AstScope* const sourceScopep = sourceVscp->scopep();
-            const bool boundaryInput = sourceScopep == boundaryScopep && sourceVscp->varp()->isIO()
-                                       && sourceVscp->varp()->direction().isNonOutput();
-            const bool externalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
-            if (boundaryInput || externalRead) needClone = true;
+            if (needsCrossBoundarySnapshot(boundaryScopep, refp->varScopep())) needClone = true;
         });
         return needClone;
     };
@@ -1031,6 +1031,17 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             activep->deleteTree();
         }
         *lbsp = std::move(lowered);
+    }
+
+    if (snapshotCrossBoundaryReads) {
+        for (LogicByScope* const lbsp : logic) {
+            lbsp->foreachLogic([&](AstNode* logicp) {
+                logicp->foreach([&](AstVarRef* refp) {
+                    if (!refp->access().isWriteOrRW()) return;
+                    regionWrittenVars.insert(refp->varScopep());
+                });
+            });
+        }
     }
 
     if (snapshotCrossBoundaryReads) {
