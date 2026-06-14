@@ -196,11 +196,6 @@ class OrderGraphBuilder final : public VNVisitor {
         return vtxp;
     }
 
-    bool isSubgraphInternalOrderVar(AstVarScope* vscp, AstScope* subgraphScopep) const {
-        return isUnderScope(vscp->scopep(), subgraphScopep)
-               && 0 == vscp->varp()->name().rfind("__Vdly", 0);
-    }
-
     AstScope* subgraphBoundaryScope(AstScope* scopep) const {
         for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
             if (scanp->modp()->subgraphBoundary()) return scanp;
@@ -413,11 +408,9 @@ class OrderGraphBuilder final : public VNVisitor {
         }
         for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
             AstVarScope* const vscp = use.m_varscp;
-            const bool internalOrderVar = isSubgraphInternalOrderVar(vscp, scopep);
             const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
-            if (isUnderScope(vscp->scopep(), scopep) && !internalOrderVar) { continue; }
+            if (!externalToSubgraph) continue;
             AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
-            if (hideClockedBoundaryContract && internalOrderVar) continue;
             if (hideClockedBoundaryContract && sourceBoundaryp == scopep
                 && vscp->scopep() == scopep && vscp->varp()->isIO()
                 && vscp->varp()->direction().isNonOutput()) {
@@ -426,9 +419,7 @@ class OrderGraphBuilder final : public VNVisitor {
             if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
                 continue;
             }
-            if (internalOrderVar) {
-                addVarUsage(vscp, use.m_read, use.m_write, nodep);
-            } else if (sourceBoundaryp && sourceBoundaryp != scopep) {
+            if (sourceBoundaryp && sourceBoundaryp != scopep) {
                 const bool coarseRead = use.m_read;
                 const bool coarseWrite = publishBoundaryWrites && use.m_write;
                 if (coarseRead || coarseWrite) {

@@ -961,11 +961,9 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             if (!seen.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
-                const bool internalOrderVar = isUnderBoundaryScope(vscp->scopep(), boundaryScopep)
-                                              && 0 == vscp->varp()->name().rfind("__Vdly", 0);
                 const bool externalToSubgraph
                     = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
-                if (!internalOrderVar && !externalToSubgraph) return;
+                if (!externalToSubgraph) return;
                 const auto pair = useIndices.emplace(vscp, uses.size());
                 if (pair.second) uses.push_back(SubgraphCallUsageSummary{vscp, false, false});
                 SubgraphCallUsageSummary& use = uses[pair.first->second];
