@@ -128,10 +128,8 @@ string OrderGraph::loopsVertexCb(V3GraphVertex* vertexp) {
                 break;
             }
         } else if (varp->hasVarScope()) {
-            if (const string kind = orderGraphSubgraphVarKind(varp->vscp()->varp()->name());
-                !kind.empty()) {
-                msg += " kind='" + kind + "'";
-            }
+            const string kind = orderGraphSubgraphVarKind(varp->vscp()->varp()->name());
+            if (!kind.empty()) { msg += " kind='" + kind + "'"; }
             msg += " scope='" + varp->vscp()->scopep()->prettyName() + "'";
             if (AstScope* const boundaryp
                 = orderGraphSubgraphBoundaryScope(varp->vscp()->scopep())) {
