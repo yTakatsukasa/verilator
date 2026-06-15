@@ -779,7 +779,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     const auto buildLogicSig = [](const LogicByScope& logic) {
         SubgraphLogicSig result;
         logic.foreachLogic([&](AstNode* logicp) {
-            SubgraphLogicNodeSig& nodeSig = result.emplace_back();
+            result.push_back(SubgraphLogicNodeSig{});
+            SubgraphLogicNodeSig& nodeSig = result.back();
             nodeSig.m_type = static_cast<uintptr_t>(logicp->type());
             logicp->foreach([&](AstVarRef* refp) {
                 nodeSig.m_refs.push_back(
