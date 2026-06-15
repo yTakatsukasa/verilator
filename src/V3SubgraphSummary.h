@@ -28,9 +28,16 @@ class AstVarScope;
 
 class V3SubgraphSummary final {
 public:
+    struct ParentStubContract final {
+        std::vector<AstVarScope*> m_boundaryReads;
+        std::vector<AstVarScope*> m_boundaryWrites;
+        bool m_hasClockedState = false;
+        bool m_hasPostPhase = false;
+        bool m_readsExternalVars = false;
+    };
+
     struct ScopeSummary final {
-        std::vector<AstVarScope*> m_nonOutputPorts;
-        std::vector<AstVarScope*> m_writablePorts;
+        ParentStubContract m_parentStub;
     };
 
     static void bindScopes(AstNetlist* nodep) VL_MT_DISABLED;
