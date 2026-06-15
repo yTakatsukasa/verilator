@@ -390,10 +390,11 @@ class OrderGraphBuilder final : public VNVisitor {
         const V3SubgraphSummary::ScopeSummary* const summaryp
             = V3SubgraphSummary::getScopeSummary(scopep);
         UASSERT_OBJ(summaryp, nodep, "Missing subgraph scope summary");
-        const bool hideClockedBoundaryContract = m_inClocked;
-        const bool publishBoundaryWrites = !m_inPre;
+        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
+        const bool hideClockedBoundaryContract = m_inClocked && contract.m_hasClockedState;
+        const bool publishBoundaryWrites = !m_inPre && !contract.m_boundaryWrites.empty();
         if (!hideClockedBoundaryContract) {
-            for (AstVarScope* const vscp : summaryp->m_nonOutputPorts) {
+            for (AstVarScope* const vscp : contract.m_boundaryReads) {
                 if (V3SubgraphSummary::isDerivedBoundaryInput(vscp)) {
                     addCoarseVarUsage(vscp, true, false, nodep);
                 } else {
@@ -402,10 +403,11 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         }
         if (publishBoundaryWrites) {
-            for (AstVarScope* const vscp : summaryp->m_writablePorts) {
+            for (AstVarScope* const vscp : contract.m_boundaryWrites) {
                 addVarUsage(vscp, false, true, nodep, true);
             }
         }
+        if (!contract.m_readsExternalVars) return;
         for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
             AstVarScope* const vscp = use.m_varscp;
             const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);

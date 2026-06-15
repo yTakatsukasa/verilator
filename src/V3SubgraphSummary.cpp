@@ -27,6 +27,8 @@ struct ModuleSummary final {
     std::vector<std::string> m_nonOutputPortNames;
     std::vector<std::string> m_writablePortNames;
     std::unordered_set<std::string> m_derivedBoundaryInputNames;
+    bool m_hasClockedState = false;
+    bool m_hasPostPhase = false;
 };
 
 using ModuleSummaryMap = std::unordered_map<const AstNodeModule*, ModuleSummary>;
@@ -77,6 +79,20 @@ class SubgraphModuleSummaryVisitor final : public VNVisitorConst {
         iterateChildrenConst(nodep);
     }
 
+    void visit(AstAlways* nodep) override {
+        if (m_modp && m_modp->subgraphBoundary() && nodep->sentreep()
+            && nodep->sentreep()->hasClocked()) {
+            s_moduleSummaries[m_modp].m_hasClockedState = true;
+        }
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstAlwaysPost* nodep) override {
+        if (m_modp && m_modp->subgraphBoundary()) {
+            s_moduleSummaries[m_modp].m_hasPostPhase = true;
+        }
+        iterateChildrenConst(nodep);
+    }
+
     void visit(AstAssign* nodep) override {
         if (m_modp && m_modp->subgraphBoundary()) analyzeNode(nodep, s_moduleSummaries[m_modp]);
     }
@@ -94,8 +110,17 @@ public:
 };
 
 class SubgraphScopeSummaryBinder final : public VNVisitorConst {
+    AstScope* m_boundaryScopep = nullptr;
+
+    static bool isUnderBoundaryScope(const AstScope* scopep, const AstScope* boundaryScopep) {
+        for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp == boundaryScopep) return true;
+        }
+        return false;
+    }
+
     void visit(AstScope* nodep) override {
-        if (!nodep->modp()->subgraphBoundary()) {
+        if (!nodep->modp()->subgraphBoundary() || m_boundaryScopep) {
             iterateChildrenConst(nodep);
             return;
         }
@@ -109,14 +134,18 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
             varsByName.emplace(vscp->varp()->name(), vscp);
         }
 
+        VL_RESTORER(m_boundaryScopep);
+        m_boundaryScopep = nodep;
         V3SubgraphSummary::ScopeSummary& scopeSummary = s_scopeSummaries[nodep];
-        scopeSummary.m_nonOutputPorts.reserve(modSummary.m_nonOutputPortNames.size());
-        scopeSummary.m_writablePorts.reserve(modSummary.m_writablePortNames.size());
+        scopeSummary.m_parentStub.m_hasClockedState = modSummary.m_hasClockedState;
+        scopeSummary.m_parentStub.m_hasPostPhase = modSummary.m_hasPostPhase;
+        scopeSummary.m_parentStub.m_boundaryReads.reserve(modSummary.m_nonOutputPortNames.size());
+        scopeSummary.m_parentStub.m_boundaryWrites.reserve(modSummary.m_writablePortNames.size());
 
         for (const std::string& name : modSummary.m_nonOutputPortNames) {
             const auto varsIt = varsByName.find(name);
             if (varsIt == varsByName.end()) continue;
-            scopeSummary.m_nonOutputPorts.push_back(varsIt->second);
+            scopeSummary.m_parentStub.m_boundaryReads.push_back(varsIt->second);
             if (modSummary.m_derivedBoundaryInputNames.count(name)) {
                 s_derivedBoundaryInputs.insert(varsIt->second);
             }
@@ -124,9 +153,18 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
         for (const std::string& name : modSummary.m_writablePortNames) {
             const auto varsIt = varsByName.find(name);
             if (varsIt == varsByName.end()) continue;
-            scopeSummary.m_writablePorts.push_back(varsIt->second);
+            scopeSummary.m_parentStub.m_boundaryWrites.push_back(varsIt->second);
         }
 
+        iterateChildrenConst(nodep);
+    }
+
+    void visit(AstNodeVarRef* nodep) override {
+        if (m_boundaryScopep && (nodep->access().isReadOrRW() || nodep->access().isWriteOrRW())
+            && !isCompileTimeConstant(nodep->varp())
+            && !isUnderBoundaryScope(nodep->varScopep()->scopep(), m_boundaryScopep)) {
+            s_scopeSummaries[m_boundaryScopep].m_parentStub.m_readsExternalVars = true;
+        }
         iterateChildrenConst(nodep);
     }
 
