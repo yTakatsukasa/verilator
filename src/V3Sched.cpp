@@ -56,6 +56,9 @@ namespace {
 using SubgraphCallUsageSummaryMap
     = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
 SubgraphCallUsageSummaryMap s_subgraphCallUsageSummaries;
+using SubgraphScopeContractSummaryMap
+    = std::unordered_map<const AstScope*, SubgraphScopeContractSummary>;
+SubgraphScopeContractSummaryMap s_subgraphScopeContractSummaries;
 std::unordered_set<const AstNodeProcedure*> s_subgraphSnapshotProcedures;
 
 //============================================================================
@@ -1750,7 +1753,34 @@ const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const A
     return it == s_subgraphCallUsageSummaries.end() ? nullptr : &it->second;
 }
 
-void clearSubgraphCallUsageSummaries() { s_subgraphCallUsageSummaries.clear(); }
+const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstScope* scopep) {
+    const auto it = s_subgraphScopeContractSummaries.find(scopep);
+    if (it != s_subgraphScopeContractSummaries.end()) return &it->second;
+
+    const V3SubgraphSummary::ScopeSummary* const summaryp
+        = V3SubgraphSummary::getScopeSummary(scopep);
+    if (!summaryp) return nullptr;
+
+    SubgraphScopeContractSummary contract;
+    contract.m_hasClockedState = summaryp->m_parentStub.m_hasClockedState;
+    contract.m_hasPostPhase = summaryp->m_parentStub.m_hasPostPhase;
+    contract.m_readsExternalVars = summaryp->m_parentStub.m_readsExternalVars;
+    contract.m_boundaryReads.reserve(summaryp->m_parentStub.m_boundaryReads.size());
+    contract.m_boundaryWrites.reserve(summaryp->m_parentStub.m_boundaryWrites.size());
+    for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryReads) {
+        contract.m_boundaryReads.push_back(
+            {vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp)});
+    }
+    for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryWrites) {
+        contract.m_boundaryWrites.push_back(vscp);
+    }
+    return &s_subgraphScopeContractSummaries.emplace(scopep, std::move(contract)).first->second;
+}
+
+void clearSubgraphCallUsageSummaries() {
+    s_subgraphCallUsageSummaries.clear();
+    s_subgraphScopeContractSummaries.clear();
+}
 
 bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
     return s_subgraphSnapshotProcedures.count(procp);

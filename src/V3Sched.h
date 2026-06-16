@@ -40,8 +40,22 @@ struct SubgraphCallUsageSummary final {
     bool m_write = false;
 };
 
+struct SubgraphScopeContractSummary final {
+    struct BoundaryReadSummary final {
+        AstVarScope* m_varscp = nullptr;
+        bool m_derived = false;
+    };
+    std::vector<BoundaryReadSummary> m_boundaryReads;
+    std::vector<AstVarScope*> m_boundaryWrites;
+    bool m_hasClockedState = false;
+    bool m_hasPostPhase = false;
+    bool m_readsExternalVars = false;
+};
+
 const std::vector<SubgraphCallUsageSummary>*
 getSubgraphCallUsageSummary(const AstCFunc* funcp) VL_MT_DISABLED;
+const SubgraphScopeContractSummary*
+getSubgraphScopeContractSummary(const AstScope* scopep) VL_MT_DISABLED;
 void clearSubgraphCallUsageSummaries() VL_MT_DISABLED;
 bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
 

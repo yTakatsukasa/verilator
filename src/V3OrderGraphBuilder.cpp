@@ -25,7 +25,6 @@
 #include "V3OrderGraph.h"
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
-#include "V3SubgraphSummary.h"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -393,18 +392,18 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphContractUsage(AstScope* scopep, AstNode* nodep) {
-        const V3SubgraphSummary::ScopeSummary* const summaryp
-            = V3SubgraphSummary::getScopeSummary(scopep);
-        UASSERT_OBJ(summaryp, nodep, "Missing subgraph scope summary");
-        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
+        const V3Sched::SubgraphScopeContractSummary* const contractp
+            = V3Sched::getSubgraphScopeContractSummary(scopep);
+        UASSERT_OBJ(contractp, nodep, "Missing subgraph scope summary");
+        const V3Sched::SubgraphScopeContractSummary& contract = *contractp;
         const bool hideClockedBoundaryContract = m_inClocked && contract.m_hasClockedState;
         const bool publishBoundaryWrites = !m_inPre && !contract.m_boundaryWrites.empty();
         if (!hideClockedBoundaryContract) {
-            for (AstVarScope* const vscp : contract.m_boundaryReads) {
-                if (V3SubgraphSummary::isDerivedBoundaryInput(vscp)) {
-                    addCoarseVarUsage(vscp, true, false, nodep);
+            for (const auto& read : contract.m_boundaryReads) {
+                if (read.m_derived) {
+                    addCoarseVarUsage(read.m_varscp, true, false, nodep);
                 } else {
-                    addVarUsage(vscp, true, false, nodep, false, true);
+                    addVarUsage(read.m_varscp, true, false, nodep, false, true);
                 }
             }
         }
@@ -440,10 +439,10 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphExternalUse(AstScope* scopep, const SubgraphCallUsage& use, AstNode* nodep) {
-        const V3SubgraphSummary::ScopeSummary* const summaryp
-            = V3SubgraphSummary::getScopeSummary(scopep);
-        UASSERT_OBJ(summaryp, nodep, "Missing subgraph scope summary");
-        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
+        const V3Sched::SubgraphScopeContractSummary* const contractp
+            = V3Sched::getSubgraphScopeContractSummary(scopep);
+        UASSERT_OBJ(contractp, nodep, "Missing subgraph scope summary");
+        const V3Sched::SubgraphScopeContractSummary& contract = *contractp;
         if (!contract.m_readsExternalVars) return;
         AstVarScope* const vscp = use.m_varscp;
         const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
