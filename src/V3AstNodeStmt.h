@@ -1243,6 +1243,11 @@ class AstSubgraphInstance final : public AstNodeStmt {
     // @astgen op1 := stmtsp : List[AstNode]
     // @astgen ptr := m_scopep : AstScope
 public:
+    enum class Phase : uint8_t {
+        NONE = 0,
+        PRE = 1,
+        POST = 2,
+    };
     struct BoundaryReadContract final {
         string m_name;
         bool m_derived = false;
@@ -1257,6 +1262,7 @@ private:
     std::vector<BoundaryReadContract> m_boundaryReads;
     std::vector<string> m_boundaryWrites;
     std::vector<ExternalUseContract> m_externalUses;
+    Phase m_phase = Phase::NONE;
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
     bool m_readsExternalVars = false;
@@ -1281,6 +1287,8 @@ public:
     void addExternalUse(AstVarScope* vscp, bool read, bool write) {
         m_externalUses.push_back(ExternalUseContract{vscp, read, write});
     }
+    Phase phase() const { return m_phase; }
+    void phase(Phase phase) { m_phase = phase; }
     bool hasClockedState() const { return m_hasClockedState; }
     void hasClockedState(bool flag) { m_hasClockedState = flag; }
     bool hasPostPhase() const { return m_hasPostPhase; }
