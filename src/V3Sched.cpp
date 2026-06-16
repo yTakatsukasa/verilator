@@ -1162,13 +1162,15 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                     s_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
                     callFuncp = tailFuncp;
                 }
-                AstNodeStmt* const callp = util::callVoidFunc(callFuncp);
+                AstNodeStmt* stmtsp = util::callVoidFunc(callFuncp);
                 if (tailFuncps) {
                     for (AstCFunc* const tailFuncp : *tailFuncps) {
-                        callp->addNext(util::callVoidFunc(tailFuncp));
+                        stmtsp->addNext(util::callVoidFunc(tailFuncp));
                     }
                 }
-                wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, callp));
+                AstNodeStmt* const subgraphp
+                    = new AstSubgraphInstance{flp, group.m_scopep, stmtsp};
+                wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, subgraphp));
             }
         };
         if (!group.m_earlyLogic.empty()) {
