@@ -452,6 +452,7 @@ class LifeVisitor final : public VNVisitor {
         }
         iterateChildren(nodep);
     }
+    void visit(AstSubgraphInstance* nodep) override { iterateChildren(nodep); }
 
 public:
     // CONSTRUCTORS
@@ -494,6 +495,7 @@ private:
     void visit(AstNodeStmt*) override {}  // Accelerate
     void visit(AstNodeExpr*) override {}  // Accelerate
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
+    void visit(AstSubgraphInstance* nodep) override { iterateChildren(nodep); }
 
 public:
     // CONSTRUCTORS

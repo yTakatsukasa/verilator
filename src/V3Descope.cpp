@@ -282,6 +282,7 @@ class DescopeVisitor final : public VNVisitor {
     }
     void visit(AstVar*) override {}
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
+    void visit(AstSubgraphInstance* nodep) override { iterateChildren(nodep); }
 
 public:
     // CONSTRUCTORS
