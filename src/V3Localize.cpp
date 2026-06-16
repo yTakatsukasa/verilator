@@ -227,6 +227,11 @@ class LocalizeVisitor final : public VNVisitor {
         ++m_nodeDepth;
         iterateChildrenConst(nodep);
     }
+    void visit(AstSubgraphInstance* nodep) override {
+        VL_RESTORER(m_nodeDepth);
+        ++m_nodeDepth;
+        iterateChildrenConst(nodep);
+    }
 
 public:
     // CONSTRUCTORS
