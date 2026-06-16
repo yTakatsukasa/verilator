@@ -1236,6 +1236,25 @@ class AstSubgraphInstance final : public AstNodeStmt {
     // @astgen op1 := stmtsp : List[AstNode]
     // @astgen ptr := m_scopep : AstScope
 public:
+    struct BoundaryReadContract final {
+        string m_name;
+        bool m_derived = false;
+    };
+    struct ExternalUseContract final {
+        AstVarScope* m_varscp = nullptr;
+        bool m_read = false;
+        bool m_write = false;
+    };
+
+private:
+    std::vector<BoundaryReadContract> m_boundaryReads;
+    std::vector<string> m_boundaryWrites;
+    std::vector<ExternalUseContract> m_externalUses;
+    bool m_hasClockedState = false;
+    bool m_hasPostPhase = false;
+    bool m_readsExternalVars = false;
+
+public:
     AstSubgraphInstance(FileLine* fl, AstScope* scopep, AstNode* stmtsp)
         : ASTGEN_SUPER_SubgraphInstance(fl) {
         m_scopep = scopep;
@@ -1244,6 +1263,23 @@ public:
     ASTGEN_MEMBERS_AstSubgraphInstance;
     AstScope* scopep() const { return m_scopep; }
     void scopep(AstScope* scopep) { m_scopep = scopep; }
+    const std::vector<BoundaryReadContract>& boundaryReads() const { return m_boundaryReads; }
+    void addBoundaryRead(const string& name, bool derived) {
+        m_boundaryReads.push_back(BoundaryReadContract{name, derived});
+    }
+    const std::vector<string>& boundaryWrites() const { return m_boundaryWrites; }
+    void addBoundaryWrite(const string& name) { m_boundaryWrites.push_back(name); }
+    const std::vector<ExternalUseContract>& externalUses() const { return m_externalUses; }
+    std::vector<ExternalUseContract>& externalUses() { return m_externalUses; }
+    void addExternalUse(AstVarScope* vscp, bool read, bool write) {
+        m_externalUses.push_back(ExternalUseContract{vscp, read, write});
+    }
+    bool hasClockedState() const { return m_hasClockedState; }
+    void hasClockedState(bool flag) { m_hasClockedState = flag; }
+    bool hasPostPhase() const { return m_hasPostPhase; }
+    void hasPostPhase(bool flag) { m_hasPostPhase = flag; }
+    bool readsExternalVars() const { return m_readsExternalVars; }
+    void readsExternalVars(bool flag) { m_readsExternalVars = flag; }
     bool maybePointedTo() const override VL_MT_SAFE { return true; }
     int instrCount() const override { return 1; }
     bool sameNode(const AstNode* samep) const override {
