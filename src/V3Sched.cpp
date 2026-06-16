@@ -1174,6 +1174,13 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 }
                 AstSubgraphInstance* const subgraphp
                     = new AstSubgraphInstance{flp, group.m_scopep, stmtsp};
+                if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre) {
+                    subgraphp->phase(AstSubgraphInstance::Phase::PRE);
+                } else if (isEarly) {
+                    subgraphp->phase(AstSubgraphInstance::Phase::PRE);
+                } else {
+                    subgraphp->phase(AstSubgraphInstance::Phase::POST);
+                }
                 if (const auto* const summaryp
                     = V3SubgraphSummary::getScopeSummary(group.m_scopep)) {
                     const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
