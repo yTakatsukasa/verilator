@@ -45,6 +45,7 @@
 #include "V3Order.h"
 #include "V3SenExprBuilder.h"
 #include "V3Stats.h"
+#include "V3SubgraphSummary.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
@@ -1168,8 +1169,44 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                         stmtsp->addNext(util::callVoidFunc(tailFuncp));
                     }
                 }
-                AstNodeStmt* const subgraphp
+                AstSubgraphInstance* const subgraphp
                     = new AstSubgraphInstance{flp, group.m_scopep, stmtsp};
+                if (const auto* const summaryp
+                    = V3SubgraphSummary::getScopeSummary(group.m_scopep)) {
+                    const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
+                    subgraphp->hasClockedState(contract.m_hasClockedState);
+                    subgraphp->hasPostPhase(contract.m_hasPostPhase);
+                    subgraphp->readsExternalVars(contract.m_readsExternalVars);
+                    for (AstVarScope* const vscp : contract.m_boundaryReads) {
+                        subgraphp->addBoundaryRead(
+                            vscp->varp()->name(), V3SubgraphSummary::isDerivedBoundaryInput(vscp));
+                    }
+                    for (AstVarScope* const vscp : contract.m_boundaryWrites) {
+                        subgraphp->addBoundaryWrite(vscp->varp()->name());
+                    }
+                }
+                {
+                    std::unordered_map<AstVarScope*, size_t> useIndices;
+                    const auto appendUses = [&](AstCFunc* funcp) {
+                        const auto it = s_subgraphCallUsageSummaries.find(funcp);
+                        if (it == s_subgraphCallUsageSummaries.end()) return;
+                        for (const SubgraphCallUsageSummary& summary : it->second) {
+                            AstVarScope* const vscp = summary.m_varscp;
+                            if (vscp && !isUnderBoundaryScope(vscp->scopep(), group.m_scopep)) {
+                                const auto pair = useIndices.emplace(vscp, useIndices.size());
+                                if (pair.second) { subgraphp->addExternalUse(vscp, false, false); }
+                                AstSubgraphInstance::ExternalUseContract& use
+                                    = subgraphp->externalUses()[pair.first->second];
+                                use.m_read |= summary.m_read;
+                                use.m_write |= summary.m_write;
+                            }
+                        }
+                    };
+                    appendUses(callFuncp);
+                    if (tailFuncps) {
+                        for (AstCFunc* const tailFuncp : *tailFuncps) appendUses(tailFuncp);
+                    }
+                }
                 wrapperActivep->addStmtsp(makeWrapperLogic(flp, wrapper, subgraphp));
             }
         };
