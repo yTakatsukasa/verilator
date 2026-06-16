@@ -299,6 +299,7 @@ class LifePostDlyVisitor final : public VNVisitorConst {
     }
     //-----
     void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+    void visit(AstSubgraphInstance* nodep) override { iterateChildrenConst(nodep); }
 
 public:
     // CONSTRUCTORS
