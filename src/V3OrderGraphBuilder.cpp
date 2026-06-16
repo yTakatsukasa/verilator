@@ -229,6 +229,13 @@ class OrderGraphBuilder final : public VNVisitor {
         return false;
     }
 
+    AstVarScope* findVarScopeByName(AstScope* scopep, const string& name) const {
+        for (AstVarScope* vscp = scopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp()->name() == name) return vscp;
+        }
+        return nullptr;
+    }
+
     void addVarUsage(AstVarScope* varscp, bool isRead, bool isWrite, AstNode* nodep,
                      bool forcePost = false, bool forceNotPost = false) {
         UASSERT_OBJ(m_scopep, nodep, "Var usage not under scope");
@@ -408,6 +415,30 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
+    void addSubgraphContractUsage(AstSubgraphInstance* nodep) {
+        AstScope* const scopep = nodep->scopep();
+        const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
+        const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
+        if (!hideClockedBoundaryContract) {
+            for (const auto& read : nodep->boundaryReads()) {
+                AstVarScope* const vscp = findVarScopeByName(scopep, read.m_name);
+                if (!vscp) continue;
+                if (read.m_derived) {
+                    addCoarseVarUsage(vscp, true, false, nodep);
+                } else {
+                    addVarUsage(vscp, true, false, nodep, false, true);
+                }
+            }
+        }
+        if (publishBoundaryWrites) {
+            for (const string& name : nodep->boundaryWrites()) {
+                AstVarScope* const vscp = findVarScopeByName(scopep, name);
+                if (!vscp) continue;
+                addVarUsage(vscp, false, true, nodep, true);
+            }
+        }
+    }
+
     void addSubgraphExternalUse(AstScope* scopep, const SubgraphCallUsage& use, AstNode* nodep) {
         const V3SubgraphSummary::ScopeSummary* const summaryp
             = V3SubgraphSummary::getScopeSummary(scopep);
@@ -450,15 +481,10 @@ class OrderGraphBuilder final : public VNVisitor {
 
     void addSubgraphInstancePortUsage(AstSubgraphInstance* nodep) {
         AstScope* const scopep = nodep->scopep();
-        addSubgraphContractUsage(scopep, nodep);
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            AstStmtExpr* const stmtExprp = VN_CAST(stmtp, StmtExpr);
-            if (!stmtExprp) continue;
-            AstCCall* const callp = VN_CAST(stmtExprp->exprp(), CCall);
-            if (!callp) continue;
-            for (const SubgraphCallUsage& use : getSubgraphCallUsage(callp->funcp())) {
-                addSubgraphExternalUse(scopep, use, nodep);
-            }
+        addSubgraphContractUsage(nodep);
+        if (!nodep->readsExternalVars()) return;
+        for (const auto& use : nodep->externalUses()) {
+            addSubgraphExternalUse(scopep, {use.m_varscp, use.m_read, use.m_write}, nodep);
         }
     }
 
