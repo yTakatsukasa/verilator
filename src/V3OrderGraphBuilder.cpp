@@ -118,7 +118,6 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_inPost = false;  // Underneath AstAlwaysPost
     bool m_isSubgraphCommitPostLogic = false;  // Post logic commits delayed top state
     bool m_isSubgraphSnapshotLogic = false;  // Procedure snapshots cross-boundary values
-    bool m_isSubgraphWrapperLogic = false;  // Procedure wraps a subgraph eval call
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     SubgraphCallUsageCache m_subgraphCallUsageCache;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
@@ -130,6 +129,9 @@ class OrderGraphBuilder final : public VNVisitor {
         // Reset VarUsage
         AstNode::user2ClearTree();
         m_forceReadEdgeIgnores.clear();
+        const AstNodeProcedure* const procp = VN_CAST(nodep, NodeProcedure);
+        const bool isGroupedSubgraphLogic
+            = procp && isSubgraphWrapperProcedure(const_cast<AstNodeProcedure*>(procp));
         if (!m_inClocked)
             V3Sched::util::collectForceReadEdgeIgnores(nodep, m_forceReadEdgeIgnores);
         // Create LogicVertex for this logic node
@@ -139,8 +141,8 @@ class OrderGraphBuilder final : public VNVisitor {
         const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
         // Finished with this logic
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
-            if (m_inClocked && !m_inPost && !m_isSubgraphSnapshotLogic
-                && !m_isSubgraphWrapperLogic) {
+            if (m_inClocked && !m_inPost && !m_isSubgraphSnapshotLogic && !isGroupedSubgraphLogic
+                && !VN_IS(nodep, SubgraphInstance)) {
                 addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
             }
             if (m_inPost && m_isSubgraphCommitPostLogic) {
@@ -149,15 +151,6 @@ class OrderGraphBuilder final : public VNVisitor {
             if (m_isSubgraphSnapshotLogic) {
                 addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), false, true, nodep);
                 addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
-            }
-            if (m_isSubgraphWrapperLogic && m_inClocked && !m_inPost) {
-                if (m_inPre) {
-                    addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), true, false, nodep);
-                    addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
-                } else {
-                    addPhaseUsage(getSubgraphPostPhaseVtxp(barrierKeyp), false, true, nodep);
-                    addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), true, false, nodep);
-                }
             }
         }
         m_logicVxp = nullptr;
@@ -632,7 +625,18 @@ class OrderGraphBuilder final : public VNVisitor {
         }
         iterateChildren(nodep);
     }
-    void visit(AstSubgraphInstance* nodep) override { addSubgraphInstancePortUsage(nodep); }
+    void visit(AstSubgraphInstance* nodep) override {
+        addSubgraphInstancePortUsage(nodep);
+        const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
+        if (!v3Global.opt.subgraphSchedule() || !barrierKeyp || !m_inClocked || m_inPost) return;
+        if (nodep->phase() == AstSubgraphInstance::Phase::PRE) {
+            addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), true, false, nodep);
+            addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
+        } else if (nodep->phase() == AstSubgraphInstance::Phase::POST) {
+            addPhaseUsage(getSubgraphPostPhaseVtxp(barrierKeyp), false, true, nodep);
+            addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), true, false, nodep);
+        }
+    }
 
     //--- Logic akin to SystemVerilog Processes (AstNodeProcedure)
     void visit(AstInitial* nodep) override {  // LCOV_EXCL_START
@@ -644,17 +648,13 @@ class OrderGraphBuilder final : public VNVisitor {
     void visit(AstInitialAutomatic* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlways* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPre* nodep) override {
@@ -662,10 +662,8 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ(!m_inPre, nodep, "Should not nest");
         VL_RESTORER(m_inPre);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_inPre = true;
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysPost* nodep) override {
@@ -674,27 +672,21 @@ class OrderGraphBuilder final : public VNVisitor {
         VL_RESTORER(m_inPost);
         VL_RESTORER(m_isSubgraphCommitPostLogic);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_inPost = true;
         m_isSubgraphCommitPostLogic = isSubgraphCommitPostProcedure(nodep);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysObserved* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstAlwaysReactive* nodep) override {  //
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
-        VL_RESTORER(m_isSubgraphWrapperLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        m_isSubgraphWrapperLogic = isSubgraphWrapperProcedure(nodep);
         iterateLogic(nodep);
     }
     void visit(AstFinal* nodep) override {  // LCOV_EXCL_START
