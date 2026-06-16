@@ -1231,6 +1231,26 @@ public:
     string emitVerilog() const { return m_isFatal ? "$fatal" : "$stop"; }
     bool isFatal() const { return m_isFatal; }
 };
+class AstSubgraphInstance final : public AstNodeStmt {
+    // Coarse subgraph wrapper used to hide implementation calls from parent scheduling.
+    // @astgen op1 := stmtsp : List[AstNode]
+    // @astgen ptr := m_scopep : AstScope
+public:
+    AstSubgraphInstance(FileLine* fl, AstScope* scopep, AstNode* stmtsp)
+        : ASTGEN_SUPER_SubgraphInstance(fl) {
+        m_scopep = scopep;
+        addStmtsp(stmtsp);
+    }
+    ASTGEN_MEMBERS_AstSubgraphInstance;
+    AstScope* scopep() const { return m_scopep; }
+    void scopep(AstScope* scopep) { m_scopep = scopep; }
+    bool maybePointedTo() const override VL_MT_SAFE { return true; }
+    int instrCount() const override { return 1; }
+    bool sameNode(const AstNode* samep) const override {
+        const AstSubgraphInstance* const asamep = VN_DBG_AS(samep, SubgraphInstance);
+        return scopep() == asamep->scopep();
+    }
+};
 class AstSystemT final : public AstNodeStmt {
     // $system used as task
     // @astgen op1 := lhsp : AstNodeExpr

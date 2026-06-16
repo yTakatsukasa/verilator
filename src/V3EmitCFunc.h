@@ -1463,6 +1463,7 @@ public:
         emitNodesWithText(nodep->nodesp(), false, true, "");
         ensureNewLine();
     }
+    void visit(AstSubgraphInstance* nodep) override { iterateAndNextConstNull(nodep->stmtsp()); }
     void visit(AstCExpr* nodep) override {
         putnbs(nodep, "");
         emitNodesWithText(nodep->nodesp(), false, true, "");

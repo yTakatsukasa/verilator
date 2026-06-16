@@ -220,6 +220,8 @@ class OrderGraphBuilder final : public VNVisitor {
                && 0 == funcp->name().rfind("_eval_", 0);
     }
 
+    bool isSubgraphInstance(AstNode* nodep) const { return VN_IS(nodep, SubgraphInstance); }
+
     bool isUnderScope(AstScope* scopep, AstScope* basep) const {
         for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
             if (scanp == basep) return true;
@@ -383,10 +385,7 @@ class OrderGraphBuilder final : public VNVisitor {
         if (isRead) m_graphp->addHardEdge(phaseVtxp, m_logicVxp, WEIGHT_MEDIUM);
     }
 
-    void addSubgraphCallPortUsage(AstCCall* nodep) {
-        if (!isSubgraphWrapperCall(nodep)) return;
-        AstCFunc* const funcp = nodep->funcp();
-        AstScope* const scopep = funcp->scopep();
+    void addSubgraphContractUsage(AstScope* scopep, AstNode* nodep) {
         const V3SubgraphSummary::ScopeSummary* const summaryp
             = V3SubgraphSummary::getScopeSummary(scopep);
         UASSERT_OBJ(summaryp, nodep, "Missing subgraph scope summary");
@@ -407,28 +406,58 @@ class OrderGraphBuilder final : public VNVisitor {
                 addVarUsage(vscp, false, true, nodep, true);
             }
         }
+    }
+
+    void addSubgraphExternalUse(AstScope* scopep, const SubgraphCallUsage& use, AstNode* nodep) {
+        const V3SubgraphSummary::ScopeSummary* const summaryp
+            = V3SubgraphSummary::getScopeSummary(scopep);
+        UASSERT_OBJ(summaryp, nodep, "Missing subgraph scope summary");
+        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
         if (!contract.m_readsExternalVars) return;
+        AstVarScope* const vscp = use.m_varscp;
+        const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
+        if (!externalToSubgraph) return;
+        AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
+        const bool hideClockedBoundaryContract = m_inClocked && contract.m_hasClockedState;
+        const bool publishBoundaryWrites = !m_inPre && !contract.m_boundaryWrites.empty();
+        if (hideClockedBoundaryContract && sourceBoundaryp == scopep && vscp->scopep() == scopep
+            && vscp->varp()->isIO() && vscp->varp()->direction().isNonOutput()) {
+            return;
+        }
+        if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
+            return;
+        }
+        if (sourceBoundaryp && sourceBoundaryp != scopep) {
+            const bool coarseRead = use.m_read;
+            const bool coarseWrite = publishBoundaryWrites && use.m_write;
+            if (coarseRead || coarseWrite) {
+                addCoarseVarUsage(vscp, coarseRead, coarseWrite, nodep);
+            }
+        } else {
+            addVarUsage(vscp, use.m_read, use.m_write, nodep, false, use.m_read);
+        }
+    }
+
+    void addSubgraphCallPortUsage(AstCCall* nodep) {
+        if (!isSubgraphWrapperCall(nodep)) return;
+        AstCFunc* const funcp = nodep->funcp();
+        AstScope* const scopep = funcp->scopep();
+        addSubgraphContractUsage(scopep, nodep);
         for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
-            AstVarScope* const vscp = use.m_varscp;
-            const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
-            if (!externalToSubgraph) continue;
-            AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
-            if (hideClockedBoundaryContract && sourceBoundaryp == scopep
-                && vscp->scopep() == scopep && vscp->varp()->isIO()
-                && vscp->varp()->direction().isNonOutput()) {
-                continue;
-            }
-            if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
-                continue;
-            }
-            if (sourceBoundaryp && sourceBoundaryp != scopep) {
-                const bool coarseRead = use.m_read;
-                const bool coarseWrite = publishBoundaryWrites && use.m_write;
-                if (coarseRead || coarseWrite) {
-                    addCoarseVarUsage(vscp, coarseRead, coarseWrite, nodep);
-                }
-            } else {
-                addVarUsage(vscp, use.m_read, use.m_write, nodep, false, use.m_read);
+            addSubgraphExternalUse(scopep, use, nodep);
+        }
+    }
+
+    void addSubgraphInstancePortUsage(AstSubgraphInstance* nodep) {
+        AstScope* const scopep = nodep->scopep();
+        addSubgraphContractUsage(scopep, nodep);
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            AstStmtExpr* const stmtExprp = VN_CAST(stmtp, StmtExpr);
+            if (!stmtExprp) continue;
+            AstCCall* const callp = VN_CAST(stmtExprp->exprp(), CCall);
+            if (!callp) continue;
+            for (const SubgraphCallUsage& use : getSubgraphCallUsage(callp->funcp())) {
+                addSubgraphExternalUse(scopep, use, nodep);
             }
         }
     }
@@ -476,6 +505,10 @@ class OrderGraphBuilder final : public VNVisitor {
         bool sawCall = false;
         for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
             if (VN_IS(stmtp, NodeProcedure)) return false;
+            if (VN_IS(stmtp, SubgraphInstance)) {
+                sawCall = true;
+                continue;
+            }
             stmtp->foreach([&](AstCCall* callp) {
                 if (isSubgraphWrapperCall(callp)) sawCall = true;
             });
@@ -485,6 +518,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     bool isSubgraphWrapperProcedure(AstNodeProcedure* nodep) const {
         bool sawCall = false;
+        nodep->foreach([&](AstSubgraphInstance* subgraphp) { sawCall = true; });
         nodep->foreach([&](AstCCall* callp) {
             if (isSubgraphWrapperCall(callp)) sawCall = true;
         });
@@ -573,6 +607,7 @@ class OrderGraphBuilder final : public VNVisitor {
         }
         iterateChildren(nodep);
     }
+    void visit(AstSubgraphInstance* nodep) override { addSubgraphInstancePortUsage(nodep); }
 
     //--- Logic akin to SystemVerilog Processes (AstNodeProcedure)
     void visit(AstInitial* nodep) override {  // LCOV_EXCL_START
