@@ -20,6 +20,8 @@
 #include "config_build.h"
 #include "verilatedos.h"
 
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 class AstNetlist;
@@ -28,6 +30,14 @@ class AstVarScope;
 
 class V3SubgraphSummary final {
 public:
+    struct ModuleSummary final {
+        std::vector<std::string> m_nonOutputPortNames;
+        std::vector<std::string> m_writablePortNames;
+        std::unordered_set<std::string> m_derivedBoundaryInputNames;
+        bool m_hasClockedState = false;
+        bool m_hasPostPhase = false;
+    };
+
     struct ParentStubContract final {
         std::vector<AstVarScope*> m_boundaryReads;
         std::vector<AstVarScope*> m_boundaryWrites;
