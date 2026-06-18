@@ -23,15 +23,8 @@
 
 namespace {
 
-struct ModuleSummary final {
-    std::vector<std::string> m_nonOutputPortNames;
-    std::vector<std::string> m_writablePortNames;
-    std::unordered_set<std::string> m_derivedBoundaryInputNames;
-    bool m_hasClockedState = false;
-    bool m_hasPostPhase = false;
-};
-
-using ModuleSummaryMap = std::unordered_map<const AstNodeModule*, ModuleSummary>;
+using ModuleSummaryMap
+    = std::unordered_map<const AstNodeModule*, V3SubgraphSummary::ModuleSummary>;
 using ScopeSummaryMap = std::unordered_map<const AstScope*, V3SubgraphSummary::ScopeSummary>;
 
 ModuleSummaryMap s_moduleSummaries;
@@ -43,7 +36,7 @@ bool isCompileTimeConstant(const AstVar* varp) { return varp->isParam() || varp-
 class SubgraphModuleSummaryVisitor final : public VNVisitorConst {
     const AstNodeModule* m_modp = nullptr;
 
-    static void analyzeNode(const AstNode* nodep, ModuleSummary& summary) {
+    static void analyzeNode(const AstNode* nodep, V3SubgraphSummary::ModuleSummary& summary) {
         bool readsBoundaryValue = false;
         nodep->foreach([&](const AstVarRef* refp) {
             if (readsBoundaryValue || !refp->access().isReadOrRW()) return;
@@ -64,7 +57,7 @@ class SubgraphModuleSummaryVisitor final : public VNVisitorConst {
         VL_RESTORER(m_modp);
         m_modp = nodep;
         if (nodep->subgraphBoundary()) {
-            ModuleSummary& summary = s_moduleSummaries[nodep];
+            V3SubgraphSummary::ModuleSummary& summary = s_moduleSummaries[nodep];
             for (AstNode* memberp = nodep->stmtsp(); memberp; memberp = memberp->nextp()) {
                 AstVar* const varp = VN_CAST(memberp, Var);
                 if (!varp || !varp->isIO()) continue;
@@ -127,7 +120,7 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
 
         const auto it = s_moduleSummaries.find(nodep->modp());
         UASSERT_OBJ(it != s_moduleSummaries.end(), nodep, "Missing subgraph module summary");
-        const ModuleSummary& modSummary = it->second;
+        const V3SubgraphSummary::ModuleSummary& modSummary = it->second;
 
         std::unordered_map<std::string, AstVarScope*> varsByName;
         for (AstVarScope* vscp = nodep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {

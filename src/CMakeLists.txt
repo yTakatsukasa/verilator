@@ -180,6 +180,7 @@ set(HEADERS
     V3Stats.h
     V3StdFuture.h
     V3String.h
+    V3SubgraphCheck.h
     V3SubgraphSummary.h
     V3Subst.h
     V3SymTable.h
@@ -355,6 +356,7 @@ set(COMMON_SOURCES
     V3Stats.cpp
     V3StatsReport.cpp
     V3String.cpp
+    V3SubgraphCheck.cpp
     V3SubgraphSummary.cpp
     V3Subst.cpp
     V3TSP.cpp

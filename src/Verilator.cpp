@@ -101,6 +101,7 @@
 #include "V3SplitVar.h"
 #include "V3Stats.h"
 #include "V3String.h"
+#include "V3SubgraphCheck.h"
 #include "V3SubgraphSummary.h"
 #include "V3Subst.h"
 #include "V3TSP.h"
@@ -186,7 +187,7 @@ static void process() {
         V3LinkDot::linkDotParamed(v3Global.rootp());  // Cleanup as made new modules
         V3Param::finalizeDeferredParams(v3Global.rootp());
         V3LinkLValue::linkLValue(v3Global.rootp());  // Resolve new VarRefs
-        V3LinkJump::checkSubgraphs(v3Global.rootp());
+        V3SubgraphCheck::check(v3Global.rootp());
         V3Error::abortIfErrors();
 
         // Link cleanup of 'with' as final link phase before V3Width
