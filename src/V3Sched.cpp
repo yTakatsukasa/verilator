@@ -55,11 +55,19 @@ namespace {
 
 using SubgraphCallUsageSummaryMap
     = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
-SubgraphCallUsageSummaryMap s_subgraphCallUsageSummaries;
 using SubgraphScopeContractSummaryMap
     = std::unordered_map<const AstScope*, SubgraphScopeContractSummary>;
-SubgraphScopeContractSummaryMap s_subgraphScopeContractSummaries;
-std::unordered_set<const AstNodeProcedure*> s_subgraphSnapshotProcedures;
+
+struct SubgraphRegistry final {
+    SubgraphCallUsageSummaryMap m_callUsageSummaries;
+    SubgraphScopeContractSummaryMap m_scopeContractSummaries;
+    std::unordered_set<const AstNodeProcedure*> m_snapshotProcedures;
+};
+
+SubgraphRegistry& subgraphRegistry() {
+    static SubgraphRegistry s_registry;
+    return s_registry;
+}
 
 //============================================================================
 // Utility functions
@@ -985,7 +993,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         return uses;
     };
     const auto registerSubgraphCallUsageSummary = [&](AstCFunc* funcp, AstScope* boundaryScopep) {
-        s_subgraphCallUsageSummaries[funcp] = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
+        subgraphRegistry().m_callUsageSummaries[funcp]
+            = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
     };
 
     std::vector<SubgraphGroup> groups;
@@ -1198,8 +1207,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 {
                     std::unordered_map<AstVarScope*, size_t> useIndices;
                     const auto appendUses = [&](AstCFunc* funcp) {
-                        const auto it = s_subgraphCallUsageSummaries.find(funcp);
-                        if (it == s_subgraphCallUsageSummaries.end()) return;
+                        const auto it = subgraphRegistry().m_callUsageSummaries.find(funcp);
+                        if (it == subgraphRegistry().m_callUsageSummaries.end()) return;
                         for (const SubgraphCallUsageSummary& summary : it->second) {
                             AstVarScope* const vscp = summary.m_varscp;
                             if (vscp && !isUnderBoundaryScope(vscp->scopep(), group.m_scopep)) {
@@ -1330,7 +1339,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 makeSnapshotExpr(snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
                 new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
         }
-        s_subgraphSnapshotProcedures.insert(procp);
+        subgraphRegistry().m_snapshotProcedures.insert(procp);
         bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
     }
 }
@@ -1811,13 +1820,13 @@ void createEval(AstNetlist* netlistp,  //
 }  // namespace
 
 const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const AstCFunc* funcp) {
-    const auto it = s_subgraphCallUsageSummaries.find(funcp);
-    return it == s_subgraphCallUsageSummaries.end() ? nullptr : &it->second;
+    const auto it = subgraphRegistry().m_callUsageSummaries.find(funcp);
+    return it == subgraphRegistry().m_callUsageSummaries.end() ? nullptr : &it->second;
 }
 
 const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstScope* scopep) {
-    const auto it = s_subgraphScopeContractSummaries.find(scopep);
-    if (it != s_subgraphScopeContractSummaries.end()) return &it->second;
+    const auto it = subgraphRegistry().m_scopeContractSummaries.find(scopep);
+    if (it != subgraphRegistry().m_scopeContractSummaries.end()) return &it->second;
 
     const V3SubgraphSummary::ScopeSummary* const summaryp
         = V3SubgraphSummary::getScopeSummary(scopep);
@@ -1836,16 +1845,18 @@ const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstSco
     for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryWrites) {
         contract.m_boundaryWrites.push_back(vscp);
     }
-    return &s_subgraphScopeContractSummaries.emplace(scopep, std::move(contract)).first->second;
+    return &subgraphRegistry()
+                .m_scopeContractSummaries.emplace(scopep, std::move(contract))
+                .first->second;
 }
 
 void clearSubgraphCallUsageSummaries() {
-    s_subgraphCallUsageSummaries.clear();
-    s_subgraphScopeContractSummaries.clear();
+    subgraphRegistry().m_callUsageSummaries.clear();
+    subgraphRegistry().m_scopeContractSummaries.clear();
 }
 
 bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
-    return s_subgraphSnapshotProcedures.count(procp);
+    return subgraphRegistry().m_snapshotProcedures.count(procp);
 }
 
 //============================================================================
@@ -1896,7 +1907,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 
 void schedule(AstNetlist* netlistp) {
     clearSubgraphCallUsageSummaries();
-    s_subgraphSnapshotProcedures.clear();
+    subgraphRegistry().m_snapshotProcedures.clear();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;
         lbs.foreachLogic([&](AstNode* nodep) { size += nodep->nodeCount(); });
