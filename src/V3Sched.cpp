@@ -647,6 +647,241 @@ public:
         logic.clear();
     }
 
+    static std::vector<uintptr_t>
+    computeDomainShape(const LogicByScope& logic, AstScope* boundaryScopep,
+                       const V3Order::ExternalDomainsProvider& externalDomains) {
+        std::vector<uintptr_t> result;
+        logic.foreachLogic([&](AstNode* logicp) {
+            result.push_back(static_cast<uintptr_t>(logicp->type()));
+            logicp->foreach([&](AstVarRef* refp) {
+                result.push_back(static_cast<uintptr_t>(refp->access()));
+                const AstVarScope* const vscp = refp->varScopep();
+                result.push_back(isUnderBoundaryScope(vscp->scopep(), boundaryScopep));
+                std::vector<AstSenTree*> domains;
+                externalDomains(vscp, domains);
+                result.push_back(domains.size());
+                for (AstSenTree* const domainp : domains) {
+                    result.push_back(reinterpret_cast<uintptr_t>(domainp));
+                }
+            });
+        });
+        return result;
+    }
+
+    static SubgraphLogicSig buildLogicSig(const LogicByScope& logic) {
+        SubgraphLogicSig result;
+        logic.foreachLogic([&](AstNode* logicp) {
+            result.push_back(SubgraphLogicNodeSig{});
+            SubgraphLogicNodeSig& nodeSig = result.back();
+            nodeSig.m_type = static_cast<uintptr_t>(logicp->type());
+            logicp->foreach([&](AstVarRef* refp) {
+                nodeSig.m_refs.push_back(
+                    {static_cast<uintptr_t>(refp->access()), refp->varScopep()});
+            });
+        });
+        return result;
+    }
+
+    static bool
+    buildTemplateVarScopeMap(const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
+                             std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
+        std::vector<AstNode*> currentNodes;
+        currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
+        if (templateSig.size() != currentNodes.size()) return false;
+
+        for (size_t i = 0; i < templateSig.size(); ++i) {
+            const SubgraphLogicNodeSig& templateNode = templateSig[i];
+            AstNode* const currentNodep = currentNodes[i];
+            if (templateNode.m_type != static_cast<uintptr_t>(currentNodep->type())) {
+                return false;
+            }
+
+            std::vector<AstVarRef*> currentRefs;
+            currentNodep->foreach([&](AstVarRef* refp) { currentRefs.push_back(refp); });
+            if (templateNode.m_refs.size() != currentRefs.size()) return false;
+
+            for (size_t j = 0; j < templateNode.m_refs.size(); ++j) {
+                const SubgraphLogicRefSig& templateRef = templateNode.m_refs[j];
+                AstVarRef* const currentRefp = currentRefs[j];
+                if (templateRef.m_access != static_cast<uintptr_t>(currentRefp->access())) {
+                    return false;
+                }
+                AstVarScope* const currentVscp = currentRefp->varScopep();
+                const auto it = result.find(templateRef.m_vscp);
+                if (it != result.end()) {
+                    if (it->second != currentVscp) return false;
+                } else {
+                    result.emplace(templateRef.m_vscp, currentVscp);
+                }
+            }
+        }
+        return true;
+    }
+
+    static bool canShareSubgraphLogic(const LogicByScope& logic, AstScope* boundaryScopep) {
+        bool shareable = true;
+        logic.foreachLogic([&](AstNode* logicp) {
+            if (!shareable) return;
+            logicp->foreach([&](AstVarRef* refp) {
+                if (!shareable) return;
+                if (!isUnderBoundaryScope(refp->varScopep()->scopep(), boundaryScopep)) {
+                    shareable = false;
+                }
+            });
+        });
+        return shareable;
+    }
+
+    static AstCFunc* cloneOrderedFuncGraph(
+        AstCFunc* funcp, AstScope* destBoundaryScopep,
+        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
+        static unsigned s_cloneIndex = 0;
+
+        std::vector<AstCFunc*> orderedFuncs;
+        std::unordered_set<AstCFunc*> seenFuncs;
+        std::function<void(AstCFunc*)> gatherFuncs = [&](AstCFunc* scanFuncp) {
+            if (!seenFuncs.insert(scanFuncp).second) return;
+            orderedFuncs.push_back(scanFuncp);
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint()) return;
+                gatherFuncs(calledFuncp);
+            });
+        };
+        gatherFuncs(funcp);
+
+        std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap = templateVarMap;
+        std::unordered_map<const AstCFunc*, std::unordered_set<const AstVar*>> argVarsByFunc;
+        for (AstCFunc* const origFuncp : orderedFuncs) {
+            std::unordered_set<const AstVar*>& argVars = argVarsByFunc[origFuncp];
+            for (AstVar* argp = origFuncp->argsp(); argp; argp = VN_AS(argp->nextp(), Var)) {
+                argVars.insert(argp);
+            }
+            bool failed = false;
+            origFuncp->foreach([&](AstVarRef* refp) {
+                if (failed) return;
+                if (argVars.count(refp->varp())) return;
+                const AstVarScope* const sourceVscp = refp->varScopep();
+                if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) failed = true;
+            });
+            if (failed) return nullptr;
+        }
+
+        std::unordered_map<const AstCFunc*, AstCFunc*> clonedFuncs;
+        std::unordered_map<const AstVar*, AstVarScope*> clonedArgVscps;
+        const auto cloneFuncShell = [&](AstCFunc* origFuncp) {
+            AstCFunc* const clonep = new AstCFunc{
+                origFuncp->fileline(), origFuncp->name() + "__sgclone_" + cvtToStr(s_cloneIndex++),
+                destBoundaryScopep, origFuncp->rtnTypeVoid()};
+            clonep->argTypes(origFuncp->argTypes());
+            clonep->cname(origFuncp->cname());
+            clonep->declPrivate(origFuncp->declPrivate());
+            clonep->dontCombine(origFuncp->dontCombine());
+            clonep->dpiContext(origFuncp->dpiContext());
+            clonep->dpiExportDispatcher(origFuncp->dpiExportDispatcher());
+            clonep->dpiExportImpl(origFuncp->dpiExportImpl());
+            clonep->dpiImportPrototype(origFuncp->dpiImportPrototype());
+            clonep->dpiImportWrapper(origFuncp->dpiImportWrapper());
+            clonep->dpiPure(origFuncp->dpiPure());
+            clonep->entryPoint(origFuncp->entryPoint());
+            clonep->funcPublic(origFuncp->funcPublic());
+            clonep->ifdef(origFuncp->ifdef());
+            clonep->isConst(origFuncp->isConst());
+            clonep->isConstructor(origFuncp->isConstructor());
+            clonep->isDestructor(origFuncp->isDestructor());
+            clonep->isLoose(origFuncp->isLoose());
+            clonep->isMethod(origFuncp->isMethod());
+            clonep->isStatic(origFuncp->isStatic());
+            clonep->isTrace(origFuncp->isTrace());
+            clonep->isVirtual(origFuncp->isVirtual());
+            clonep->keepIfEmpty(origFuncp->keepIfEmpty());
+            if (origFuncp->needProcess()) clonep->setNeedProcess();
+            clonep->scopep(destBoundaryScopep);
+            clonep->slow(origFuncp->slow());
+            destBoundaryScopep->addBlocksp(clonep);
+
+            for (AstVar* argp = origFuncp->argsp(); argp; argp = VN_AS(argp->nextp(), Var)) {
+                AstVar* const clonedArgp = argp->cloneTree(false);
+                clonep->addArgsp(clonedArgp);
+                AstVarScope* const clonedVscp
+                    = new AstVarScope{clonedArgp->fileline(), destBoundaryScopep, clonedArgp};
+                destBoundaryScopep->addVarsp(clonedVscp);
+                clonedArgVscps.emplace(argp, clonedVscp);
+            }
+            clonedFuncs.emplace(origFuncp, clonep);
+        };
+        for (AstCFunc* const origFuncp : orderedFuncs) cloneFuncShell(origFuncp);
+
+        for (AstCFunc* const origFuncp : orderedFuncs) {
+            AstCFunc* const clonedFuncp = clonedFuncs.at(origFuncp);
+            if (!origFuncp->stmtsp()) continue;
+            AstNode* const bodyp = origFuncp->stmtsp()->cloneTree(true);
+            bool failed = false;
+            bodyp->foreach([&](AstCCall* callp) {
+                if (failed) return;
+                const auto it = clonedFuncs.find(callp->funcp());
+                if (it == clonedFuncs.end()) return;
+                callp->funcp(it->second);
+            });
+            bodyp->foreach([&](AstVarRef* refp) {
+                if (failed) return;
+                const auto argIt = clonedArgVscps.find(refp->varp());
+                if (argIt != clonedArgVscps.end()) {
+                    refp->varp(argIt->second->varp());
+                    refp->varScopep(argIt->second);
+                    return;
+                }
+                const auto varIt = resolvedVarMap.find(refp->varScopep());
+                if (varIt == resolvedVarMap.end()) {
+                    failed = true;
+                    return;
+                }
+                refp->varp(varIt->second->varp());
+                refp->varScopep(varIt->second);
+            });
+            if (failed) {
+                VL_DO_DANGLING(bodyp->deleteTree(), bodyp);
+                return nullptr;
+            }
+            clonedFuncp->addStmtsp(bodyp);
+        }
+
+        return clonedFuncs.at(funcp);
+    }
+
+    static std::vector<SubgraphCallUsageSummary>
+    buildSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
+        std::vector<SubgraphCallUsageSummary> uses;
+        std::unordered_map<AstVarScope*, size_t> useIndices;
+        std::unordered_set<AstCFunc*> seen;
+        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
+            if (!seen.insert(scanFuncp).second) return;
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                const bool externalToSubgraph
+                    = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
+                if (!externalToSubgraph) return;
+                const auto pair = useIndices.emplace(vscp, uses.size());
+                if (pair.second) uses.push_back(SubgraphCallUsageSummary{vscp, false, false});
+                SubgraphCallUsageSummary& use = uses[pair.first->second];
+                use.m_read |= refp->access().isReadOrRW();
+                use.m_write |= refp->access().isWriteOrRW();
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint()) return;
+                gather(calledFuncp);
+            });
+        };
+        gather(funcp);
+        return uses;
+    }
+
+    void registerSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
+        subgraphRegistry().m_callUsageSummaries[funcp]
+            = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
+    }
+
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
         for (SnapshotBucket& bucket : m_snapshotBuckets) {
             if (bucket.m_ownerp == ownerp && bucket.m_senTreep == senTreep) return bucket;
@@ -792,235 +1027,6 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         scopep->addVarsp(vscp);
         return vscp;
     };
-    const auto computeDomainShape = [&](const LogicByScope& logic, AstScope* boundaryScopep) {
-        std::vector<uintptr_t> result;
-        logic.foreachLogic([&](AstNode* logicp) {
-            result.push_back(static_cast<uintptr_t>(logicp->type()));
-            logicp->foreach([&](AstVarRef* refp) {
-                result.push_back(static_cast<uintptr_t>(refp->access()));
-                const AstVarScope* const vscp = refp->varScopep();
-                result.push_back(
-                    SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(), boundaryScopep));
-                std::vector<AstSenTree*> domains;
-                externalDomains(vscp, domains);
-                result.push_back(domains.size());
-                for (AstSenTree* const domainp : domains) {
-                    result.push_back(reinterpret_cast<uintptr_t>(domainp));
-                }
-            });
-        });
-        return result;
-    };
-    const auto buildLogicSig = [](const LogicByScope& logic) {
-        SubgraphLogicSig result;
-        logic.foreachLogic([&](AstNode* logicp) {
-            result.push_back(SubgraphLogicNodeSig{});
-            SubgraphLogicNodeSig& nodeSig = result.back();
-            nodeSig.m_type = static_cast<uintptr_t>(logicp->type());
-            logicp->foreach([&](AstVarRef* refp) {
-                nodeSig.m_refs.push_back(
-                    {static_cast<uintptr_t>(refp->access()), refp->varScopep()});
-            });
-        });
-        return result;
-    };
-    const auto buildTemplateVarScopeMap
-        = [](const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
-             std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
-              std::vector<AstNode*> currentNodes;
-              currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
-              if (templateSig.size() != currentNodes.size()) return false;
-
-              for (size_t i = 0; i < templateSig.size(); ++i) {
-                  const SubgraphLogicNodeSig& templateNode = templateSig[i];
-                  AstNode* const currentNodep = currentNodes[i];
-                  if (templateNode.m_type != static_cast<uintptr_t>(currentNodep->type())) {
-                      return false;
-                  }
-
-                  std::vector<AstVarRef*> currentRefs;
-                  currentNodep->foreach([&](AstVarRef* refp) { currentRefs.push_back(refp); });
-                  if (templateNode.m_refs.size() != currentRefs.size()) return false;
-
-                  for (size_t j = 0; j < templateNode.m_refs.size(); ++j) {
-                      const SubgraphLogicRefSig& templateRef = templateNode.m_refs[j];
-                      AstVarRef* const currentRefp = currentRefs[j];
-                      if (templateRef.m_access != static_cast<uintptr_t>(currentRefp->access())) {
-                          return false;
-                      }
-                      AstVarScope* const currentVscp = currentRefp->varScopep();
-                      const auto it = result.find(templateRef.m_vscp);
-                      if (it != result.end()) {
-                          if (it->second != currentVscp) return false;
-                      } else {
-                          result.emplace(templateRef.m_vscp, currentVscp);
-                      }
-                  }
-              }
-              return true;
-          };
-    const auto canShareSubgraphLogic = [&](const LogicByScope& logic, AstScope* boundaryScopep) {
-        bool shareable = true;
-        logic.foreachLogic([&](AstNode* logicp) {
-            if (!shareable) return;
-            logicp->foreach([&](AstVarRef* refp) {
-                if (!shareable) return;
-                if (!SubgraphLoweringState::isUnderBoundaryScope(refp->varScopep()->scopep(),
-                                                                 boundaryScopep)) {
-                    shareable = false;
-                }
-            });
-        });
-        return shareable;
-    };
-    const auto cloneOrderedFuncGraph
-        = [&](AstCFunc* funcp, AstScope* destBoundaryScopep,
-              const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap)
-        -> AstCFunc* {
-        static unsigned s_cloneIndex = 0;
-
-        std::vector<AstCFunc*> orderedFuncs;
-        std::unordered_set<AstCFunc*> seenFuncs;
-        std::function<void(AstCFunc*)> gatherFuncs = [&](AstCFunc* scanFuncp) {
-            if (!seenFuncs.insert(scanFuncp).second) return;
-            orderedFuncs.push_back(scanFuncp);
-            scanFuncp->foreach([&](AstCCall* callp) {
-                AstCFunc* const calledFuncp = callp->funcp();
-                if (calledFuncp->entryPoint()) return;
-                gatherFuncs(calledFuncp);
-            });
-        };
-        gatherFuncs(funcp);
-
-        std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap = templateVarMap;
-        std::unordered_map<const AstCFunc*, std::unordered_set<const AstVar*>> argVarsByFunc;
-        for (AstCFunc* const origFuncp : orderedFuncs) {
-            std::unordered_set<const AstVar*>& argVars = argVarsByFunc[origFuncp];
-            for (AstVar* argp = origFuncp->argsp(); argp; argp = VN_AS(argp->nextp(), Var)) {
-                argVars.insert(argp);
-            }
-            bool failed = false;
-            origFuncp->foreach([&](AstVarRef* refp) {
-                if (failed) return;
-                if (argVars.count(refp->varp())) return;
-                const AstVarScope* const sourceVscp = refp->varScopep();
-                if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) { failed = true; }
-            });
-            if (failed) return nullptr;
-        }
-
-        std::unordered_map<const AstCFunc*, AstCFunc*> clonedFuncs;
-        std::unordered_map<const AstVar*, AstVarScope*> clonedArgVscps;
-        const auto cloneFuncShell = [&](AstCFunc* origFuncp) {
-            AstCFunc* const clonep = new AstCFunc{
-                origFuncp->fileline(), origFuncp->name() + "__sgclone_" + cvtToStr(s_cloneIndex++),
-                destBoundaryScopep, origFuncp->rtnTypeVoid()};
-            clonep->argTypes(origFuncp->argTypes());
-            clonep->cname(origFuncp->cname());
-            clonep->declPrivate(origFuncp->declPrivate());
-            clonep->dontCombine(origFuncp->dontCombine());
-            clonep->dpiContext(origFuncp->dpiContext());
-            clonep->dpiExportDispatcher(origFuncp->dpiExportDispatcher());
-            clonep->dpiExportImpl(origFuncp->dpiExportImpl());
-            clonep->dpiImportPrototype(origFuncp->dpiImportPrototype());
-            clonep->dpiImportWrapper(origFuncp->dpiImportWrapper());
-            clonep->dpiPure(origFuncp->dpiPure());
-            clonep->entryPoint(origFuncp->entryPoint());
-            clonep->funcPublic(origFuncp->funcPublic());
-            clonep->ifdef(origFuncp->ifdef());
-            clonep->isConst(origFuncp->isConst());
-            clonep->isConstructor(origFuncp->isConstructor());
-            clonep->isDestructor(origFuncp->isDestructor());
-            clonep->isLoose(origFuncp->isLoose());
-            clonep->isMethod(origFuncp->isMethod());
-            clonep->isStatic(origFuncp->isStatic());
-            clonep->isTrace(origFuncp->isTrace());
-            clonep->isVirtual(origFuncp->isVirtual());
-            clonep->keepIfEmpty(origFuncp->keepIfEmpty());
-            if (origFuncp->needProcess()) clonep->setNeedProcess();
-            clonep->scopep(destBoundaryScopep);
-            clonep->slow(origFuncp->slow());
-            destBoundaryScopep->addBlocksp(clonep);
-
-            for (AstVar* argp = origFuncp->argsp(); argp; argp = VN_AS(argp->nextp(), Var)) {
-                AstVar* const clonedArgp = argp->cloneTree(false);
-                clonep->addArgsp(clonedArgp);
-                AstVarScope* const clonedVscp
-                    = new AstVarScope{clonedArgp->fileline(), destBoundaryScopep, clonedArgp};
-                destBoundaryScopep->addVarsp(clonedVscp);
-                clonedArgVscps.emplace(argp, clonedVscp);
-            }
-            clonedFuncs.emplace(origFuncp, clonep);
-        };
-        for (AstCFunc* const origFuncp : orderedFuncs) cloneFuncShell(origFuncp);
-
-        for (AstCFunc* const origFuncp : orderedFuncs) {
-            AstCFunc* const clonedFuncp = clonedFuncs.at(origFuncp);
-            if (!origFuncp->stmtsp()) continue;
-            AstNode* const bodyp = origFuncp->stmtsp()->cloneTree(true);
-            bool failed = false;
-            bodyp->foreach([&](AstCCall* callp) {
-                if (failed) return;
-                const auto it = clonedFuncs.find(callp->funcp());
-                if (it == clonedFuncs.end()) return;
-                callp->funcp(it->second);
-            });
-            bodyp->foreach([&](AstVarRef* refp) {
-                if (failed) return;
-                const auto argIt = clonedArgVscps.find(refp->varp());
-                if (argIt != clonedArgVscps.end()) {
-                    refp->varp(argIt->second->varp());
-                    refp->varScopep(argIt->second);
-                    return;
-                }
-                const auto varIt = resolvedVarMap.find(refp->varScopep());
-                if (varIt == resolvedVarMap.end()) {
-                    failed = true;
-                    return;
-                }
-                refp->varp(varIt->second->varp());
-                refp->varScopep(varIt->second);
-            });
-            if (failed) {
-                VL_DO_DANGLING(bodyp->deleteTree(), bodyp);
-                return nullptr;
-            }
-            clonedFuncp->addStmtsp(bodyp);
-        }
-
-        return clonedFuncs.at(funcp);
-    };
-    const auto buildSubgraphCallUsageSummary = [&](AstCFunc* funcp, AstScope* boundaryScopep) {
-        std::vector<SubgraphCallUsageSummary> uses;
-        std::unordered_map<AstVarScope*, size_t> useIndices;
-        std::unordered_set<AstCFunc*> seen;
-        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
-            if (!seen.insert(scanFuncp).second) return;
-            scanFuncp->foreach([&](AstNodeVarRef* refp) {
-                AstVarScope* const vscp = refp->varScopep();
-                const bool externalToSubgraph
-                    = !SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
-                if (!externalToSubgraph) return;
-                const auto pair = useIndices.emplace(vscp, uses.size());
-                if (pair.second) uses.push_back(SubgraphCallUsageSummary{vscp, false, false});
-                SubgraphCallUsageSummary& use = uses[pair.first->second];
-                use.m_read |= refp->access().isReadOrRW();
-                use.m_write |= refp->access().isWriteOrRW();
-            });
-            scanFuncp->foreach([&](AstCCall* callp) {
-                AstCFunc* const calledFuncp = callp->funcp();
-                if (calledFuncp->entryPoint()) return;
-                gather(calledFuncp);
-            });
-        };
-        gather(funcp);
-        return uses;
-    };
-    const auto registerSubgraphCallUsageSummary = [&](AstCFunc* funcp, AstScope* boundaryScopep) {
-        subgraphRegistry().m_callUsageSummaries[funcp]
-            = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
-    };
-
     std::vector<SubgraphGroup> groups;
     const auto findGroup
         = [&](LogicByScope* ownerp, AstScope* scopep, AstSenTree* senTreep) -> SubgraphGroup& {
@@ -1155,9 +1161,11 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                           const SubgraphWrapper& wrapper, bool isEarly,
                                           const std::vector<AstCFunc*>* tailFuncps = nullptr) {
             if (subgraphLogic.empty()) return;
-            const bool canShare = canShareSubgraphLogic(subgraphLogic, group.m_scopep);
+            const bool canShare
+                = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
             SubgraphOrderCacheKey cacheKey;
-            cacheKey.m_domainShape = computeDomainShape(subgraphLogic, group.m_scopep);
+            cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
+                subgraphLogic, group.m_scopep, externalDomains);
             cacheKey.m_modp = group.m_scopep->modp();
             cacheKey.m_senTreep = group.m_senTreep;
             cacheKey.m_isEarly = isEarly;
@@ -1166,23 +1174,23 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
                 if (cacheIt != state.m_subgraphOrderCache.end()) {
                     std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                    if (buildTemplateVarScopeMap(cacheIt->second.m_logicSig, subgraphLogic,
-                                                 templateVarMap)) {
-                        funcp = cloneOrderedFuncGraph(cacheIt->second.m_funcp, group.m_scopep,
-                                                      templateVarMap);
+                    if (SubgraphLoweringState::buildTemplateVarScopeMap(
+                            cacheIt->second.m_logicSig, subgraphLogic, templateVarMap)) {
+                        funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                            cacheIt->second.m_funcp, group.m_scopep, templateVarMap);
                         if (funcp) SubgraphLoweringState::discardLogic(subgraphLogic);
                     }
                 }
             }
             if (!funcp) {
                 SubgraphLogicSig logicSig;
-                if (canShare) logicSig = buildLogicSig(subgraphLogic);
+                if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
                 funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
                                        tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
                                        externalDomains, group.m_scopep);
                 if (funcp) {
                     util::splitCheck(funcp);
-                    registerSubgraphCallUsageSummary(funcp, group.m_scopep);
+                    state.registerSubgraphCallUsageSummary(funcp, group.m_scopep);
                     if (canShare) {
                         if (state.m_subgraphOrderCache.find(cacheKey)
                             == state.m_subgraphOrderCache.end()) {
@@ -1197,7 +1205,7 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                 if (tag == "stl") {
                     AstCFunc* const tailFuncp
                         = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
-                    registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
+                    state.registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
                     state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
                     callFuncp = tailFuncp;
                 }
@@ -1289,7 +1297,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                                       : tailFuncp;
                             activeTailFuncps.push_back(activeTailFuncp);
                             if (activeTailFuncp != tailFuncp) {
-                                registerSubgraphCallUsageSummary(activeTailFuncp, group.m_scopep);
+                                state.registerSubgraphCallUsageSummary(activeTailFuncp,
+                                                                       group.m_scopep);
                             }
                         }
                         tailFuncps = &activeTailFuncps;
