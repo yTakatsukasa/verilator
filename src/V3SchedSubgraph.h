@@ -32,6 +32,9 @@ void registerSubgraphCallUsageSummary(
     const AstCFunc* funcp, std::vector<SubgraphCallUsageSummary>&& summary) VL_MT_DISABLED;
 void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
 void clearSubgraphSnapshotProcedures() VL_MT_DISABLED;
+void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
+                        const V3Order::ExternalDomainsProvider& externalDomains);
 
 }  // namespace V3Sched
 
