@@ -1266,90 +1266,85 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
     bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
 }
 
-void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
-                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
-                        const V3Order::ExternalDomainsProvider& externalDomains) {
-    if (!v3Global.opt.subgraphSchedule()) return;
-    SubgraphLoweringState state{tag};
-    std::vector<SubgraphGroup> groups;
-    collectSubgraphGroups(logic, groups);
-
-    if (state.m_snapshotCrossBoundaryReads) {
-        for (LogicByScope* const lbsp : logic) {
-            lbsp->foreachLogic([&](AstNode* logicp) {
-                logicp->foreach([&](AstVarRef* refp) {
-                    if (!refp->access().isWriteOrRW()) return;
-                    state.m_regionWrittenVars.insert(refp->varScopep());
-                });
+void collectRegionWrittenVars(const std::vector<LogicByScope*>& logic,
+                              SubgraphLoweringState& state) {
+    for (LogicByScope* const lbsp : logic) {
+        lbsp->foreachLogic([&](AstNode* logicp) {
+            logicp->foreach([&](AstVarRef* refp) {
+                if (!refp->access().isWriteOrRW()) return;
+                state.m_regionWrittenVars.insert(refp->varScopep());
             });
-        }
+        });
     }
+}
 
-    if (state.m_snapshotCrossBoundaryReads) {
-        for (SubgraphGroup& group : groups) {
-            state.collectCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep,
-                                                   group.m_ownerp, group.m_senTreep);
-            state.collectCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep,
-                                                   group.m_ownerp, group.m_senTreep);
-            if (tag != "stl" && tag != "ico") {
-                auto& stlFuncs = state.m_stlSubgraphFuncs;
-                const auto it = stlFuncs.find(group.m_scopep);
-                if (it != stlFuncs.end()) {
-                    for (AstCFunc* const tailFuncp : it->second) {
-                        if (!state.tailNeedsNbaClone(tailFuncp, group.m_scopep)
-                            || !tailFuncp->stmtsp()) {
-                            continue;
-                        }
-                        state.collectCrossBoundaryReads(tailFuncp->stmtsp(), group.m_scopep,
-                                                        group.m_ownerp, group.m_senTreep);
+void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweringState& state,
+                              const std::string& tag) {
+    for (SubgraphGroup& group : groups) {
+        state.collectCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
+                                               group.m_senTreep);
+        state.collectCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep, group.m_ownerp,
+                                               group.m_senTreep);
+        if (tag != "stl" && tag != "ico") {
+            auto& stlFuncs = state.m_stlSubgraphFuncs;
+            const auto it = stlFuncs.find(group.m_scopep);
+            if (it != stlFuncs.end()) {
+                for (AstCFunc* const tailFuncp : it->second) {
+                    if (!state.tailNeedsNbaClone(tailFuncp, group.m_scopep)
+                        || !tailFuncp->stmtsp()) {
+                        continue;
                     }
+                    state.collectCrossBoundaryReads(tailFuncp->stmtsp(), group.m_scopep,
+                                                    group.m_ownerp, group.m_senTreep);
                 }
             }
-        }
-        for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
-            std::unordered_map<AstNodeDType*, std::vector<AstVarScope*>> dtypeGroups;
-            for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
-                dtypeGroups[sourceVscp->dtypep()].push_back(sourceVscp);
-            }
-            unsigned bundleIndex = 0;
-            for (const auto& pair : dtypeGroups) {
-                const std::vector<AstVarScope*>& groupedVars = pair.second;
-                if (groupedVars.size() == 1) {
-                    AstVarScope* const sourceVscp = groupedVars.front();
-                    const string name = "__VsubgraphSnapshot__"
-                                        + sourceVscp->scopep()->nameDotless() + "__"
-                                        + sourceVscp->varp()->shortName();
-                    AstVarScope* const snapshotp
-                        = sourceVscp->scopep()->createTempLike(name, sourceVscp);
-                    bucket.m_snapshotRefs.emplace(sourceVscp, SnapshotRef{snapshotp, 0, false});
-                    continue;
-                }
-
-                FileLine* const flp = groupedVars.front()->fileline();
-                AstRange* const rangep
-                    = new AstRange{flp, static_cast<int>(groupedVars.size() - 1), 0};
-                AstNodeDType* const bundleDTypep
-                    = new AstUnpackArrayDType{flp, pair.first, rangep};
-                v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
-                const string bundleName = "__VsubgraphSnapshot__"
-                                          + groupedVars.front()->scopep()->nameDotless()
-                                          + "__bundle" + cvtToStr(bundleIndex++);
-                AstVarScope* const bundleVscp
-                    = groupedVars.front()->scopep()->createTemp(bundleName, bundleDTypep);
-                for (uint32_t i = 0; i < groupedVars.size(); ++i) {
-                    bucket.m_snapshotRefs.emplace(groupedVars[i],
-                                                  SnapshotRef{bundleVscp, i, true});
-                }
-            }
-        }
-        for (SubgraphGroup& group : groups) {
-            state.rewriteCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep,
-                                                   group.m_ownerp, group.m_senTreep);
-            state.rewriteCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep,
-                                                   group.m_ownerp, group.m_senTreep);
         }
     }
+    for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
+        std::unordered_map<AstNodeDType*, std::vector<AstVarScope*>> dtypeGroups;
+        for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+            dtypeGroups[sourceVscp->dtypep()].push_back(sourceVscp);
+        }
+        unsigned bundleIndex = 0;
+        for (const auto& pair : dtypeGroups) {
+            const std::vector<AstVarScope*>& groupedVars = pair.second;
+            if (groupedVars.size() == 1) {
+                AstVarScope* const sourceVscp = groupedVars.front();
+                const string name = "__VsubgraphSnapshot__" + sourceVscp->scopep()->nameDotless()
+                                    + "__" + sourceVscp->varp()->shortName();
+                AstVarScope* const snapshotp
+                    = sourceVscp->scopep()->createTempLike(name, sourceVscp);
+                bucket.m_snapshotRefs.emplace(sourceVscp, SnapshotRef{snapshotp, 0, false});
+                continue;
+            }
 
+            FileLine* const flp = groupedVars.front()->fileline();
+            AstRange* const rangep
+                = new AstRange{flp, static_cast<int>(groupedVars.size() - 1), 0};
+            AstNodeDType* const bundleDTypep = new AstUnpackArrayDType{flp, pair.first, rangep};
+            v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
+            const string bundleName = "__VsubgraphSnapshot__"
+                                      + groupedVars.front()->scopep()->nameDotless() + "__bundle"
+                                      + cvtToStr(bundleIndex++);
+            AstVarScope* const bundleVscp
+                = groupedVars.front()->scopep()->createTemp(bundleName, bundleDTypep);
+            for (uint32_t i = 0; i < groupedVars.size(); ++i) {
+                bucket.m_snapshotRefs.emplace(groupedVars[i], SnapshotRef{bundleVscp, i, true});
+            }
+        }
+    }
+    for (SubgraphGroup& group : groups) {
+        state.rewriteCrossBoundaryReadsInLogic(group.m_earlyLogic, group.m_scopep, group.m_ownerp,
+                                               group.m_senTreep);
+        state.rewriteCrossBoundaryReadsInLogic(group.m_lateLogic, group.m_scopep, group.m_ownerp,
+                                               group.m_senTreep);
+    }
+}
+
+void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& groups,
+                         SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen,
+                         const std::string& tag, bool slow,
+                         const V3Order::ExternalDomainsProvider& externalDomains) {
     unsigned subgraphIndex = 0;
     for (SubgraphGroup& group : groups) {
         FileLine* const flp = group.m_flp;
@@ -1400,6 +1395,20 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
             wrapperActivep->deleteTree();
         }
     }
+}
+
+void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
+                        const V3Order::ExternalDomainsProvider& externalDomains) {
+    if (!v3Global.opt.subgraphSchedule()) return;
+    SubgraphLoweringState state{tag};
+    std::vector<SubgraphGroup> groups;
+    collectSubgraphGroups(logic, groups);
+
+    if (state.m_snapshotCrossBoundaryReads) collectRegionWrittenVars(logic, state);
+    if (state.m_snapshotCrossBoundaryReads) prepareSubgraphSnapshots(groups, state, tag);
+
+    lowerSubgraphGroups(netlistp, groups, state, trigToSen, tag, slow, externalDomains);
 
     for (const SnapshotBucket& bucket : state.m_snapshotBuckets) {
         emitSnapshotProcedureForBucket(bucket, state, slow);
