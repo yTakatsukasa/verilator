@@ -169,6 +169,7 @@ set(HEADERS
     V3Rtti.h
     V3Sampled.h
     V3Sched.h
+    V3SchedSubgraph.h
     V3Scope.h
     V3Scoreboard.h
     V3SenExprBuilder.h
@@ -340,6 +341,7 @@ set(COMMON_SOURCES
     V3Reorder.cpp
     V3Sampled.cpp
     V3Sched.cpp
+    V3SchedSubgraph.cpp
     V3SchedAcyclic.cpp
     V3SchedPartition.cpp
     V3SchedReplicate.cpp
