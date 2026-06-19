@@ -1009,38 +1009,21 @@ public:
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
 };
 
-void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
-                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
-                        const V3Order::ExternalDomainsProvider& externalDomains) {
-    if (!v3Global.opt.subgraphSchedule()) return;
-    SubgraphLoweringState state{tag};
-    const auto newSnapshotHelperArg
-        = [](AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
-             VDirection direction) -> AstVarScope* {
-        FileLine* const flp = funcp->fileline();
-        AstScope* const scopep = funcp->scopep();
-        AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, name, dtypep};
-        varp->funcLocal(true);
-        varp->direction(direction);
-        funcp->addArgsp(varp);
-        AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
-        scopep->addVarsp(vscp);
-        return vscp;
-    };
-    std::vector<SubgraphGroup> groups;
-    const auto findGroup
-        = [&](LogicByScope* ownerp, AstScope* scopep, AstSenTree* senTreep) -> SubgraphGroup& {
-        for (SubgraphGroup& group : groups) {
-            if (group.m_scopep == scopep && group.m_senTreep == senTreep) return group;
-        }
-        groups.emplace_back();
-        SubgraphGroup& group = groups.back();
-        group.m_ownerp = ownerp;
-        group.m_scopep = scopep;
-        group.m_senTreep = senTreep;
-        return group;
-    };
+SubgraphGroup& findOrCreateSubgraphGroup(std::vector<SubgraphGroup>& groups, LogicByScope* ownerp,
+                                         AstScope* scopep, AstSenTree* senTreep) {
+    for (SubgraphGroup& group : groups) {
+        if (group.m_scopep == scopep && group.m_senTreep == senTreep) return group;
+    }
+    groups.emplace_back();
+    SubgraphGroup& group = groups.back();
+    group.m_ownerp = ownerp;
+    group.m_scopep = scopep;
+    group.m_senTreep = senTreep;
+    return group;
+}
 
+void collectSubgraphGroups(const std::vector<LogicByScope*>& logic,
+                           std::vector<SubgraphGroup>& groups) {
     for (LogicByScope* const lbsp : logic) {
         LogicByScope lowered;
 
@@ -1054,7 +1037,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
 
             AstActive* const activep = pair.second;
             AstSenTree* const senTreep = activep->sentreep();
-            SubgraphGroup& group = findGroup(lbsp, boundaryScopep, senTreep);
+            SubgraphGroup& group
+                = findOrCreateSubgraphGroup(groups, lbsp, boundaryScopep, senTreep);
             if (!group.m_flp) group.m_flp = activep->fileline();
 
             for (AstNode* stmtp = activep->stmtsp(); stmtp;) {
@@ -1076,6 +1060,149 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         }
         *lbsp = std::move(lowered);
     }
+}
+
+SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
+    if (group.m_hasNonPostLate) return group.m_lateWrapper;
+    if (group.m_hasPost) return SubgraphWrapper{SubgraphWrapperKind::AlwaysPost};
+    return wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
+}
+
+void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp, AstScope* scopep) {
+    if (const auto* const summaryp = V3SubgraphSummary::getScopeSummary(scopep)) {
+        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
+        subgraphp->hasClockedState(contract.m_hasClockedState);
+        subgraphp->hasPostPhase(contract.m_hasPostPhase);
+        subgraphp->readsExternalVars(contract.m_readsExternalVars);
+        for (AstVarScope* const vscp : contract.m_boundaryReads) {
+            subgraphp->addBoundaryRead(vscp->varp()->name(),
+                                       V3SubgraphSummary::isDerivedBoundaryInput(vscp));
+        }
+        for (AstVarScope* const vscp : contract.m_boundaryWrites) {
+            subgraphp->addBoundaryWrite(vscp->varp()->name());
+        }
+    }
+}
+
+void appendSubgraphExternalUses(AstSubgraphInstance* subgraphp, AstScope* boundaryScopep,
+                                AstCFunc* funcp,
+                                std::unordered_map<AstVarScope*, size_t>& useIndices) {
+    auto& callUsageSummaries = subgraphRegistry().m_callUsageSummaries;
+    const auto it = callUsageSummaries.find(funcp);
+    if (it == callUsageSummaries.end()) return;
+    for (const SubgraphCallUsageSummary& summary : it->second) {
+        AstVarScope* const vscp = summary.m_varscp;
+        if (vscp && !SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
+            const auto pair = useIndices.emplace(vscp, useIndices.size());
+            if (pair.second) subgraphp->addExternalUse(vscp, false, false);
+            AstSubgraphInstance::ExternalUseContract& use
+                = subgraphp->externalUses()[pair.first->second];
+            use.m_read |= summary.m_read;
+            use.m_write |= summary.m_write;
+        }
+    }
+}
+
+void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
+                              const SubgraphWrapper& wrapper, bool isEarly,
+                              const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
+                              SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen,
+                              const std::string& tag, bool slow,
+                              const V3Order::ExternalDomainsProvider& externalDomains,
+                              unsigned& subgraphIndex, AstActive* wrapperActivep) {
+    if (subgraphLogic.empty()) return;
+    const bool canShare
+        = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
+    SubgraphOrderCacheKey cacheKey;
+    cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
+        subgraphLogic, group.m_scopep, externalDomains);
+    cacheKey.m_modp = group.m_scopep->modp();
+    cacheKey.m_senTreep = group.m_senTreep;
+    cacheKey.m_isEarly = isEarly;
+    AstCFunc* funcp = nullptr;
+    if (canShare) {
+        const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
+        if (cacheIt != state.m_subgraphOrderCache.end()) {
+            std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
+            if (SubgraphLoweringState::buildTemplateVarScopeMap(cacheIt->second.m_logicSig,
+                                                                subgraphLogic, templateVarMap)) {
+                funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                    cacheIt->second.m_funcp, group.m_scopep, templateVarMap);
+                if (funcp) SubgraphLoweringState::discardLogic(subgraphLogic);
+            }
+        }
+    }
+    if (!funcp) {
+        SubgraphLogicSig logicSig;
+        if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
+        funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
+                               tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
+                               externalDomains, group.m_scopep);
+        if (funcp) {
+            util::splitCheck(funcp);
+            state.registerSubgraphCallUsageSummary(funcp, group.m_scopep);
+            if (canShare
+                && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
+                state.m_subgraphOrderCache.emplace(
+                    cacheKey, SubgraphOrderCacheEntry{funcp, std::move(logicSig)});
+            }
+        }
+    }
+    if (!funcp) return;
+
+    AstCFunc* callFuncp = funcp;
+    if (tag == "stl") {
+        AstCFunc* const tailFuncp = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
+        state.registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
+        state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
+        callFuncp = tailFuncp;
+    }
+    AstNodeStmt* stmtsp = util::callVoidFunc(callFuncp);
+    if (tailFuncps) {
+        for (AstCFunc* const tailFuncp : *tailFuncps) {
+            stmtsp->addNext(util::callVoidFunc(tailFuncp));
+        }
+    }
+    AstSubgraphInstance* const subgraphp
+        = new AstSubgraphInstance{group.m_flp, group.m_scopep, stmtsp};
+    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre || isEarly) {
+        subgraphp->phase(AstSubgraphInstance::Phase::PRE);
+    } else {
+        subgraphp->phase(AstSubgraphInstance::Phase::POST);
+    }
+    populateSubgraphInstanceContract(subgraphp, group.m_scopep);
+    {
+        std::unordered_map<AstVarScope*, size_t> useIndices;
+        appendSubgraphExternalUses(subgraphp, group.m_scopep, callFuncp, useIndices);
+        if (tailFuncps) {
+            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                appendSubgraphExternalUses(subgraphp, group.m_scopep, tailFuncp, useIndices);
+            }
+        }
+    }
+    wrapperActivep->addStmtsp(makeSubgraphWrapperLogic(group.m_flp, wrapper, subgraphp));
+}
+
+void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                        const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
+                        const V3Order::ExternalDomainsProvider& externalDomains) {
+    if (!v3Global.opt.subgraphSchedule()) return;
+    SubgraphLoweringState state{tag};
+    const auto newSnapshotHelperArg
+        = [](AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
+             VDirection direction) -> AstVarScope* {
+        FileLine* const flp = funcp->fileline();
+        AstScope* const scopep = funcp->scopep();
+        AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, name, dtypep};
+        varp->funcLocal(true);
+        varp->direction(direction);
+        funcp->addArgsp(varp);
+        AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
+        scopep->addVarsp(vscp);
+        return vscp;
+    };
+    std::vector<SubgraphGroup> groups;
+    collectSubgraphGroups(logic, groups);
 
     if (state.m_snapshotCrossBoundaryReads) {
         for (LogicByScope* const lbsp : logic) {
@@ -1157,128 +1284,14 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
     for (SubgraphGroup& group : groups) {
         FileLine* const flp = group.m_flp;
         AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
-        const auto lowerActiveGroup = [&](LogicByScope& subgraphLogic,
-                                          const SubgraphWrapper& wrapper, bool isEarly,
-                                          const std::vector<AstCFunc*>* tailFuncps = nullptr) {
-            if (subgraphLogic.empty()) return;
-            const bool canShare
-                = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
-            SubgraphOrderCacheKey cacheKey;
-            cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
-                subgraphLogic, group.m_scopep, externalDomains);
-            cacheKey.m_modp = group.m_scopep->modp();
-            cacheKey.m_senTreep = group.m_senTreep;
-            cacheKey.m_isEarly = isEarly;
-            AstCFunc* funcp = nullptr;
-            if (canShare) {
-                const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
-                if (cacheIt != state.m_subgraphOrderCache.end()) {
-                    std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                    if (SubgraphLoweringState::buildTemplateVarScopeMap(
-                            cacheIt->second.m_logicSig, subgraphLogic, templateVarMap)) {
-                        funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                            cacheIt->second.m_funcp, group.m_scopep, templateVarMap);
-                        if (funcp) SubgraphLoweringState::discardLogic(subgraphLogic);
-                    }
-                }
-            }
-            if (!funcp) {
-                SubgraphLogicSig logicSig;
-                if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
-                funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
-                                       tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
-                                       externalDomains, group.m_scopep);
-                if (funcp) {
-                    util::splitCheck(funcp);
-                    state.registerSubgraphCallUsageSummary(funcp, group.m_scopep);
-                    if (canShare) {
-                        if (state.m_subgraphOrderCache.find(cacheKey)
-                            == state.m_subgraphOrderCache.end()) {
-                            state.m_subgraphOrderCache.emplace(
-                                cacheKey, SubgraphOrderCacheEntry{funcp, std::move(logicSig)});
-                        }
-                    }
-                }
-            }
-            if (funcp) {
-                AstCFunc* callFuncp = funcp;
-                if (tag == "stl") {
-                    AstCFunc* const tailFuncp
-                        = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
-                    state.registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
-                    state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
-                    callFuncp = tailFuncp;
-                }
-                AstNodeStmt* stmtsp = util::callVoidFunc(callFuncp);
-                if (tailFuncps) {
-                    for (AstCFunc* const tailFuncp : *tailFuncps) {
-                        stmtsp->addNext(util::callVoidFunc(tailFuncp));
-                    }
-                }
-                AstSubgraphInstance* const subgraphp
-                    = new AstSubgraphInstance{flp, group.m_scopep, stmtsp};
-                if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre) {
-                    subgraphp->phase(AstSubgraphInstance::Phase::PRE);
-                } else if (isEarly) {
-                    subgraphp->phase(AstSubgraphInstance::Phase::PRE);
-                } else {
-                    subgraphp->phase(AstSubgraphInstance::Phase::POST);
-                }
-                if (const auto* const summaryp
-                    = V3SubgraphSummary::getScopeSummary(group.m_scopep)) {
-                    const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
-                    subgraphp->hasClockedState(contract.m_hasClockedState);
-                    subgraphp->hasPostPhase(contract.m_hasPostPhase);
-                    subgraphp->readsExternalVars(contract.m_readsExternalVars);
-                    for (AstVarScope* const vscp : contract.m_boundaryReads) {
-                        subgraphp->addBoundaryRead(
-                            vscp->varp()->name(), V3SubgraphSummary::isDerivedBoundaryInput(vscp));
-                    }
-                    for (AstVarScope* const vscp : contract.m_boundaryWrites) {
-                        subgraphp->addBoundaryWrite(vscp->varp()->name());
-                    }
-                }
-                {
-                    std::unordered_map<AstVarScope*, size_t> useIndices;
-                    const auto appendUses = [&](AstCFunc* funcp) {
-                        auto& callUsageSummaries = subgraphRegistry().m_callUsageSummaries;
-                        const auto it = callUsageSummaries.find(funcp);
-                        if (it == callUsageSummaries.end()) return;
-                        for (const SubgraphCallUsageSummary& summary : it->second) {
-                            AstVarScope* const vscp = summary.m_varscp;
-                            if (vscp
-                                && !SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(),
-                                                                                group.m_scopep)) {
-                                const auto pair = useIndices.emplace(vscp, useIndices.size());
-                                if (pair.second) { subgraphp->addExternalUse(vscp, false, false); }
-                                AstSubgraphInstance::ExternalUseContract& use
-                                    = subgraphp->externalUses()[pair.first->second];
-                                use.m_read |= summary.m_read;
-                                use.m_write |= summary.m_write;
-                            }
-                        }
-                    };
-                    appendUses(callFuncp);
-                    if (tailFuncps) {
-                        for (AstCFunc* const tailFuncp : *tailFuncps) appendUses(tailFuncp);
-                    }
-                }
-                wrapperActivep->addStmtsp(makeSubgraphWrapperLogic(flp, wrapper, subgraphp));
-            }
-        };
         if (!group.m_earlyLogic.empty()) {
-            lowerActiveGroup(group.m_earlyLogic,
-                             wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()), true);
+            lowerSubgraphActiveGroup(netlistp, group.m_earlyLogic,
+                                     wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()),
+                                     true, nullptr, group, state, trigToSen, tag, slow,
+                                     externalDomains, subgraphIndex, wrapperActivep);
         }
         if (!group.m_lateLogic.empty()) {
-            SubgraphWrapper wrapper;
-            if (group.m_hasNonPostLate) {
-                wrapper = group.m_lateWrapper;
-            } else if (group.m_hasPost) {
-                wrapper.m_kind = SubgraphWrapperKind::AlwaysPost;
-            } else {
-                wrapper = wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
-            }
+            SubgraphWrapper wrapper = lateWrapperForGroup(group);
             disableLifePostForExternalReads(group.m_lateLogic, group.m_scopep);
             const std::vector<AstCFunc*>* tailFuncps = nullptr;
             std::vector<AstCFunc*> activeTailFuncps;
@@ -1307,7 +1320,9 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
                     }
                 }
             }
-            lowerActiveGroup(group.m_lateLogic, wrapper, false, tailFuncps);
+            lowerSubgraphActiveGroup(netlistp, group.m_lateLogic, wrapper, false, tailFuncps,
+                                     group, state, trigToSen, tag, slow, externalDomains,
+                                     subgraphIndex, wrapperActivep);
         }
         if (wrapperActivep->stmtsp()) {
             group.m_ownerp->emplace_back(group.m_scopep, wrapperActivep);
