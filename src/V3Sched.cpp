@@ -43,6 +43,7 @@
 #include "V3EmitCBase.h"
 #include "V3EmitV.h"
 #include "V3Order.h"
+#include "V3SchedSubgraph.h"
 #include "V3SenExprBuilder.h"
 #include "V3Stats.h"
 #include "V3SubgraphSummary.h"
@@ -52,22 +53,6 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 namespace V3Sched {
 
 namespace {
-
-using SubgraphCallUsageSummaryMap
-    = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
-using SubgraphScopeContractSummaryMap
-    = std::unordered_map<const AstScope*, SubgraphScopeContractSummary>;
-
-struct SubgraphRegistry final {
-    SubgraphCallUsageSummaryMap m_callUsageSummaries;
-    SubgraphScopeContractSummaryMap m_scopeContractSummaries;
-    std::unordered_set<const AstNodeProcedure*> m_snapshotProcedures;
-};
-
-SubgraphRegistry& subgraphRegistry() {
-    static SubgraphRegistry s_registry;
-    return s_registry;
-}
 
 //============================================================================
 // Utility functions
@@ -84,28 +69,6 @@ std::vector<const AstSenTree*> getSenTreesUsedBy(const std::vector<const LogicBy
         }
     }
     return result;
-}
-
-AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::string& nameSuffix,
-                                 bool slow) {
-    AstNode* bodyp = funcp->stmtsp();
-    if (AstIf* const ifp = VN_CAST(bodyp, If)) {
-        if (!ifp->nextp() && !ifp->elsesp() && ifp->thensp()) bodyp = ifp->thensp();
-    }
-    const bool shareSubgraphHelper = scopep->modp()->subgraphBoundary() && !funcp->cname().empty();
-    const string cloneName = shareSubgraphHelper ? funcp->name() + "__sgclone" + nameSuffix
-                                                 : funcp->name() + nameSuffix;
-    AstCFunc* const clonep = new AstCFunc{funcp->fileline(), cloneName, scopep, ""};
-    clonep->dontCombine(true);
-    clonep->isStatic(false);
-    clonep->isLoose(true);
-    clonep->slow(slow);
-    clonep->isConst(false);
-    clonep->declPrivate(true);
-    if (shareSubgraphHelper) clonep->cname(funcp->cname() + nameSuffix);
-    scopep->addBlocksp(clonep);
-    if (bodyp) clonep->addStmtsp(bodyp->cloneTree(true));
-    return clonep;
 }
 
 void remapSensitivities(const LogicByScope& lbs,
@@ -878,8 +841,8 @@ public:
     }
 
     void registerSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
-        subgraphRegistry().m_callUsageSummaries[funcp]
-            = buildSubgraphCallUsageSummary(funcp, boundaryScopep);
+        V3Sched::registerSubgraphCallUsageSummary(
+            funcp, buildSubgraphCallUsageSummary(funcp, boundaryScopep));
     }
 
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
@@ -1087,10 +1050,9 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp, AstScope* 
 void appendSubgraphExternalUses(AstSubgraphInstance* subgraphp, AstScope* boundaryScopep,
                                 AstCFunc* funcp,
                                 std::unordered_map<AstVarScope*, size_t>& useIndices) {
-    auto& callUsageSummaries = subgraphRegistry().m_callUsageSummaries;
-    const auto it = callUsageSummaries.find(funcp);
-    if (it == callUsageSummaries.end()) return;
-    for (const SubgraphCallUsageSummary& summary : it->second) {
+    const auto* const summarysp = V3Sched::getSubgraphCallUsageSummary(funcp);
+    if (!summarysp) return;
+    for (const SubgraphCallUsageSummary& summary : *summarysp) {
         AstVarScope* const vscp = summary.m_varscp;
         if (vscp && !SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
             const auto pair = useIndices.emplace(vscp, useIndices.size());
@@ -1262,7 +1224,7 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
                               snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
                           new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
     }
-    subgraphRegistry().m_snapshotProcedures.insert(procp);
+    V3Sched::rememberSubgraphSnapshotProcedure(procp);
     bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
 }
 
@@ -1863,48 +1825,6 @@ void createEval(AstNetlist* netlistp,  //
 
 }  // namespace
 
-const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const AstCFunc* funcp) {
-    auto& callUsageSummaries = subgraphRegistry().m_callUsageSummaries;
-    const auto it = callUsageSummaries.find(funcp);
-    return it == callUsageSummaries.end() ? nullptr : &it->second;
-}
-
-const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstScope* scopep) {
-    auto& scopeContractSummaries = subgraphRegistry().m_scopeContractSummaries;
-    const auto it = scopeContractSummaries.find(scopep);
-    if (it != scopeContractSummaries.end()) return &it->second;
-
-    const V3SubgraphSummary::ScopeSummary* const summaryp
-        = V3SubgraphSummary::getScopeSummary(scopep);
-    if (!summaryp) return nullptr;
-
-    SubgraphScopeContractSummary contract;
-    contract.m_hasClockedState = summaryp->m_parentStub.m_hasClockedState;
-    contract.m_hasPostPhase = summaryp->m_parentStub.m_hasPostPhase;
-    contract.m_readsExternalVars = summaryp->m_parentStub.m_readsExternalVars;
-    contract.m_boundaryReads.reserve(summaryp->m_parentStub.m_boundaryReads.size());
-    contract.m_boundaryWrites.reserve(summaryp->m_parentStub.m_boundaryWrites.size());
-    for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryReads) {
-        contract.m_boundaryReads.push_back(
-            {vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp)});
-    }
-    for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryWrites) {
-        contract.m_boundaryWrites.push_back(vscp);
-    }
-    return &subgraphRegistry()
-                .m_scopeContractSummaries.emplace(scopep, std::move(contract))
-                .first->second;
-}
-
-void clearSubgraphCallUsageSummaries() {
-    subgraphRegistry().m_callUsageSummaries.clear();
-    subgraphRegistry().m_scopeContractSummaries.clear();
-}
-
-bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
-    return subgraphRegistry().m_snapshotProcedures.count(procp);
-}
-
 //============================================================================
 // Helper that builds virtual interface trigger sentrees
 
@@ -1953,7 +1873,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 
 void schedule(AstNetlist* netlistp) {
     clearSubgraphCallUsageSummaries();
-    subgraphRegistry().m_snapshotProcedures.clear();
+    clearSubgraphSnapshotProcedures();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;
         lbs.foreachLogic([&](AstNode* nodep) { size += nodep->nodeCount(); });
