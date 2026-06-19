@@ -1397,22 +1397,50 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
     }
 }
 
+class SubgraphLowerer final {
+    AstNetlist* const m_netlistp;
+    const std::vector<LogicByScope*>& m_logic;
+    const V3Order::TrigToSenMap& m_trigToSen;
+    const string& m_tag;
+    const bool m_slow;
+    const V3Order::ExternalDomainsProvider& m_externalDomains;
+    SubgraphLoweringState m_state;
+    std::vector<SubgraphGroup> m_groups;
+
+public:
+    SubgraphLowerer(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                    const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
+                    const V3Order::ExternalDomainsProvider& externalDomains)
+        : m_netlistp{netlistp}
+        , m_logic{logic}
+        , m_trigToSen{trigToSen}
+        , m_tag{tag}
+        , m_slow{slow}
+        , m_externalDomains{externalDomains}
+        , m_state{tag} {
+        collectSubgraphGroups(m_logic, m_groups);
+    }
+
+    void run() {
+        if (m_state.m_snapshotCrossBoundaryReads) collectRegionWrittenVars(m_logic, m_state);
+        if (m_state.m_snapshotCrossBoundaryReads) {
+            prepareSubgraphSnapshots(m_groups, m_state, m_tag);
+        }
+
+        lowerSubgraphGroups(m_netlistp, m_groups, m_state, m_trigToSen, m_tag, m_slow,
+                            m_externalDomains);
+
+        for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
+            emitSnapshotProcedureForBucket(bucket, m_state, m_slow);
+        }
+    }
+};
+
 void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                         const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
                         const V3Order::ExternalDomainsProvider& externalDomains) {
     if (!v3Global.opt.subgraphSchedule()) return;
-    SubgraphLoweringState state{tag};
-    std::vector<SubgraphGroup> groups;
-    collectSubgraphGroups(logic, groups);
-
-    if (state.m_snapshotCrossBoundaryReads) collectRegionWrittenVars(logic, state);
-    if (state.m_snapshotCrossBoundaryReads) prepareSubgraphSnapshots(groups, state, tag);
-
-    lowerSubgraphGroups(netlistp, groups, state, trigToSen, tag, slow, externalDomains);
-
-    for (const SnapshotBucket& bucket : state.m_snapshotBuckets) {
-        emitSnapshotProcedureForBucket(bucket, state, slow);
-    }
+    SubgraphLowerer{netlistp, logic, trigToSen, tag, slow, externalDomains}.run();
 }
 
 // Order the combinational logic to create the settle loop
