@@ -1183,24 +1183,94 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
     wrapperActivep->addStmtsp(makeSubgraphWrapperLogic(group.m_flp, wrapper, subgraphp));
 }
 
+AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
+                                  VDirection direction) {
+    FileLine* const flp = funcp->fileline();
+    AstScope* const scopep = funcp->scopep();
+    AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, name, dtypep};
+    varp->funcLocal(true);
+    varp->direction(direction);
+    funcp->addArgsp(varp);
+    AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
+    scopep->addVarsp(vscp);
+    return vscp;
+}
+
+void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweringState& state,
+                                    bool slow) {
+    static unsigned s_snapshotHelperIndex = 0;
+    AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
+    if (bucket.m_sourceVars.empty()) return;
+    AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
+                                           VAlwaysKwd::ALWAYS, nullptr, nullptr};
+    std::unordered_map<AstScope*, std::vector<AstVarScope*>> localBoundarySources;
+    for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+        if (sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
+            && sourceVscp->varp()->direction().isNonOutput()) {
+            localBoundarySources[sourceVscp->scopep()].push_back(sourceVscp);
+        }
+    }
+    for (const auto& pair : localBoundarySources) {
+        AstScope* const boundaryScopep = pair.first;
+        const std::vector<AstVarScope*>& sourceVscps = pair.second;
+        FileLine* const flp = sourceVscps.front()->fileline();
+        std::string helperCName = "__VsubgraphSnapshotHelper";
+        for (AstVarScope* const sourceVscp : sourceVscps) {
+            helperCName += "__" + sourceVscp->varp()->shortName();
+        }
+        AstCFunc* const funcp = new AstCFunc{
+            flp, "__VsubgraphSnapshotHelper__sgclone_" + cvtToStr(s_snapshotHelperIndex++),
+            boundaryScopep, ""};
+        funcp->dontCombine(true);
+        funcp->isStatic(false);
+        funcp->isLoose(true);
+        funcp->slow(slow);
+        funcp->isConst(false);
+        funcp->declPrivate(true);
+        funcp->cname(helperCName);
+        boundaryScopep->addBlocksp(funcp);
+
+        AstCCall* const callp = new AstCCall{flp, funcp};
+        callp->dtypeSetVoid();
+        for (size_t i = 0; i < sourceVscps.size(); ++i) {
+            AstVarScope* const sourceVscp = sourceVscps[i];
+            const SnapshotRef& snapshotRef
+                = state.getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
+            AstVarScope* const outArgVscp = newSnapshotHelperArg(
+                funcp, sourceVscp->dtypep(), "out" + cvtToStr(i), VDirection::OUTPUT);
+            AstVarScope* const inArgVscp = newSnapshotHelperArg(
+                funcp, sourceVscp->dtypep(), "in" + cvtToStr(i), VDirection::CONSTREF);
+            funcp->addStmtsp(new AstAssign{flp, new AstVarRef{flp, outArgVscp, VAccess::WRITE},
+                                           new AstVarRef{flp, inArgVscp, VAccess::READ}});
+            callp->addArgsp(
+                SubgraphLoweringState::makeSnapshotExpr(snapshotRef, flp, VAccess::WRITE));
+            callp->addArgsp(new AstVarRef{flp, sourceVscp, VAccess::READ});
+        }
+        procp->addStmtsp(callp->makeStmt());
+    }
+    for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
+        if (localBoundarySources.count(sourceVscp->scopep())
+            && sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
+            && sourceVscp->varp()->direction().isNonOutput()) {
+            continue;
+        }
+        const SnapshotRef& snapshotRef
+            = state.getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
+        procp->addStmtsp(
+            new AstAssign{sourceVscp->fileline(),
+                          SubgraphLoweringState::makeSnapshotExpr(
+                              snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
+                          new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
+    }
+    subgraphRegistry().m_snapshotProcedures.insert(procp);
+    bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
+}
+
 void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                         const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
                         const V3Order::ExternalDomainsProvider& externalDomains) {
     if (!v3Global.opt.subgraphSchedule()) return;
     SubgraphLoweringState state{tag};
-    const auto newSnapshotHelperArg
-        = [](AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
-             VDirection direction) -> AstVarScope* {
-        FileLine* const flp = funcp->fileline();
-        AstScope* const scopep = funcp->scopep();
-        AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, name, dtypep};
-        varp->funcLocal(true);
-        varp->direction(direction);
-        funcp->addArgsp(varp);
-        AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
-        scopep->addVarsp(vscp);
-        return vscp;
-    };
     std::vector<SubgraphGroup> groups;
     collectSubgraphGroups(logic, groups);
 
@@ -1331,73 +1401,8 @@ void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& 
         }
     }
 
-    for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
-        static unsigned s_snapshotHelperIndex = 0;
-        AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        if (bucket.m_sourceVars.empty()) continue;
-        AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
-                                               VAlwaysKwd::ALWAYS, nullptr, nullptr};
-        std::unordered_map<AstScope*, std::vector<AstVarScope*>> localBoundarySources;
-        for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
-            if (sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
-                && sourceVscp->varp()->direction().isNonOutput()) {
-                localBoundarySources[sourceVscp->scopep()].push_back(sourceVscp);
-            }
-        }
-        for (const auto& pair : localBoundarySources) {
-            AstScope* const boundaryScopep = pair.first;
-            const std::vector<AstVarScope*>& sourceVscps = pair.second;
-            FileLine* const flp = sourceVscps.front()->fileline();
-            std::string helperCName = "__VsubgraphSnapshotHelper";
-            for (AstVarScope* const sourceVscp : sourceVscps) {
-                helperCName += "__" + sourceVscp->varp()->shortName();
-            }
-            AstCFunc* const funcp = new AstCFunc{
-                flp, "__VsubgraphSnapshotHelper__sgclone_" + cvtToStr(s_snapshotHelperIndex++),
-                boundaryScopep, ""};
-            funcp->dontCombine(true);
-            funcp->isStatic(false);
-            funcp->isLoose(true);
-            funcp->slow(slow);
-            funcp->isConst(false);
-            funcp->declPrivate(true);
-            funcp->cname(helperCName);
-            boundaryScopep->addBlocksp(funcp);
-
-            AstCCall* const callp = new AstCCall{flp, funcp};
-            callp->dtypeSetVoid();
-            for (size_t i = 0; i < sourceVscps.size(); ++i) {
-                AstVarScope* const sourceVscp = sourceVscps[i];
-                const SnapshotRef& snapshotRef
-                    = state.getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
-                AstVarScope* const outArgVscp = newSnapshotHelperArg(
-                    funcp, sourceVscp->dtypep(), "out" + cvtToStr(i), VDirection::OUTPUT);
-                AstVarScope* const inArgVscp = newSnapshotHelperArg(
-                    funcp, sourceVscp->dtypep(), "in" + cvtToStr(i), VDirection::CONSTREF);
-                funcp->addStmtsp(new AstAssign{flp, new AstVarRef{flp, outArgVscp, VAccess::WRITE},
-                                               new AstVarRef{flp, inArgVscp, VAccess::READ}});
-                callp->addArgsp(
-                    SubgraphLoweringState::makeSnapshotExpr(snapshotRef, flp, VAccess::WRITE));
-                callp->addArgsp(new AstVarRef{flp, sourceVscp, VAccess::READ});
-            }
-            procp->addStmtsp(callp->makeStmt());
-        }
-        for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
-            if (localBoundarySources.count(sourceVscp->scopep())
-                && sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
-                && sourceVscp->varp()->direction().isNonOutput()) {
-                continue;
-            }
-            const SnapshotRef& snapshotRef
-                = state.getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
-            procp->addStmtsp(
-                new AstAssign{sourceVscp->fileline(),
-                              SubgraphLoweringState::makeSnapshotExpr(
-                                  snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
-                              new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
-        }
-        subgraphRegistry().m_snapshotProcedures.insert(procp);
-        bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
+    for (const SnapshotBucket& bucket : state.m_snapshotBuckets) {
+        emitSnapshotProcedureForBucket(bucket, state, slow);
     }
 }
 
