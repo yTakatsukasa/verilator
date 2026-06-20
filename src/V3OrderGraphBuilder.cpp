@@ -547,18 +547,28 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
     }
 
-    bool noteSubgraphWrapperProcedure(AstNodeProcedure* nodep) {
-        bool sawInstance = false;
-        bool sawLegacyCall = false;
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            if (VN_IS(stmtp, SubgraphInstance)) {
+    void scanSubgraphWrapperNode(AstNode* nodep, bool& sawInstance, bool& sawLegacyCall) const {
+        for (AstNode* scanp = nodep; scanp; scanp = scanp->nextp()) {
+            if (VN_IS(scanp, SubgraphInstance)) {
                 sawInstance = true;
                 continue;
             }
-            stmtp->foreach([&](AstCCall* callp) {
+            if (AstCCall* const callp = VN_CAST(scanp, CCall)) {
                 if (isSubgraphWrapperCall(callp)) sawLegacyCall = true;
-            });
+            }
+            if (sawInstance && sawLegacyCall) return;
+            scanSubgraphWrapperNode(scanp->op1p(), sawInstance, sawLegacyCall);
+            scanSubgraphWrapperNode(scanp->op2p(), sawInstance, sawLegacyCall);
+            scanSubgraphWrapperNode(scanp->op3p(), sawInstance, sawLegacyCall);
+            scanSubgraphWrapperNode(scanp->op4p(), sawInstance, sawLegacyCall);
+            if (sawInstance && sawLegacyCall) return;
         }
+    }
+
+    bool noteSubgraphWrapperProcedure(AstNodeProcedure* nodep) {
+        bool sawInstance = false;
+        bool sawLegacyCall = false;
+        scanSubgraphWrapperNode(nodep->stmtsp(), sawInstance, sawLegacyCall);
         if (!(sawInstance || sawLegacyCall)) return false;
         ++m_subgraphStats.m_wrapperProcedures;
         if (sawInstance) ++m_subgraphStats.m_wrapperProceduresWithInstances;
@@ -671,6 +681,7 @@ class OrderGraphBuilder final : public VNVisitor {
     void visit(AstSubgraphInstance* nodep) override {
         if (!m_logicVxp) return iterateSubgraphInstanceLogic(nodep);
         ++m_subgraphStats.m_nestedContractUses;
+        UASSERT_OBJ(false, nodep, "AstSubgraphInstance reached inside parent order logic");
         addSubgraphInstancePortUsage(nodep);
     }
 
