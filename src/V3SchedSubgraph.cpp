@@ -18,6 +18,7 @@
 
 #include "V3SchedSubgraph.h"
 
+#include "V3Stats.h"
 #include "V3SubgraphSummary.h"
 
 namespace V3Sched {
@@ -260,6 +261,44 @@ struct SnapshotBucket final {
     std::vector<AstVarScope*> m_sourceVars;
     std::unordered_set<AstVarScope*> m_seen;
     std::unordered_map<AstVarScope*, SnapshotRef> m_snapshotRefs;
+};
+
+struct SubgraphLoweringStats final {
+    uint64_t m_callUsageSummaries = 0;
+    uint64_t m_groups = 0;
+    uint64_t m_orderCacheEntries = 0;
+    uint64_t m_orderCacheHits = 0;
+    uint64_t m_orderCacheMisses = 0;
+    uint64_t m_orderedFuncClones = 0;
+    uint64_t m_snapshotBuckets = 0;
+    uint64_t m_snapshotBundleElems = 0;
+    uint64_t m_snapshotBundles = 0;
+    uint64_t m_snapshotHelpers = 0;
+    uint64_t m_snapshotProcedures = 0;
+    uint64_t m_snapshotScalars = 0;
+    uint64_t m_snapshotSources = 0;
+    uint64_t m_tailClones = 0;
+    uint64_t m_wrapperInstances = 0;
+
+    void report(const string& tag) const {
+        if (!v3Global.opt.stats()) return;
+        const string prefix = "Scheduling, Subgraph " + tag + ", ";
+        V3Stats::addStat(prefix + "call usage summaries", m_callUsageSummaries);
+        V3Stats::addStat(prefix + "groups", m_groups);
+        V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
+        V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
+        V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
+        V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
+        V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
+        V3Stats::addStat(prefix + "snapshot bundle elements", m_snapshotBundleElems);
+        V3Stats::addStat(prefix + "snapshot bundles", m_snapshotBundles);
+        V3Stats::addStat(prefix + "snapshot helpers", m_snapshotHelpers);
+        V3Stats::addStat(prefix + "snapshot procedures", m_snapshotProcedures);
+        V3Stats::addStat(prefix + "snapshot scalars", m_snapshotScalars);
+        V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
+        V3Stats::addStat(prefix + "tail clones", m_tailClones);
+        V3Stats::addStat(prefix + "wrapper instances", m_wrapperInstances);
+    }
 };
 
 class SubgraphLoweringState final {
@@ -531,6 +570,7 @@ public:
     void registerSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
         V3Sched::registerSubgraphCallUsageSummary(
             funcp, buildSubgraphCallUsageSummary(funcp, boundaryScopep));
+        ++m_stats.m_callUsageSummaries;
     }
 
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
@@ -640,6 +680,7 @@ public:
             rewriteCrossBoundaryReads(bodyp, boundaryScopep, ownerp, senTreep);
             clonep->addStmtsp(bodyp);
         }
+        ++m_stats.m_tailClones;
         return clonep;
     }
 
@@ -658,6 +699,7 @@ public:
     std::vector<SnapshotBucket> m_snapshotBuckets;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
+    SubgraphLoweringStats m_stats;
 };
 
 SubgraphGroup& findOrCreateSubgraphGroup(std::vector<SubgraphGroup>& groups, LogicByScope* ownerp,
@@ -778,11 +820,16 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
                                                                 subgraphLogic, templateVarMap)) {
                 funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
                     cacheIt->second.m_funcp, group.m_scopep, templateVarMap);
-                if (funcp) SubgraphLoweringState::discardLogic(subgraphLogic);
+                if (funcp) {
+                    ++state.m_stats.m_orderCacheHits;
+                    ++state.m_stats.m_orderedFuncClones;
+                    SubgraphLoweringState::discardLogic(subgraphLogic);
+                }
             }
         }
     }
     if (!funcp) {
+        if (canShare) ++state.m_stats.m_orderCacheMisses;
         SubgraphLogicSig logicSig;
         if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
         funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
@@ -795,6 +842,7 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
                 state.m_subgraphOrderCache.emplace(
                     cacheKey, SubgraphOrderCacheEntry{funcp, std::move(logicSig)});
+                ++state.m_stats.m_orderCacheEntries;
             }
         }
     }
@@ -815,6 +863,7 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
     }
     AstSubgraphInstance* const subgraphp
         = new AstSubgraphInstance{group.m_flp, group.m_scopep, stmtsp};
+    ++state.m_stats.m_wrapperInstances;
     if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre || isEarly) {
         subgraphp->phase(AstSubgraphInstance::Phase::PRE);
     } else {
@@ -851,6 +900,7 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
     static unsigned s_snapshotHelperIndex = 0;
     AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
     if (bucket.m_sourceVars.empty()) return;
+    ++state.m_stats.m_snapshotProcedures;
     AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
                                            VAlwaysKwd::ALWAYS, nullptr, nullptr};
     std::unordered_map<AstScope*, std::vector<AstVarScope*>> localBoundarySources;
@@ -871,6 +921,7 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
         AstCFunc* const funcp = new AstCFunc{
             flp, "__VsubgraphSnapshotHelper__sgclone_" + cvtToStr(s_snapshotHelperIndex++),
             boundaryScopep, ""};
+        ++state.m_stats.m_snapshotHelpers;
         funcp->dontCombine(true);
         funcp->isStatic(false);
         funcp->isLoose(true);
@@ -965,6 +1016,7 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
                 AstVarScope* const snapshotp
                     = sourceVscp->scopep()->createTempLike(name, sourceVscp);
                 bucket.m_snapshotRefs.emplace(sourceVscp, SnapshotRef{snapshotp, 0, false});
+                ++state.m_stats.m_snapshotScalars;
                 continue;
             }
 
@@ -978,6 +1030,8 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
                                       + cvtToStr(bundleIndex++);
             AstVarScope* const bundleVscp
                 = groupedVars.front()->scopep()->createTemp(bundleName, bundleDTypep);
+            ++state.m_stats.m_snapshotBundles;
+            state.m_stats.m_snapshotBundleElems += groupedVars.size();
             for (uint32_t i = 0; i < groupedVars.size(); ++i) {
                 bucket.m_snapshotRefs.emplace(groupedVars[i], SnapshotRef{bundleVscp, i, true});
             }
@@ -1069,12 +1123,17 @@ public:
         , m_externalDomains{externalDomains}
         , m_state{tag} {
         collectSubgraphGroups(m_logic, m_groups);
+        m_state.m_stats.m_groups = m_groups.size();
     }
 
     void run() {
         if (m_state.m_snapshotCrossBoundaryReads) collectRegionWrittenVars(m_logic, m_state);
         if (m_state.m_snapshotCrossBoundaryReads) {
             prepareSubgraphSnapshots(m_groups, m_state, m_tag);
+            m_state.m_stats.m_snapshotBuckets = m_state.m_snapshotBuckets.size();
+            for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
+                m_state.m_stats.m_snapshotSources += bucket.m_sourceVars.size();
+            }
         }
 
         lowerSubgraphGroups(m_netlistp, m_groups, m_state, m_trigToSen, m_tag, m_slow,
@@ -1083,6 +1142,7 @@ public:
         for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
             emitSnapshotProcedureForBucket(bucket, m_state, m_slow);
         }
+        m_state.m_stats.report(m_tag);
     }
 };
 
