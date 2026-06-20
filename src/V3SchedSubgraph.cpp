@@ -135,6 +135,10 @@ struct SubgraphWrapper final {
     VAlwaysKwd m_keyword = VAlwaysKwd::ALWAYS;
 };
 
+bool operator==(const SubgraphWrapper& lhs, const SubgraphWrapper& rhs) {
+    return lhs.m_kind == rhs.m_kind && lhs.m_keyword == rhs.m_keyword;
+}
+
 SubgraphWrapper wrapperFromLogic(AstNode* nodep) {
     SubgraphWrapper result;
     AstNodeProcedure* const origp = VN_CAST(nodep, NodeProcedure);
@@ -203,6 +207,56 @@ struct SubgraphGroup final {
     SubgraphWrapper m_lateWrapper;
     LogicByScope m_lateLogic;
     LogicByScope* m_ownerp = nullptr;
+};
+
+struct WrapperActiveKey final {
+    LogicByScope* m_ownerp = nullptr;
+    AstSenTree* m_senTreep = nullptr;
+
+    bool operator==(const WrapperActiveKey& other) const {
+        return m_ownerp == other.m_ownerp && m_senTreep == other.m_senTreep;
+    }
+};
+
+struct WrapperActiveKeyHash final {
+    size_t operator()(const WrapperActiveKey& key) const {
+        size_t hash = std::hash<const void*>{}(key.m_ownerp);
+        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        return hash;
+    }
+};
+
+struct WrapperActiveEntry final {
+    AstScope* m_scopep = nullptr;
+    AstActive* m_activep = nullptr;
+};
+
+struct SubgraphBatchKey final {
+    LogicByScope* m_ownerp = nullptr;
+    AstSenTree* m_senTreep = nullptr;
+    SubgraphWrapper m_wrapper;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+
+    bool operator==(const SubgraphBatchKey& other) const {
+        return m_ownerp == other.m_ownerp && m_senTreep == other.m_senTreep
+               && m_wrapper == other.m_wrapper && m_phase == other.m_phase;
+    }
+};
+
+struct SubgraphBatchKeyHash final {
+    size_t operator()(const SubgraphBatchKey& key) const {
+        size_t hash = std::hash<const void*>{}(key.m_ownerp);
+        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_kind))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_phase)) + 0x9e3779b97f4a7c15ULL
+                + (hash << 6) + (hash >> 2);
+        return hash;
+    }
 };
 
 struct SubgraphLogicRefSig final {
@@ -768,11 +822,10 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp, AstScope* 
         subgraphp->hasPostPhase(contract.m_hasPostPhase);
         subgraphp->readsExternalVars(contract.m_readsExternalVars);
         for (AstVarScope* const vscp : contract.m_boundaryReads) {
-            subgraphp->addBoundaryRead(vscp->varp()->name(),
-                                       V3SubgraphSummary::isDerivedBoundaryInput(vscp));
+            subgraphp->addBoundaryRead(vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp));
         }
         for (AstVarScope* const vscp : contract.m_boundaryWrites) {
-            subgraphp->addBoundaryWrite(vscp->varp()->name());
+            subgraphp->addBoundaryWrite(vscp);
         }
     }
 }
@@ -795,13 +848,49 @@ void appendSubgraphExternalUses(AstSubgraphInstance* subgraphp, AstScope* bounda
     }
 }
 
-void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
-                              const SubgraphWrapper& wrapper, bool isEarly,
-                              const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
-                              SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen,
-                              const std::string& tag, bool slow,
-                              const V3Order::ExternalDomainsProvider& externalDomains,
-                              unsigned& subgraphIndex, AstActive* wrapperActivep) {
+AstSubgraphInstance::Phase subgraphPhaseFor(const SubgraphWrapper& wrapper, bool isEarly) {
+    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre || isEarly) {
+        return AstSubgraphInstance::Phase::PRE;
+    }
+    return AstSubgraphInstance::Phase::POST;
+}
+
+AstActive* getOrCreateWrapperActive(const SubgraphGroup& group,
+                                    std::unordered_map<WrapperActiveKey, WrapperActiveEntry,
+                                                       WrapperActiveKeyHash>& wrapperActives) {
+    const WrapperActiveKey key{group.m_ownerp, group.m_senTreep};
+    const auto it = wrapperActives.find(key);
+    if (it != wrapperActives.end()) return it->second.m_activep;
+    AstActive* const activep = new AstActive{group.m_flp, "subgraph", group.m_senTreep};
+    wrapperActives.emplace(key, WrapperActiveEntry{group.m_scopep, activep});
+    return activep;
+}
+
+AstSubgraphInstance* getOrCreateSubgraphBatch(
+    const SubgraphGroup& group, const SubgraphWrapper& wrapper, bool isEarly, AstActive* activep,
+    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches,
+    SubgraphLoweringState& state) {
+    const AstSubgraphInstance::Phase phase = subgraphPhaseFor(wrapper, isEarly);
+    const SubgraphBatchKey key{group.m_ownerp, group.m_senTreep, wrapper, phase};
+    const auto it = batches.find(key);
+    if (it != batches.end()) return it->second;
+
+    AstSubgraphInstance* const subgraphp
+        = new AstSubgraphInstance{group.m_flp, group.m_scopep, nullptr};
+    subgraphp->phase(phase);
+    activep->addStmtsp(makeSubgraphWrapperLogic(group.m_flp, wrapper, subgraphp));
+    batches.emplace(key, subgraphp);
+    ++state.m_stats.m_wrapperInstances;
+    return subgraphp;
+}
+
+void lowerSubgraphActiveGroup(
+    AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
+    bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
+    SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
+    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex,
+    AstActive* wrapperActivep,
+    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
     if (subgraphLogic.empty()) return;
     const bool canShare
         = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
@@ -862,13 +951,8 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
         }
     }
     AstSubgraphInstance* const subgraphp
-        = new AstSubgraphInstance{group.m_flp, group.m_scopep, stmtsp};
-    ++state.m_stats.m_wrapperInstances;
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre || isEarly) {
-        subgraphp->phase(AstSubgraphInstance::Phase::PRE);
-    } else {
-        subgraphp->phase(AstSubgraphInstance::Phase::POST);
-    }
+        = getOrCreateSubgraphBatch(group, wrapper, isEarly, wrapperActivep, batches, state);
+    subgraphp->addStmtsp(stmtsp);
     populateSubgraphInstanceContract(subgraphp, group.m_scopep);
     {
         std::unordered_map<AstVarScope*, size_t> useIndices;
@@ -879,7 +963,6 @@ void lowerSubgraphActiveGroup(AstNetlist* netlistp, LogicByScope& subgraphLogic,
             }
         }
     }
-    wrapperActivep->addStmtsp(makeSubgraphWrapperLogic(group.m_flp, wrapper, subgraphp));
 }
 
 AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
@@ -1050,14 +1133,15 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                          const std::string& tag, bool slow,
                          const V3Order::ExternalDomainsProvider& externalDomains) {
     unsigned subgraphIndex = 0;
+    std::unordered_map<WrapperActiveKey, WrapperActiveEntry, WrapperActiveKeyHash> wrapperActives;
+    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash> batches;
     for (SubgraphGroup& group : groups) {
-        FileLine* const flp = group.m_flp;
-        AstActive* const wrapperActivep = new AstActive{flp, "subgraph", group.m_senTreep};
+        AstActive* const wrapperActivep = getOrCreateWrapperActive(group, wrapperActives);
         if (!group.m_earlyLogic.empty()) {
             lowerSubgraphActiveGroup(netlistp, group.m_earlyLogic,
                                      wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()),
                                      true, nullptr, group, state, trigToSen, tag, slow,
-                                     externalDomains, subgraphIndex, wrapperActivep);
+                                     externalDomains, subgraphIndex, wrapperActivep, batches);
         }
         if (!group.m_lateLogic.empty()) {
             SubgraphWrapper wrapper = lateWrapperForGroup(group);
@@ -1091,10 +1175,13 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
             }
             lowerSubgraphActiveGroup(netlistp, group.m_lateLogic, wrapper, false, tailFuncps,
                                      group, state, trigToSen, tag, slow, externalDomains,
-                                     subgraphIndex, wrapperActivep);
+                                     subgraphIndex, wrapperActivep, batches);
         }
+    }
+    for (const auto& pair : wrapperActives) {
+        AstActive* const wrapperActivep = pair.second.m_activep;
         if (wrapperActivep->stmtsp()) {
-            group.m_ownerp->emplace_back(group.m_scopep, wrapperActivep);
+            pair.first.m_ownerp->emplace_back(pair.second.m_scopep, wrapperActivep);
         } else {
             wrapperActivep->deleteTree();
         }

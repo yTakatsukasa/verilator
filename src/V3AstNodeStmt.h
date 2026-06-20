@@ -1242,7 +1242,7 @@ public:
         POST = 2,
     };
     struct BoundaryReadContract final {
-        string m_name;
+        AstVarScope* m_varscp = nullptr;
         bool m_derived = false;
     };
     struct ExternalUseContract final {
@@ -1253,7 +1253,7 @@ public:
 
 private:
     std::vector<BoundaryReadContract> m_boundaryReads;
-    std::vector<string> m_boundaryWrites;
+    std::vector<AstVarScope*> m_boundaryWrites;
     std::vector<ExternalUseContract> m_externalUses;
     Phase m_phase = Phase::NONE;
     bool m_hasClockedState = false;
@@ -1270,14 +1270,30 @@ public:
     AstScope* scopep() const { return m_scopep; }
     void scopep(AstScope* scopep) { m_scopep = scopep; }
     const std::vector<BoundaryReadContract>& boundaryReads() const { return m_boundaryReads; }
-    void addBoundaryRead(const string& name, bool derived) {
-        m_boundaryReads.push_back(BoundaryReadContract{name, derived});
+    void addBoundaryRead(AstVarScope* vscp, bool derived) {
+        for (BoundaryReadContract& read : m_boundaryReads) {
+            if (read.m_varscp != vscp) continue;
+            read.m_derived |= derived;
+            return;
+        }
+        m_boundaryReads.push_back(BoundaryReadContract{vscp, derived});
     }
-    const std::vector<string>& boundaryWrites() const { return m_boundaryWrites; }
-    void addBoundaryWrite(const string& name) { m_boundaryWrites.push_back(name); }
+    const std::vector<AstVarScope*>& boundaryWrites() const { return m_boundaryWrites; }
+    void addBoundaryWrite(AstVarScope* vscp) {
+        for (AstVarScope* const scanp : m_boundaryWrites) {
+            if (scanp == vscp) return;
+        }
+        m_boundaryWrites.push_back(vscp);
+    }
     const std::vector<ExternalUseContract>& externalUses() const { return m_externalUses; }
     std::vector<ExternalUseContract>& externalUses() { return m_externalUses; }
     void addExternalUse(AstVarScope* vscp, bool read, bool write) {
+        for (ExternalUseContract& use : m_externalUses) {
+            if (use.m_varscp != vscp) continue;
+            use.m_read |= read;
+            use.m_write |= write;
+            return;
+        }
         m_externalUses.push_back(ExternalUseContract{vscp, read, write});
     }
     Phase phase() const { return m_phase; }
