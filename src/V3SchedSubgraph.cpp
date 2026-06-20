@@ -259,6 +259,21 @@ struct SubgraphBatchKeyHash final {
     }
 };
 
+struct SubgraphSchedulePlan final {
+    AstCFunc* m_callFuncp = nullptr;
+    SubgraphScopeContractSummary m_contract;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    AstScope* m_scopep = nullptr;
+    std::vector<AstCFunc*> m_tailFuncps;
+    SubgraphWrapper m_wrapper;
+};
+
+struct SubgraphScheduledGroup final {
+    const SubgraphGroup* m_groupp = nullptr;
+    SubgraphSchedulePlan m_plan;
+    AstActive* m_wrapperActivep = nullptr;
+};
+
 struct SubgraphLogicRefSig final {
     uintptr_t m_access = 0;
     const AstVarScope* m_vscp = nullptr;
@@ -355,6 +370,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheMisses = 0;
     uint64_t m_orderCacheSkipTriggered = 0;
     uint64_t m_orderedFuncClones = 0;
+    uint64_t m_schedulePlans = 0;
     uint64_t m_snapshotBuckets = 0;
     uint64_t m_snapshotBundleElems = 0;
     uint64_t m_snapshotBundles = 0;
@@ -383,6 +399,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
         V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
+        V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
         V3Stats::addStat(prefix + "snapshot bundle elements", m_snapshotBundleElems);
         V3Stats::addStat(prefix + "snapshot bundles", m_snapshotBundles);
@@ -907,18 +924,23 @@ SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
     return wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
 }
 
-void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp, AstScope* scopep) {
-    if (const auto* const summaryp = V3SubgraphSummary::getScopeSummary(scopep)) {
-        const V3SubgraphSummary::ParentStubContract& contract = summaryp->m_parentStub;
-        subgraphp->hasClockedState(contract.m_hasClockedState);
-        subgraphp->hasPostPhase(contract.m_hasPostPhase);
-        subgraphp->readsExternalVars(contract.m_readsExternalVars);
-        for (AstVarScope* const vscp : contract.m_boundaryReads) {
-            subgraphp->addBoundaryRead(vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp));
-        }
-        for (AstVarScope* const vscp : contract.m_boundaryWrites) {
-            subgraphp->addBoundaryWrite(vscp);
-        }
+SubgraphScopeContractSummary buildSubgraphSchedulePlanContract(AstScope* scopep) {
+    SubgraphScopeContractSummary contract;
+    const SubgraphScopeContractSummary* const summaryp = getSubgraphScopeContractSummary(scopep);
+    if (summaryp) contract = *summaryp;
+    return contract;
+}
+
+void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
+                                      const SubgraphScopeContractSummary& contract) {
+    subgraphp->hasClockedState(contract.m_hasClockedState);
+    subgraphp->hasPostPhase(contract.m_hasPostPhase);
+    subgraphp->readsExternalVars(contract.m_readsExternalVars);
+    for (const auto& read : contract.m_boundaryReads) {
+        subgraphp->addBoundaryRead(read.m_varscp, read.m_derived);
+    }
+    for (AstVarScope* const vscp : contract.m_boundaryWrites) {
+        subgraphp->addBoundaryWrite(vscp);
     }
 }
 
@@ -976,14 +998,13 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
     return subgraphp;
 }
 
-void lowerSubgraphActiveGroup(
+SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
     bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
     SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
-    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex,
-    AstActive* wrapperActivep,
-    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
-    if (subgraphLogic.empty()) return;
+    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
+    SubgraphSchedulePlan plan;
+    if (subgraphLogic.empty()) return plan;
     const bool canShare
         = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
     SubgraphOrderCacheKey cacheKey;
@@ -1033,7 +1054,7 @@ void lowerSubgraphActiveGroup(
             }
         }
     }
-    if (!funcp) return;
+    if (!funcp) return plan;
 
     AstCFunc* callFuncp = funcp;
     if (tag == "stl") {
@@ -1042,23 +1063,37 @@ void lowerSubgraphActiveGroup(
         state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
         callFuncp = tailFuncp;
     }
-    AstNodeStmt* stmtsp = util::callVoidFunc(callFuncp);
+    plan.m_callFuncp = callFuncp;
+    plan.m_contract = buildSubgraphSchedulePlanContract(group.m_scopep);
+    plan.m_phase = subgraphPhaseFor(wrapper, isEarly);
+    plan.m_scopep = group.m_scopep;
+    plan.m_wrapper = wrapper;
     if (tailFuncps) {
-        for (AstCFunc* const tailFuncp : *tailFuncps) {
-            stmtsp->addNext(util::callVoidFunc(tailFuncp));
-        }
+        for (AstCFunc* const tailFuncp : *tailFuncps) { plan.m_tailFuncps.push_back(tailFuncp); }
     }
-    AstSubgraphInstance* const subgraphp
-        = getOrCreateSubgraphBatch(group, wrapper, isEarly, wrapperActivep, batches, state);
+    ++state.m_stats.m_schedulePlans;
+    return plan;
+}
+
+void materializeSubgraphSchedulePlan(
+    const SubgraphGroup& group, const SubgraphSchedulePlan& plan, SubgraphLoweringState& state,
+    AstActive* wrapperActivep,
+    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
+    if (!plan.m_callFuncp) return;
+    AstNodeStmt* stmtsp = util::callVoidFunc(plan.m_callFuncp);
+    for (AstCFunc* const tailFuncp : plan.m_tailFuncps) {
+        stmtsp->addNext(util::callVoidFunc(tailFuncp));
+    }
+    AstSubgraphInstance* const subgraphp = getOrCreateSubgraphBatch(
+        group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, wrapperActivep,
+        batches, state);
     subgraphp->addStmtsp(stmtsp);
-    populateSubgraphInstanceContract(subgraphp, group.m_scopep);
+    populateSubgraphInstanceContract(subgraphp, plan.m_contract);
     {
         std::unordered_map<AstVarScope*, size_t> useIndices;
-        appendSubgraphExternalUses(subgraphp, group.m_scopep, callFuncp, useIndices);
-        if (tailFuncps) {
-            for (AstCFunc* const tailFuncp : *tailFuncps) {
-                appendSubgraphExternalUses(subgraphp, group.m_scopep, tailFuncp, useIndices);
-            }
+        appendSubgraphExternalUses(subgraphp, plan.m_scopep, plan.m_callFuncp, useIndices);
+        for (AstCFunc* const tailFuncp : plan.m_tailFuncps) {
+            appendSubgraphExternalUses(subgraphp, plan.m_scopep, tailFuncp, useIndices);
         }
     }
 }
@@ -1251,13 +1286,18 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
     unsigned subgraphIndex = 0;
     std::unordered_map<WrapperActiveKey, WrapperActiveEntry, WrapperActiveKeyHash> wrapperActives;
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash> batches;
+    std::vector<SubgraphScheduledGroup> scheduledGroups;
     for (SubgraphGroup& group : groups) {
         AstActive* const wrapperActivep = getOrCreateWrapperActive(group, wrapperActives);
         if (!group.m_earlyLogic.empty()) {
-            lowerSubgraphActiveGroup(netlistp, group.m_earlyLogic,
-                                     wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp()),
-                                     true, nullptr, group, state, trigToSen, tag, slow,
-                                     externalDomains, subgraphIndex, wrapperActivep, batches);
+            const SubgraphWrapper wrapper
+                = wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp());
+            const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
+                netlistp, group.m_earlyLogic, wrapper, true, nullptr, group, state, trigToSen, tag,
+                slow, externalDomains, subgraphIndex);
+            if (plan.m_callFuncp) {
+                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
+            }
         }
         if (!group.m_lateLogic.empty()) {
             SubgraphWrapper wrapper = lateWrapperForGroup(group);
@@ -1289,10 +1329,17 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                     }
                 }
             }
-            lowerSubgraphActiveGroup(netlistp, group.m_lateLogic, wrapper, false, tailFuncps,
-                                     group, state, trigToSen, tag, slow, externalDomains,
-                                     subgraphIndex, wrapperActivep, batches);
+            const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
+                netlistp, group.m_lateLogic, wrapper, false, tailFuncps, group, state, trigToSen,
+                tag, slow, externalDomains, subgraphIndex);
+            if (plan.m_callFuncp) {
+                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
+            }
         }
+    }
+    for (const SubgraphScheduledGroup& scheduled : scheduledGroups) {
+        materializeSubgraphSchedulePlan(*scheduled.m_groupp, scheduled.m_plan, state,
+                                        scheduled.m_wrapperActivep, batches);
     }
     for (const auto& pair : wrapperActives) {
         AstActive* const wrapperActivep = pair.second.m_activep;
