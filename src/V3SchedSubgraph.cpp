@@ -318,6 +318,12 @@ struct SnapshotBucket final {
 };
 
 struct SubgraphLoweringStats final {
+    uint64_t m_orderCacheCloneFailOther = 0;
+    uint64_t m_orderCacheCloneFailState = 0;
+    uint64_t m_orderCacheCloneFailShadow = 0;
+    uint64_t m_orderCacheCloneFailTemp = 0;
+    uint64_t m_orderCacheCloneFailVlem = 0;
+    std::map<string, uint64_t> m_orderCacheCloneFailNames;
     uint64_t m_callUsageSummaries = 0;
     uint64_t m_groups = 0;
     uint64_t m_orderCacheEntries = 0;
@@ -339,6 +345,14 @@ struct SubgraphLoweringStats final {
         const string prefix = "Scheduling, Subgraph " + tag + ", ";
         V3Stats::addStat(prefix + "call usage summaries", m_callUsageSummaries);
         V3Stats::addStat(prefix + "groups", m_groups);
+        V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
+        V3Stats::addStat(prefix + "order cache clone fail state", m_orderCacheCloneFailState);
+        V3Stats::addStat(prefix + "order cache clone fail shadow", m_orderCacheCloneFailShadow);
+        V3Stats::addStat(prefix + "order cache clone fail temp", m_orderCacheCloneFailTemp);
+        V3Stats::addStat(prefix + "order cache clone fail vlem", m_orderCacheCloneFailVlem);
+        for (const auto& itr : m_orderCacheCloneFailNames) {
+            V3Stats::addStat(prefix + "order cache clone fail name " + itr.first, itr.second);
+        }
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
@@ -352,6 +366,12 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
         V3Stats::addStat(prefix + "wrapper instances", m_wrapperInstances);
+    }
+
+    void noteOrderCacheCloneFailName(const string& name) {
+        if (m_orderCacheCloneFailNames.size() >= 16 && !m_orderCacheCloneFailNames.count(name))
+            return;
+        ++m_orderCacheCloneFailNames[name];
     }
 };
 
@@ -478,7 +498,8 @@ public:
 
     static AstCFunc* cloneOrderedFuncGraph(
         AstCFunc* funcp, AstScope* destBoundaryScopep,
-        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
+        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
+        SubgraphLoweringStats& stats) {
         static unsigned s_cloneIndex = 0;
 
         std::vector<AstCFunc*> orderedFuncs;
@@ -494,6 +515,23 @@ public:
         };
         gatherFuncs(funcp);
 
+        const auto noteUnmappedVar = [&](const AstVarScope* vscp) {
+            const string& name = vscp->varp()->name();
+            stats.noteOrderCacheCloneFailName(name);
+            if (name.rfind("__PVT__", 0) == 0) {
+                ++stats.m_orderCacheCloneFailState;
+            } else if (name.rfind("__Vdly", 0) == 0 || name.rfind("__Vtrig", 0) == 0) {
+                ++stats.m_orderCacheCloneFailShadow;
+            } else if (name.rfind("__Vfunc", 0) == 0 || name.rfind("__Vtemp", 0) == 0
+                       || name.rfind("__Vcell", 0) == 0) {
+                ++stats.m_orderCacheCloneFailTemp;
+            } else if (name.rfind("__VlemCall", 0) == 0) {
+                ++stats.m_orderCacheCloneFailVlem;
+            } else {
+                ++stats.m_orderCacheCloneFailOther;
+            }
+        };
+
         std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap = templateVarMap;
         std::unordered_map<const AstCFunc*, std::unordered_set<const AstVar*>> argVarsByFunc;
         for (AstCFunc* const origFuncp : orderedFuncs) {
@@ -506,7 +544,10 @@ public:
                 if (failed) return;
                 if (argVars.count(refp->varp())) return;
                 const AstVarScope* const sourceVscp = refp->varScopep();
-                if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) failed = true;
+                if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) {
+                    noteUnmappedVar(sourceVscp);
+                    failed = true;
+                }
             });
             if (failed) return nullptr;
         }
@@ -577,6 +618,7 @@ public:
                 }
                 const auto varIt = resolvedVarMap.find(refp->varScopep());
                 if (varIt == resolvedVarMap.end()) {
+                    noteUnmappedVar(refp->varScopep());
                     failed = true;
                     return;
                 }
@@ -908,7 +950,7 @@ void lowerSubgraphActiveGroup(
             if (SubgraphLoweringState::buildTemplateVarScopeMap(cacheIt->second.m_logicSig,
                                                                 subgraphLogic, templateVarMap)) {
                 funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                    cacheIt->second.m_funcp, group.m_scopep, templateVarMap);
+                    cacheIt->second.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
                 if (funcp) {
                     ++state.m_stats.m_orderCacheHits;
                     ++state.m_stats.m_orderedFuncClones;
