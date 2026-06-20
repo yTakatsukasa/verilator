@@ -977,8 +977,8 @@ void lowerSubgraphActiveGroup(
                 ++state.m_stats.m_orderCacheSkipTriggered;
             } else {
                 std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                if (SubgraphLoweringState::buildTemplateVarScopeMap(cacheIt->second.m_logicSig,
-                                                                    subgraphLogic, templateVarMap)) {
+                if (SubgraphLoweringState::buildTemplateVarScopeMap(
+                        cacheIt->second.m_logicSig, subgraphLogic, templateVarMap)) {
                     funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheIt->second.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
                     if (funcp) {
@@ -1003,10 +1003,9 @@ void lowerSubgraphActiveGroup(
             if (canShare
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
                 state.m_subgraphOrderCache.emplace(
-                    cacheKey,
-                    SubgraphOrderCacheEntry{funcp, std::move(logicSig),
-                                            !SubgraphLoweringState::orderedFuncHasTriggeredRefs(
-                                                funcp)});
+                    cacheKey, SubgraphOrderCacheEntry{
+                                  funcp, std::move(logicSig),
+                                  !SubgraphLoweringState::orderedFuncHasTriggeredRefs(funcp)});
                 ++state.m_stats.m_orderCacheEntries;
             }
         }
@@ -1170,11 +1169,10 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
         for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
             AstNodeDType* const dtypep = sourceVscp->dtypep();
             AstScope* const scopep = sourceVscp->scopep();
-            auto it = std::find_if(dtypeGroups.begin(), dtypeGroups.end(),
-                                   [&](const SnapshotDTypeGroup& group) {
-                                       return group.m_scopep == scopep
-                                              && group.m_dtypep->similarDType(dtypep);
-                                   });
+            auto it = std::find_if(
+                dtypeGroups.begin(), dtypeGroups.end(), [&](const SnapshotDTypeGroup& group) {
+                    return group.m_scopep == scopep && group.m_dtypep->similarDType(dtypep);
+                });
             if (it == dtypeGroups.end()) {
                 dtypeGroups.push_back(SnapshotDTypeGroup{scopep, dtypep, {sourceVscp}});
             } else {
@@ -1198,11 +1196,11 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
             FileLine* const flp = groupedVars.front()->fileline();
             AstRange* const rangep
                 = new AstRange{flp, static_cast<int>(groupedVars.size() - 1), 0};
-            AstNodeDType* const bundleDTypep = new AstUnpackArrayDType{flp, group.m_dtypep, rangep};
+            AstNodeDType* const bundleDTypep
+                = new AstUnpackArrayDType{flp, group.m_dtypep, rangep};
             v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
-            const string bundleName = "__VsubgraphSnapshot__"
-                                      + group.m_scopep->nameDotless() + "__bundle"
-                                      + cvtToStr(bundleIndex++);
+            const string bundleName = "__VsubgraphSnapshot__" + group.m_scopep->nameDotless()
+                                      + "__bundle" + cvtToStr(bundleIndex++);
             AstVarScope* const bundleVscp = group.m_scopep->createTemp(bundleName, bundleDTypep);
             ++state.m_stats.m_snapshotBundles;
             state.m_stats.m_snapshotBundleElems += groupedVars.size();
