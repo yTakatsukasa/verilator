@@ -425,12 +425,11 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphContractUsage(AstSubgraphInstance* nodep) {
-        AstScope* const scopep = nodep->scopep();
         const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
         if (!hideClockedBoundaryContract) {
             for (const auto& read : nodep->boundaryReads()) {
-                AstVarScope* const vscp = findVarScopeByName(scopep, read.m_name);
+                AstVarScope* const vscp = read.m_varscp;
                 if (!vscp) continue;
                 if (read.m_derived) {
                     addCoarseVarUsage(vscp, true, false, nodep);
@@ -440,8 +439,7 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         }
         if (publishBoundaryWrites) {
-            for (const string& name : nodep->boundaryWrites()) {
-                AstVarScope* const vscp = findVarScopeByName(scopep, name);
+            for (AstVarScope* const vscp : nodep->boundaryWrites()) {
                 if (!vscp) continue;
                 addVarUsage(vscp, false, true, nodep, true);
             }
