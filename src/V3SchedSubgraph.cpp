@@ -1161,13 +1161,29 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
         }
     }
     for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
-        std::unordered_map<AstNodeDType*, std::vector<AstVarScope*>> dtypeGroups;
+        struct SnapshotDTypeGroup final {
+            AstScope* m_scopep = nullptr;
+            AstNodeDType* m_dtypep = nullptr;
+            std::vector<AstVarScope*> m_vars;
+        };
+        std::vector<SnapshotDTypeGroup> dtypeGroups;
         for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
-            dtypeGroups[sourceVscp->dtypep()].push_back(sourceVscp);
+            AstNodeDType* const dtypep = sourceVscp->dtypep();
+            AstScope* const scopep = sourceVscp->scopep();
+            auto it = std::find_if(dtypeGroups.begin(), dtypeGroups.end(),
+                                   [&](const SnapshotDTypeGroup& group) {
+                                       return group.m_scopep == scopep
+                                              && group.m_dtypep->similarDType(dtypep);
+                                   });
+            if (it == dtypeGroups.end()) {
+                dtypeGroups.push_back(SnapshotDTypeGroup{scopep, dtypep, {sourceVscp}});
+            } else {
+                it->m_vars.push_back(sourceVscp);
+            }
         }
         unsigned bundleIndex = 0;
-        for (const auto& pair : dtypeGroups) {
-            const std::vector<AstVarScope*>& groupedVars = pair.second;
+        for (const SnapshotDTypeGroup& group : dtypeGroups) {
+            const std::vector<AstVarScope*>& groupedVars = group.m_vars;
             if (groupedVars.size() == 1) {
                 AstVarScope* const sourceVscp = groupedVars.front();
                 const string name = "__VsubgraphSnapshot__" + sourceVscp->scopep()->nameDotless()
@@ -1182,13 +1198,12 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
             FileLine* const flp = groupedVars.front()->fileline();
             AstRange* const rangep
                 = new AstRange{flp, static_cast<int>(groupedVars.size() - 1), 0};
-            AstNodeDType* const bundleDTypep = new AstUnpackArrayDType{flp, pair.first, rangep};
+            AstNodeDType* const bundleDTypep = new AstUnpackArrayDType{flp, group.m_dtypep, rangep};
             v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
             const string bundleName = "__VsubgraphSnapshot__"
-                                      + groupedVars.front()->scopep()->nameDotless() + "__bundle"
+                                      + group.m_scopep->nameDotless() + "__bundle"
                                       + cvtToStr(bundleIndex++);
-            AstVarScope* const bundleVscp
-                = groupedVars.front()->scopep()->createTemp(bundleName, bundleDTypep);
+            AstVarScope* const bundleVscp = group.m_scopep->createTemp(bundleName, bundleDTypep);
             ++state.m_stats.m_snapshotBundles;
             state.m_stats.m_snapshotBundleElems += groupedVars.size();
             for (uint32_t i = 0; i < groupedVars.size(); ++i) {
