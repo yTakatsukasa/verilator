@@ -318,6 +318,29 @@ struct SnapshotBucket final {
     std::unordered_map<AstVarScope*, SnapshotRef> m_snapshotRefs;
 };
 
+class SnapshotNameAllocator final {
+    std::unordered_map<AstScope*, std::unordered_set<std::string>> m_usedNames;
+
+    std::unordered_set<std::string>& usedNamesFor(AstScope* scopep) {
+        std::unordered_set<std::string>& usedNames = m_usedNames[scopep];
+        if (!usedNames.empty()) return usedNames;
+        for (AstVarScope* vscp = scopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            usedNames.insert(vscp->varp()->name());
+        }
+        return usedNames;
+    }
+
+public:
+    std::string get(AstScope* scopep, const std::string& base) {
+        std::unordered_set<std::string>& usedNames = usedNamesFor(scopep);
+        if (usedNames.insert(base).second) return base;
+        for (unsigned index = 1;; ++index) {
+            const std::string name = base + "__" + cvtToStr(index);
+            if (usedNames.insert(name).second) return name;
+        }
+    }
+};
+
 struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneFailOther = 0;
     uint64_t m_orderCacheCloneFailState = 0;
@@ -1159,6 +1182,7 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
             }
         }
     }
+    SnapshotNameAllocator snapshotNames;
     for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
         struct SnapshotDTypeGroup final {
             AstScope* m_scopep = nullptr;
@@ -1184,8 +1208,10 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
             const std::vector<AstVarScope*>& groupedVars = group.m_vars;
             if (groupedVars.size() == 1) {
                 AstVarScope* const sourceVscp = groupedVars.front();
-                const string name = "__VsubgraphSnapshot__" + sourceVscp->scopep()->nameDotless()
-                                    + "__" + sourceVscp->varp()->shortName();
+                const string baseName = "__VsubgraphSnapshot__"
+                                        + sourceVscp->scopep()->nameDotless() + "__"
+                                        + sourceVscp->varp()->shortName();
+                const string name = snapshotNames.get(sourceVscp->scopep(), baseName);
                 AstVarScope* const snapshotp
                     = sourceVscp->scopep()->createTempLike(name, sourceVscp);
                 bucket.m_snapshotRefs.emplace(sourceVscp, SnapshotRef{snapshotp, 0, false});
@@ -1199,8 +1225,9 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
             AstNodeDType* const bundleDTypep
                 = new AstUnpackArrayDType{flp, group.m_dtypep, rangep};
             v3Global.rootp()->typeTablep()->addTypesp(bundleDTypep);
-            const string bundleName = "__VsubgraphSnapshot__" + group.m_scopep->nameDotless()
-                                      + "__bundle" + cvtToStr(bundleIndex++);
+            const string bundleBaseName = "__VsubgraphSnapshot__" + group.m_scopep->nameDotless()
+                                          + "__bundle" + cvtToStr(bundleIndex++);
+            const string bundleName = snapshotNames.get(group.m_scopep, bundleBaseName);
             AstVarScope* const bundleVscp = group.m_scopep->createTemp(bundleName, bundleDTypep);
             ++state.m_stats.m_snapshotBundles;
             state.m_stats.m_snapshotBundleElems += groupedVars.size();
