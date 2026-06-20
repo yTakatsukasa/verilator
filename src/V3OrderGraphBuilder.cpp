@@ -25,6 +25,7 @@
 #include "V3OrderGraph.h"
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
+#include "V3Stats.h"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -85,6 +86,15 @@ class OrderGraphBuilder final : public VNVisitor {
         bool m_read = false;
         bool m_write = false;
     };
+    struct SubgraphStats final {
+        uint64_t m_callUsageFallbackScans = 0;
+        uint64_t m_coarseNodes = 0;
+        uint64_t m_nestedContractUses = 0;
+        uint64_t m_parentVisibleHelperCalls = 0;
+        uint64_t m_wrapperProcedures = 0;
+        uint64_t m_wrapperProceduresWithInstances = 0;
+        uint64_t m_wrapperProceduresWithLegacyCalls = 0;
+    };
     using SubgraphCallUsageCache = std::unordered_map<AstCFunc*, std::vector<SubgraphCallUsage>>;
 
     // NODE STATE
@@ -120,6 +130,7 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_isSubgraphSnapshotLogic = false;  // Procedure snapshots cross-boundary values
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     SubgraphCallUsageCache m_subgraphCallUsageCache;
+    SubgraphStats m_subgraphStats;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
 
     // METHODS
@@ -159,6 +170,7 @@ class OrderGraphBuilder final : public VNVisitor {
         AstNode::user2ClearTree();
         m_forceReadEdgeIgnores.clear();
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
+        ++m_subgraphStats.m_coarseNodes;
         addSubgraphInstancePortUsage(nodep);
         const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
         if (v3Global.opt.subgraphSchedule() && barrierKeyp && m_inClocked && !m_inPost) {
@@ -478,6 +490,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     void addSubgraphCallPortUsage(AstCCall* nodep) {
         if (!isSubgraphWrapperCall(nodep)) return;
+        ++m_subgraphStats.m_parentVisibleHelperCalls;
         AstCFunc* const funcp = nodep->funcp();
         AstScope* const scopep = funcp->scopep();
         addSubgraphContractUsage(scopep, nodep);
@@ -510,6 +523,7 @@ class OrderGraphBuilder final : public VNVisitor {
         }
 
         std::vector<SubgraphCallUsage> uses;
+        ++m_subgraphStats.m_callUsageFallbackScans;
         std::unordered_map<AstVarScope*, size_t> useIndices;
         std::unordered_set<AstCFunc*> seen;
         std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
@@ -533,13 +547,47 @@ class OrderGraphBuilder final : public VNVisitor {
         return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
     }
 
-    bool isSubgraphWrapperProcedure(AstNodeProcedure* nodep) const {
-        bool sawCall = false;
-        nodep->foreach([&](AstSubgraphInstance* subgraphp) { sawCall = true; });
-        nodep->foreach([&](AstCCall* callp) {
-            if (isSubgraphWrapperCall(callp)) sawCall = true;
-        });
-        return sawCall;
+    bool noteSubgraphWrapperProcedure(AstNodeProcedure* nodep) {
+        bool sawInstance = false;
+        bool sawLegacyCall = false;
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (VN_IS(stmtp, SubgraphInstance)) {
+                sawInstance = true;
+                continue;
+            }
+            stmtp->foreach([&](AstCCall* callp) {
+                if (isSubgraphWrapperCall(callp)) sawLegacyCall = true;
+            });
+        }
+        if (!(sawInstance || sawLegacyCall)) return false;
+        ++m_subgraphStats.m_wrapperProcedures;
+        if (sawInstance) ++m_subgraphStats.m_wrapperProceduresWithInstances;
+        if (sawLegacyCall) ++m_subgraphStats.m_wrapperProceduresWithLegacyCalls;
+        return true;
+    }
+
+    void reportSubgraphStats() const {
+        if (!v3Global.opt.subgraphSchedule() || !v3Global.opt.stats()) return;
+        const bool sawSubgraphOrderGraph
+            = m_subgraphStats.m_callUsageFallbackScans || m_subgraphStats.m_coarseNodes
+              || m_subgraphStats.m_nestedContractUses || m_subgraphStats.m_parentVisibleHelperCalls
+              || m_subgraphStats.m_wrapperProcedures;
+        if (!sawSubgraphOrderGraph) return;
+        const string prefix = "Scheduling, Subgraph order graph, ";
+        V3Stats::addStat(prefix + "call usage fallback scans",
+                         m_subgraphStats.m_callUsageFallbackScans);
+        V3Stats::addStat(prefix + "coarse nodes", m_subgraphStats.m_coarseNodes);
+        V3Stats::addStat(prefix + "nested contract uses", m_subgraphStats.m_nestedContractUses);
+        V3Stats::addStat(prefix + "parent-visible helper calls",
+                         m_subgraphStats.m_parentVisibleHelperCalls);
+        V3Stats::addStat(prefix + "phase vertices clocked", m_subgraphClockedPhaseVtxps.size());
+        V3Stats::addStat(prefix + "phase vertices post", m_subgraphPostPhaseVtxps.size());
+        V3Stats::addStat(prefix + "phase vertices snapshot", m_subgraphSnapshotPhaseVtxps.size());
+        V3Stats::addStat(prefix + "wrapper procedures", m_subgraphStats.m_wrapperProcedures);
+        V3Stats::addStat(prefix + "wrapper procedures with instances",
+                         m_subgraphStats.m_wrapperProceduresWithInstances);
+        V3Stats::addStat(prefix + "wrapper procedures with legacy calls",
+                         m_subgraphStats.m_wrapperProceduresWithLegacyCalls);
     }
 
     bool isSubgraphCommitPostProcedure(AstNodeProcedure* nodep) const {
@@ -622,6 +670,7 @@ class OrderGraphBuilder final : public VNVisitor {
     }
     void visit(AstSubgraphInstance* nodep) override {
         if (!m_logicVxp) return iterateSubgraphInstanceLogic(nodep);
+        ++m_subgraphStats.m_nestedContractUses;
         addSubgraphInstancePortUsage(nodep);
     }
 
@@ -636,7 +685,7 @@ class OrderGraphBuilder final : public VNVisitor {
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -646,7 +695,7 @@ class OrderGraphBuilder final : public VNVisitor {
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -659,7 +708,7 @@ class OrderGraphBuilder final : public VNVisitor {
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_inPre = true;
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -674,7 +723,7 @@ class OrderGraphBuilder final : public VNVisitor {
         m_inPost = true;
         m_isSubgraphCommitPostLogic = isSubgraphCommitPostProcedure(nodep);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -684,7 +733,7 @@ class OrderGraphBuilder final : public VNVisitor {
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -694,7 +743,7 @@ class OrderGraphBuilder final : public VNVisitor {
         if (m_logicVxp) return iterateChildren(nodep);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
-        if (isSubgraphWrapperProcedure(nodep)) {
+        if (noteSubgraphWrapperProcedure(nodep)) {
             iterateChildren(nodep);
         } else {
             iterateLogic(nodep);
@@ -739,6 +788,7 @@ class OrderGraphBuilder final : public VNVisitor {
                 m_scopep = nullptr;
             }
         }
+        reportSubgraphStats();
     }
     ~OrderGraphBuilder() override = default;
 
