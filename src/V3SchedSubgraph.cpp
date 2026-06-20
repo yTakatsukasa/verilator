@@ -274,6 +274,7 @@ using SubgraphLogicSig = std::vector<SubgraphLogicNodeSig>;
 struct SubgraphOrderCacheEntry final {
     AstCFunc* m_funcp = nullptr;
     SubgraphLogicSig m_logicSig;
+    bool m_cloneable = true;
 };
 
 struct SubgraphOrderCacheKey final {
@@ -329,6 +330,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheEntries = 0;
     uint64_t m_orderCacheHits = 0;
     uint64_t m_orderCacheMisses = 0;
+    uint64_t m_orderCacheSkipTriggered = 0;
     uint64_t m_orderedFuncClones = 0;
     uint64_t m_snapshotBuckets = 0;
     uint64_t m_snapshotBundleElems = 0;
@@ -356,6 +358,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
+        V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
         V3Stats::addStat(prefix + "snapshot bundle elements", m_snapshotBundleElems);
@@ -494,6 +497,30 @@ public:
             });
         });
         return shareable;
+    }
+
+    static bool orderedFuncHasTriggeredRefs(AstCFunc* funcp) {
+        std::unordered_set<AstCFunc*> seenFuncs;
+        bool found = false;
+        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
+            if (found || !seenFuncs.insert(scanFuncp).second) return;
+            scanFuncp->foreach([&](AstVarRef* refp) {
+                if (found) return;
+                const string& name = refp->varp()->name();
+                if (name.rfind("__V", 0) == 0 && name.size() >= 9
+                    && name.substr(name.size() - 9) == "Triggered") {
+                    found = true;
+                }
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                if (found) return;
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint()) return;
+                gather(calledFuncp);
+            });
+        };
+        gather(funcp);
+        return found;
     }
 
     static AstCFunc* cloneOrderedFuncGraph(
@@ -946,15 +973,19 @@ void lowerSubgraphActiveGroup(
     if (canShare) {
         const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
         if (cacheIt != state.m_subgraphOrderCache.end()) {
-            std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-            if (SubgraphLoweringState::buildTemplateVarScopeMap(cacheIt->second.m_logicSig,
-                                                                subgraphLogic, templateVarMap)) {
-                funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                    cacheIt->second.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
-                if (funcp) {
-                    ++state.m_stats.m_orderCacheHits;
-                    ++state.m_stats.m_orderedFuncClones;
-                    SubgraphLoweringState::discardLogic(subgraphLogic);
+            if (!cacheIt->second.m_cloneable) {
+                ++state.m_stats.m_orderCacheSkipTriggered;
+            } else {
+                std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
+                if (SubgraphLoweringState::buildTemplateVarScopeMap(cacheIt->second.m_logicSig,
+                                                                    subgraphLogic, templateVarMap)) {
+                    funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                        cacheIt->second.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
+                    if (funcp) {
+                        ++state.m_stats.m_orderCacheHits;
+                        ++state.m_stats.m_orderedFuncClones;
+                        SubgraphLoweringState::discardLogic(subgraphLogic);
+                    }
                 }
             }
         }
@@ -972,7 +1003,10 @@ void lowerSubgraphActiveGroup(
             if (canShare
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
                 state.m_subgraphOrderCache.emplace(
-                    cacheKey, SubgraphOrderCacheEntry{funcp, std::move(logicSig)});
+                    cacheKey,
+                    SubgraphOrderCacheEntry{funcp, std::move(logicSig),
+                                            !SubgraphLoweringState::orderedFuncHasTriggeredRefs(
+                                                funcp)});
                 ++state.m_stats.m_orderCacheEntries;
             }
         }
