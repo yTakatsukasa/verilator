@@ -259,21 +259,6 @@ struct SubgraphBatchKeyHash final {
     }
 };
 
-struct SubgraphSchedulePlan final {
-    AstCFunc* m_callFuncp = nullptr;
-    SubgraphScopeContractSummary m_contract;
-    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
-    AstScope* m_scopep = nullptr;
-    std::vector<AstCFunc*> m_tailFuncps;
-    SubgraphWrapper m_wrapper;
-};
-
-struct SubgraphScheduledGroup final {
-    const SubgraphGroup* m_groupp = nullptr;
-    SubgraphSchedulePlan m_plan;
-    AstActive* m_wrapperActivep = nullptr;
-};
-
 struct SubgraphLogicRefSig final {
     uintptr_t m_access = 0;
     const AstVarScope* m_vscp = nullptr;
@@ -319,6 +304,58 @@ struct SubgraphOrderCacheKeyHash final {
     }
 };
 
+struct SubgraphScheduleArtifactKey final {
+    std::vector<uintptr_t> m_domainShape;
+    AstNodeModule* m_modp = nullptr;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    AstSenTree* m_senTreep = nullptr;
+    SubgraphWrapper m_wrapper;
+
+    bool operator==(const SubgraphScheduleArtifactKey& other) const {
+        return m_modp == other.m_modp && m_phase == other.m_phase && m_senTreep == other.m_senTreep
+               && m_wrapper == other.m_wrapper && m_domainShape == other.m_domainShape;
+    }
+};
+
+struct SubgraphScheduleArtifactKeyHash final {
+    size_t operator()(const SubgraphScheduleArtifactKey& key) const {
+        size_t hash = std::hash<const void*>{}(key.m_modp);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_phase)) + 0x9e3779b97f4a7c15ULL
+                + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_kind))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        for (const uintptr_t value : key.m_domainShape) {
+            hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+        }
+        return hash;
+    }
+};
+
+struct SubgraphScheduleArtifact final {
+    AstCFunc* m_callFuncp = nullptr;
+    SubgraphScopeContractSummary m_contract;
+    SubgraphScheduleArtifactKey m_key;
+    AstScope* m_scopep = nullptr;
+    std::vector<AstCFunc*> m_tailFuncps;
+};
+
+struct SubgraphSchedulePlan final {
+    SubgraphScheduleArtifact* m_artifactp = nullptr;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    SubgraphWrapper m_wrapper;
+};
+
+struct SubgraphScheduledGroup final {
+    const SubgraphGroup* m_groupp = nullptr;
+    SubgraphSchedulePlan m_plan;
+    AstActive* m_wrapperActivep = nullptr;
+};
+
 struct SnapshotRef final {
     AstVarScope* m_snapshotVscp = nullptr;
     uint32_t m_elemIndex = 0;
@@ -357,14 +394,17 @@ public:
 };
 
 struct SubgraphLoweringStats final {
+    uint64_t m_artifactMisses = 0;
+    uint64_t m_artifactReuses = 0;
+    uint64_t m_artifacts = 0;
+    uint64_t m_callUsageSummaries = 0;
+    uint64_t m_groups = 0;
     uint64_t m_orderCacheCloneFailOther = 0;
     uint64_t m_orderCacheCloneFailState = 0;
     uint64_t m_orderCacheCloneFailShadow = 0;
     uint64_t m_orderCacheCloneFailTemp = 0;
     uint64_t m_orderCacheCloneFailVlem = 0;
     std::map<string, uint64_t> m_orderCacheCloneFailNames;
-    uint64_t m_callUsageSummaries = 0;
-    uint64_t m_groups = 0;
     uint64_t m_orderCacheEntries = 0;
     uint64_t m_orderCacheHits = 0;
     uint64_t m_orderCacheMisses = 0;
@@ -384,6 +424,9 @@ struct SubgraphLoweringStats final {
     void report(const string& tag) const {
         if (!v3Global.opt.stats()) return;
         const string prefix = "Scheduling, Subgraph " + tag + ", ";
+        V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
+        V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
+        V3Stats::addStat(prefix + "artifacts", m_artifacts);
         V3Stats::addStat(prefix + "call usage summaries", m_callUsageSummaries);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
@@ -736,6 +779,23 @@ public:
         ++m_stats.m_callUsageSummaries;
     }
 
+    SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key,
+                                                           AstScope* scopep, AstCFunc* callFuncp,
+                                                           SubgraphScopeContractSummary&& contract,
+                                                           std::vector<AstCFunc*>&& tailFuncps) {
+        std::unique_ptr<SubgraphScheduleArtifact> artifactp{new SubgraphScheduleArtifact};
+        artifactp->m_callFuncp = callFuncp;
+        artifactp->m_contract = std::move(contract);
+        artifactp->m_key = key;
+        artifactp->m_scopep = scopep;
+        artifactp->m_tailFuncps = std::move(tailFuncps);
+        SubgraphScheduleArtifact* const resultp = artifactp.get();
+        m_subgraphArtifacts.push_back(std::move(artifactp));
+        ++m_stats.m_artifactMisses;
+        ++m_stats.m_artifacts;
+        return resultp;
+    }
+
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
         for (SnapshotBucket& bucket : m_snapshotBuckets) {
             if (bucket.m_ownerp == ownerp && bucket.m_senTreep == senTreep) return bucket;
@@ -857,6 +917,7 @@ public:
     }
 
     bool m_snapshotCrossBoundaryReads = false;
+    std::vector<std::unique_ptr<SubgraphScheduleArtifact>> m_subgraphArtifacts;
     std::unordered_map<SubgraphOrderCacheKey, SubgraphOrderCacheEntry, SubgraphOrderCacheKeyHash>
         m_subgraphOrderCache;
     std::vector<SnapshotBucket> m_snapshotBuckets;
@@ -1063,14 +1124,22 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
         callFuncp = tailFuncp;
     }
-    plan.m_callFuncp = callFuncp;
-    plan.m_contract = buildSubgraphSchedulePlanContract(group.m_scopep);
-    plan.m_phase = subgraphPhaseFor(wrapper, isEarly);
-    plan.m_scopep = group.m_scopep;
-    plan.m_wrapper = wrapper;
+    const AstSubgraphInstance::Phase phase = subgraphPhaseFor(wrapper, isEarly);
+    SubgraphScheduleArtifactKey artifactKey;
+    artifactKey.m_domainShape = cacheKey.m_domainShape;
+    artifactKey.m_modp = cacheKey.m_modp;
+    artifactKey.m_phase = phase;
+    artifactKey.m_senTreep = cacheKey.m_senTreep;
+    artifactKey.m_wrapper = wrapper;
+    std::vector<AstCFunc*> artifactTailFuncps;
     if (tailFuncps) {
-        for (AstCFunc* const tailFuncp : *tailFuncps) { plan.m_tailFuncps.push_back(tailFuncp); }
+        for (AstCFunc* const tailFuncp : *tailFuncps) artifactTailFuncps.push_back(tailFuncp);
     }
+    plan.m_artifactp = state.makeSubgraphScheduleArtifact(
+        artifactKey, group.m_scopep, callFuncp, buildSubgraphSchedulePlanContract(group.m_scopep),
+        std::move(artifactTailFuncps));
+    plan.m_phase = phase;
+    plan.m_wrapper = wrapper;
     ++state.m_stats.m_schedulePlans;
     return plan;
 }
@@ -1079,21 +1148,22 @@ void materializeSubgraphSchedulePlan(
     const SubgraphGroup& group, const SubgraphSchedulePlan& plan, SubgraphLoweringState& state,
     AstActive* wrapperActivep,
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
-    if (!plan.m_callFuncp) return;
-    AstNodeStmt* stmtsp = util::callVoidFunc(plan.m_callFuncp);
-    for (AstCFunc* const tailFuncp : plan.m_tailFuncps) {
+    if (!plan.m_artifactp) return;
+    const SubgraphScheduleArtifact& artifact = *plan.m_artifactp;
+    AstNodeStmt* stmtsp = util::callVoidFunc(artifact.m_callFuncp);
+    for (AstCFunc* const tailFuncp : artifact.m_tailFuncps) {
         stmtsp->addNext(util::callVoidFunc(tailFuncp));
     }
     AstSubgraphInstance* const subgraphp = getOrCreateSubgraphBatch(
         group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, wrapperActivep,
         batches, state);
     subgraphp->addStmtsp(stmtsp);
-    populateSubgraphInstanceContract(subgraphp, plan.m_contract);
+    populateSubgraphInstanceContract(subgraphp, artifact.m_contract);
     {
         std::unordered_map<AstVarScope*, size_t> useIndices;
-        appendSubgraphExternalUses(subgraphp, plan.m_scopep, plan.m_callFuncp, useIndices);
-        for (AstCFunc* const tailFuncp : plan.m_tailFuncps) {
-            appendSubgraphExternalUses(subgraphp, plan.m_scopep, tailFuncp, useIndices);
+        appendSubgraphExternalUses(subgraphp, artifact.m_scopep, artifact.m_callFuncp, useIndices);
+        for (AstCFunc* const tailFuncp : artifact.m_tailFuncps) {
+            appendSubgraphExternalUses(subgraphp, artifact.m_scopep, tailFuncp, useIndices);
         }
     }
 }
@@ -1295,7 +1365,7 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
             const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
                 netlistp, group.m_earlyLogic, wrapper, true, nullptr, group, state, trigToSen, tag,
                 slow, externalDomains, subgraphIndex);
-            if (plan.m_callFuncp) {
+            if (plan.m_artifactp) {
                 scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
             }
         }
@@ -1332,7 +1402,7 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
             const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
                 netlistp, group.m_lateLogic, wrapper, false, tailFuncps, group, state, trigToSen,
                 tag, slow, externalDomains, subgraphIndex);
-            if (plan.m_callFuncp) {
+            if (plan.m_artifactp) {
                 scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
             }
         }
