@@ -309,11 +309,13 @@ struct SubgraphScheduleArtifactKey final {
     AstNodeModule* m_modp = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
     AstSenTree* m_senTreep = nullptr;
+    std::vector<uintptr_t> m_tailShape;
     SubgraphWrapper m_wrapper;
 
     bool operator==(const SubgraphScheduleArtifactKey& other) const {
         return m_modp == other.m_modp && m_phase == other.m_phase && m_senTreep == other.m_senTreep
-               && m_wrapper == other.m_wrapper && m_domainShape == other.m_domainShape;
+               && m_wrapper == other.m_wrapper && m_domainShape == other.m_domainShape
+               && m_tailShape == other.m_tailShape;
     }
 };
 
@@ -329,6 +331,10 @@ struct SubgraphScheduleArtifactKeyHash final {
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
                 + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         for (const uintptr_t value : key.m_domainShape) {
+            hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+        }
+        for (const uintptr_t value : key.m_tailShape) {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
         }
@@ -405,6 +411,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactMisses = 0;
     uint64_t m_artifactReuses = 0;
     uint64_t m_artifactReuseCloneFails = 0;
+    uint64_t m_artifactTailCloneFails = 0;
+    uint64_t m_artifactTailReuseCandidates = 0;
+    uint64_t m_artifactTailReuses = 0;
     uint64_t m_artifacts = 0;
     uint64_t m_callUsageSummaries = 0;
     uint64_t m_groups = 0;
@@ -436,6 +445,9 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
         V3Stats::addStat(prefix + "artifact reuse clone fails", m_artifactReuseCloneFails);
+        V3Stats::addStat(prefix + "artifact tail clone fails", m_artifactTailCloneFails);
+        V3Stats::addStat(prefix + "artifact tail reuse candidates", m_artifactTailReuseCandidates);
+        V3Stats::addStat(prefix + "artifact tail reuses", m_artifactTailReuses);
         V3Stats::addStat(prefix + "artifacts", m_artifacts);
         V3Stats::addStat(prefix + "call usage summaries", m_callUsageSummaries);
         V3Stats::addStat(prefix + "groups", m_groups);
@@ -1087,6 +1099,18 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
     return subgraphp;
 }
 
+std::vector<uintptr_t> buildTailShape(const std::vector<AstCFunc*>* tailFuncps) {
+    std::vector<uintptr_t> result;
+    if (!tailFuncps) return result;
+    result.reserve(1 + tailFuncps->size() * 2);
+    result.push_back(tailFuncps->size());
+    for (AstCFunc* const tailFuncp : *tailFuncps) {
+        result.push_back(reinterpret_cast<uintptr_t>(tailFuncp));
+        result.push_back(reinterpret_cast<uintptr_t>(tailFuncp->scopep()));
+    }
+    return result;
+}
+
 SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
     bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
@@ -1110,9 +1134,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     artifactKey.m_senTreep = cacheKey.m_senTreep;
+    artifactKey.m_tailShape = buildTailShape(tailFuncps);
     artifactKey.m_wrapper = wrapper;
-    const bool cacheableArtifact = canShare && !tailFuncps;
+    const bool cacheableArtifact = canShare;
     if (cacheableArtifact) {
+        if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
         SubgraphScheduleArtifact* const artifactp = state.findReusableSubgraphScheduleArtifact(
             artifactKey, subgraphLogic, templateVarMap);
@@ -1143,11 +1169,13 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 plan.m_phase = phase;
                 plan.m_wrapper = wrapper;
                 ++state.m_stats.m_artifactReuses;
+                if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
                 ++state.m_stats.m_schedulePlans;
                 return plan;
             }
             artifactp->m_cloneable = false;
             ++state.m_stats.m_artifactReuseCloneFails;
+            if (tailFuncps) ++state.m_stats.m_artifactTailCloneFails;
         }
     }
     AstCFunc* funcp = nullptr;
