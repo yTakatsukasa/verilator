@@ -1136,7 +1136,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_senTreep = cacheKey.m_senTreep;
     artifactKey.m_tailShape = buildTailShape(tailFuncps);
     artifactKey.m_wrapper = wrapper;
-    const bool cacheableArtifact = canShare;
+    const bool cacheableArtifact = canShare && tag != "stl";
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
