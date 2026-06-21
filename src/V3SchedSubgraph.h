@@ -28,8 +28,6 @@ namespace V3Sched {
 AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::string& nameSuffix,
                                  bool slow);
 
-void registerSubgraphCallUsageSummary(
-    const AstCFunc* funcp, std::vector<SubgraphCallUsageSummary>&& summary) VL_MT_DISABLED;
 void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
 void clearSubgraphSnapshotProcedures() VL_MT_DISABLED;
 void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,

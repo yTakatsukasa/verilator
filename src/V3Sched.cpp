@@ -952,7 +952,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 // Top level entry-point to scheduling
 
 void schedule(AstNetlist* netlistp) {
-    clearSubgraphCallUsageSummaries();
+    clearSubgraphScopeContracts();
     clearSubgraphSnapshotProcedures();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;

@@ -25,14 +25,29 @@ namespace V3Sched {
 
 namespace {
 
-using SubgraphCallUsageSummaryMap
-    = std::unordered_map<const AstCFunc*, std::vector<SubgraphCallUsageSummary>>;
-using SubgraphScopeContractSummaryMap
-    = std::unordered_map<const AstScope*, SubgraphScopeContractSummary>;
+struct SubgraphInstanceContract final {
+    std::vector<AstSubgraphInstance::BoundaryReadContract> m_boundaryReads;
+    std::vector<AstVarScope*> m_boundaryWrites;
+    std::vector<AstSubgraphInstance::ExternalUseContract> m_externalUses;
+    bool m_hasClockedState = false;
+    bool m_hasPostPhase = false;
+    bool m_readsExternalVars = false;
+
+    void addExternalUse(AstVarScope* vscp, bool read, bool write) {
+        for (AstSubgraphInstance::ExternalUseContract& use : m_externalUses) {
+            if (use.m_varscp != vscp) continue;
+            use.m_read |= read;
+            use.m_write |= write;
+            return;
+        }
+        m_externalUses.push_back({vscp, read, write});
+    }
+};
+
+using SubgraphInstanceContractMap = std::unordered_map<const AstScope*, SubgraphInstanceContract>;
 
 struct SubgraphRegistry final {
-    SubgraphCallUsageSummaryMap m_callUsageSummaries;
-    SubgraphScopeContractSummaryMap m_scopeContractSummaries;
+    SubgraphInstanceContractMap m_scopeContracts;
     std::unordered_set<const AstNodeProcedure*> m_snapshotProcedures;
 };
 
@@ -65,27 +80,16 @@ AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::s
     return clonep;
 }
 
-void registerSubgraphCallUsageSummary(const AstCFunc* funcp,
-                                      std::vector<SubgraphCallUsageSummary>&& summary) {
-    subgraphRegistry().m_callUsageSummaries[funcp] = std::move(summary);
-}
-
-const std::vector<SubgraphCallUsageSummary>* getSubgraphCallUsageSummary(const AstCFunc* funcp) {
-    auto& callUsageSummaries = subgraphRegistry().m_callUsageSummaries;
-    const auto it = callUsageSummaries.find(funcp);
-    return it == callUsageSummaries.end() ? nullptr : &it->second;
-}
-
-const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstScope* scopep) {
-    auto& scopeContractSummaries = subgraphRegistry().m_scopeContractSummaries;
-    const auto it = scopeContractSummaries.find(scopep);
-    if (it != scopeContractSummaries.end()) return &it->second;
+const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep) {
+    auto& scopeContracts = subgraphRegistry().m_scopeContracts;
+    const auto it = scopeContracts.find(scopep);
+    if (it != scopeContracts.end()) return &it->second;
 
     const V3SubgraphSummary::ScopeSummary* const summaryp
         = V3SubgraphSummary::getScopeSummary(scopep);
     if (!summaryp) return nullptr;
 
-    SubgraphScopeContractSummary contract;
+    SubgraphInstanceContract contract;
     contract.m_hasClockedState = summaryp->m_parentStub.m_hasClockedState;
     contract.m_hasPostPhase = summaryp->m_parentStub.m_hasPostPhase;
     contract.m_readsExternalVars = summaryp->m_parentStub.m_readsExternalVars;
@@ -98,15 +102,10 @@ const SubgraphScopeContractSummary* getSubgraphScopeContractSummary(const AstSco
     for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryWrites) {
         contract.m_boundaryWrites.push_back(vscp);
     }
-    return &subgraphRegistry()
-                .m_scopeContractSummaries.emplace(scopep, std::move(contract))
-                .first->second;
+    return &scopeContracts.emplace(scopep, std::move(contract)).first->second;
 }
 
-void clearSubgraphCallUsageSummaries() {
-    subgraphRegistry().m_callUsageSummaries.clear();
-    subgraphRegistry().m_scopeContractSummaries.clear();
-}
+void clearSubgraphScopeContracts() { subgraphRegistry().m_scopeContracts.clear(); }
 
 void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
     subgraphRegistry().m_snapshotProcedures.insert(procp);
@@ -352,7 +351,7 @@ struct SubgraphScheduleArtifact final {
 
 struct SubgraphScheduleInstance final {
     AstCFunc* m_callFuncp = nullptr;
-    SubgraphScopeContractSummary m_contract;
+    SubgraphInstanceContract m_contract;
     AstScope* m_scopep = nullptr;
     std::vector<AstCFunc*> m_tailFuncps;
 };
@@ -415,7 +414,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactTailReuseCandidates = 0;
     uint64_t m_artifactTailReuses = 0;
     uint64_t m_artifacts = 0;
-    uint64_t m_callUsageSummaries = 0;
+    uint64_t m_contractExternalUseScans = 0;
     uint64_t m_groups = 0;
     uint64_t m_orderCacheCloneFailOther = 0;
     uint64_t m_orderCacheCloneFailState = 0;
@@ -449,7 +448,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact tail reuse candidates", m_artifactTailReuseCandidates);
         V3Stats::addStat(prefix + "artifact tail reuses", m_artifactTailReuses);
         V3Stats::addStat(prefix + "artifacts", m_artifacts);
-        V3Stats::addStat(prefix + "call usage summaries", m_callUsageSummaries);
+        V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
         V3Stats::addStat(prefix + "order cache clone fail state", m_orderCacheCloneFailState);
@@ -767,10 +766,8 @@ public:
         return clonedFuncs.at(funcp);
     }
 
-    static std::vector<SubgraphCallUsageSummary>
-    buildSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
-        std::vector<SubgraphCallUsageSummary> uses;
-        std::unordered_map<AstVarScope*, size_t> useIndices;
+    void appendContractExternalUses(SubgraphInstanceContract& contract, AstCFunc* funcp,
+                                    AstScope* boundaryScopep) {
         std::unordered_set<AstCFunc*> seen;
         std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
             if (!seen.insert(scanFuncp).second) return;
@@ -779,11 +776,8 @@ public:
                 const bool externalToSubgraph
                     = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
                 if (!externalToSubgraph) return;
-                const auto pair = useIndices.emplace(vscp, uses.size());
-                if (pair.second) uses.push_back(SubgraphCallUsageSummary{vscp, false, false});
-                SubgraphCallUsageSummary& use = uses[pair.first->second];
-                use.m_read |= refp->access().isReadOrRW();
-                use.m_write |= refp->access().isWriteOrRW();
+                contract.addExternalUse(vscp, refp->access().isReadOrRW(),
+                                        refp->access().isWriteOrRW());
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
@@ -792,13 +786,7 @@ public:
             });
         };
         gather(funcp);
-        return uses;
-    }
-
-    void registerSubgraphCallUsageSummary(AstCFunc* funcp, AstScope* boundaryScopep) {
-        V3Sched::registerSubgraphCallUsageSummary(
-            funcp, buildSubgraphCallUsageSummary(funcp, boundaryScopep));
-        ++m_stats.m_callUsageSummaries;
+        ++m_stats.m_contractExternalUseScans;
     }
 
     SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
@@ -1025,15 +1013,15 @@ SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
     return wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
 }
 
-SubgraphScopeContractSummary buildSubgraphSchedulePlanContract(AstScope* scopep) {
-    SubgraphScopeContractSummary contract;
-    const SubgraphScopeContractSummary* const summaryp = getSubgraphScopeContractSummary(scopep);
+SubgraphInstanceContract buildSubgraphSchedulePlanContract(AstScope* scopep) {
+    SubgraphInstanceContract contract;
+    const SubgraphInstanceContract* const summaryp = getSubgraphScopeContract(scopep);
     if (summaryp) contract = *summaryp;
     return contract;
 }
 
 void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
-                                      const SubgraphScopeContractSummary& contract) {
+                                      const SubgraphInstanceContract& contract) {
     subgraphp->hasClockedState(contract.m_hasClockedState);
     subgraphp->hasPostPhase(contract.m_hasPostPhase);
     subgraphp->readsExternalVars(contract.m_readsExternalVars);
@@ -1043,23 +1031,8 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
     for (AstVarScope* const vscp : contract.m_boundaryWrites) {
         subgraphp->addBoundaryWrite(vscp);
     }
-}
-
-void appendSubgraphExternalUses(AstSubgraphInstance* subgraphp, AstScope* boundaryScopep,
-                                AstCFunc* funcp,
-                                std::unordered_map<AstVarScope*, size_t>& useIndices) {
-    const auto* const summarysp = V3Sched::getSubgraphCallUsageSummary(funcp);
-    if (!summarysp) return;
-    for (const SubgraphCallUsageSummary& summary : *summarysp) {
-        AstVarScope* const vscp = summary.m_varscp;
-        if (vscp && !SubgraphLoweringState::isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
-            const auto pair = useIndices.emplace(vscp, useIndices.size());
-            if (pair.second) subgraphp->addExternalUse(vscp, false, false);
-            AstSubgraphInstance::ExternalUseContract& use
-                = subgraphp->externalUses()[pair.first->second];
-            use.m_read |= summary.m_read;
-            use.m_write |= summary.m_write;
-        }
+    for (const auto& use : contract.m_externalUses) {
+        subgraphp->addExternalUse(use.m_varscp, use.m_read, use.m_write);
     }
 }
 
@@ -1068,6 +1041,15 @@ AstSubgraphInstance::Phase subgraphPhaseFor(const SubgraphWrapper& wrapper, bool
         return AstSubgraphInstance::Phase::PRE;
     }
     return AstSubgraphInstance::Phase::POST;
+}
+
+void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
+                                              SubgraphLoweringState& state) {
+    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
+    state.appendContractExternalUses(instance.m_contract, instance.m_callFuncp, instance.m_scopep);
+    for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
+        state.appendContractExternalUses(instance.m_contract, tailFuncp, instance.m_scopep);
+    }
 }
 
 AstActive* getOrCreateWrapperActive(const SubgraphGroup& group,
@@ -1149,23 +1131,20 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             } else {
                 callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                     artifactp->m_callFuncp, group.m_scopep, templateVarMap, state.m_stats);
-                if (callFuncp) {
-                    ++state.m_stats.m_orderedFuncClones;
-                    state.registerSubgraphCallUsageSummary(callFuncp, group.m_scopep);
-                }
+                if (callFuncp) ++state.m_stats.m_orderedFuncClones;
             }
             if (callFuncp) {
                 if (tag == "stl") state.m_stlSubgraphFuncs[group.m_scopep].push_back(callFuncp);
                 SubgraphLoweringState::discardLogic(subgraphLogic);
                 plan.m_artifactp = artifactp;
                 plan.m_instance.m_callFuncp = callFuncp;
-                plan.m_instance.m_contract = buildSubgraphSchedulePlanContract(group.m_scopep);
                 plan.m_instance.m_scopep = group.m_scopep;
                 if (tailFuncps) {
                     for (AstCFunc* const tailFuncp : *tailFuncps) {
                         plan.m_instance.m_tailFuncps.push_back(tailFuncp);
                     }
                 }
+                populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                 plan.m_phase = phase;
                 plan.m_wrapper = wrapper;
                 ++state.m_stats.m_artifactReuses;
@@ -1206,7 +1185,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                externalDomains, group.m_scopep);
         if (funcp) {
             util::splitCheck(funcp);
-            state.registerSubgraphCallUsageSummary(funcp, group.m_scopep);
             if (canShare
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
                 state.m_subgraphOrderCache.emplace(
@@ -1222,7 +1200,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstCFunc* callFuncp = funcp;
     if (tag == "stl") {
         AstCFunc* const tailFuncp = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
-        state.registerSubgraphCallUsageSummary(tailFuncp, group.m_scopep);
         state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
         callFuncp = tailFuncp;
     }
@@ -1236,8 +1213,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                                           std::move(logicSig), cloneableArtifact,
                                                           cacheableArtifact);
     plan.m_instance.m_callFuncp = callFuncp;
-    plan.m_instance.m_contract = buildSubgraphSchedulePlanContract(group.m_scopep);
     plan.m_instance.m_scopep = group.m_scopep;
+    populateSubgraphScheduleInstanceContract(plan.m_instance, state);
     plan.m_phase = phase;
     plan.m_wrapper = wrapper;
     ++state.m_stats.m_schedulePlans;
@@ -1259,13 +1236,6 @@ void materializeSubgraphSchedulePlan(
         batches, state);
     subgraphp->addStmtsp(stmtsp);
     populateSubgraphInstanceContract(subgraphp, instance.m_contract);
-    {
-        std::unordered_map<AstVarScope*, size_t> useIndices;
-        appendSubgraphExternalUses(subgraphp, instance.m_scopep, instance.m_callFuncp, useIndices);
-        for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
-            appendSubgraphExternalUses(subgraphp, instance.m_scopep, tailFuncp, useIndices);
-        }
-    }
 }
 
 AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
@@ -1488,10 +1458,6 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                                                                   slow)
                                       : tailFuncp;
                             activeTailFuncps.push_back(activeTailFuncp);
-                            if (activeTailFuncp != tailFuncp) {
-                                state.registerSubgraphCallUsageSummary(activeTailFuncp,
-                                                                       group.m_scopep);
-                            }
                         }
                         tailFuncps = &activeTailFuncps;
                     } else {
