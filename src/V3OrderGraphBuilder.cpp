@@ -81,13 +81,7 @@ class OrderGraphBuilder final : public VNVisitor {
     // TYPES
     enum VarUsage : uint8_t { VU_CON = 0x1, VU_GEN = 0x2 };
     using VarVertexType = OrderUser::VarVertexType;
-    struct SubgraphCallUsage final {
-        AstVarScope* m_varscp = nullptr;
-        bool m_read = false;
-        bool m_write = false;
-    };
     struct SubgraphStats final {
-        uint64_t m_callUsageFallbackScans = 0;
         uint64_t m_coarseNodes = 0;
         uint64_t m_nestedContractUses = 0;
         uint64_t m_parentVisibleHelperCalls = 0;
@@ -95,7 +89,6 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_wrapperProceduresWithInstances = 0;
         uint64_t m_wrapperProceduresWithLegacyCalls = 0;
     };
-    using SubgraphCallUsageCache = std::unordered_map<AstCFunc*, std::vector<SubgraphCallUsage>>;
 
     // NODE STATE
     //  AstVarScope::user1    -> OrderUser instance for variable (via m_orderUser)
@@ -129,7 +122,6 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_isSubgraphCommitPostLogic = false;  // Post logic commits delayed top state
     bool m_isSubgraphSnapshotLogic = false;  // Procedure snapshots cross-boundary values
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
-    SubgraphCallUsageCache m_subgraphCallUsageCache;
     SubgraphStats m_subgraphStats;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
 
@@ -413,29 +405,6 @@ class OrderGraphBuilder final : public VNVisitor {
         if (isRead) m_graphp->addHardEdge(phaseVtxp, m_logicVxp, WEIGHT_MEDIUM);
     }
 
-    void addSubgraphContractUsage(AstScope* scopep, AstNode* nodep) {
-        const V3Sched::SubgraphScopeContractSummary* const contractp
-            = V3Sched::getSubgraphScopeContractSummary(scopep);
-        UASSERT_OBJ(contractp, nodep, "Missing subgraph scope summary");
-        const V3Sched::SubgraphScopeContractSummary& contract = *contractp;
-        const bool hideClockedBoundaryContract = m_inClocked && contract.m_hasClockedState;
-        const bool publishBoundaryWrites = !m_inPre && !contract.m_boundaryWrites.empty();
-        if (!hideClockedBoundaryContract) {
-            for (const auto& read : contract.m_boundaryReads) {
-                if (read.m_derived) {
-                    addCoarseVarUsage(read.m_varscp, true, false, nodep);
-                } else {
-                    addVarUsage(read.m_varscp, true, false, nodep, false, true);
-                }
-            }
-        }
-        if (publishBoundaryWrites) {
-            for (AstVarScope* const vscp : contract.m_boundaryWrites) {
-                addVarUsage(vscp, false, true, nodep, true);
-            }
-        }
-    }
-
     void addSubgraphContractUsage(AstSubgraphInstance* nodep) {
         const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
@@ -458,18 +427,16 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
-    void addSubgraphExternalUse(AstScope* scopep, const SubgraphCallUsage& use, AstNode* nodep) {
-        const V3Sched::SubgraphScopeContractSummary* const contractp
-            = V3Sched::getSubgraphScopeContractSummary(scopep);
-        UASSERT_OBJ(contractp, nodep, "Missing subgraph scope summary");
-        const V3Sched::SubgraphScopeContractSummary& contract = *contractp;
-        if (!contract.m_readsExternalVars) return;
+    void addSubgraphExternalUse(AstSubgraphInstance* subgraphp,
+                                const AstSubgraphInstance::ExternalUseContract& use) {
+        AstScope* const scopep = subgraphp->scopep();
         AstVarScope* const vscp = use.m_varscp;
+        if (!vscp) return;
         const bool externalToSubgraph = !isUnderScope(vscp->scopep(), scopep);
         if (!externalToSubgraph) return;
         AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
-        const bool hideClockedBoundaryContract = m_inClocked && contract.m_hasClockedState;
-        const bool publishBoundaryWrites = !m_inPre && !contract.m_boundaryWrites.empty();
+        const bool hideClockedBoundaryContract = m_inClocked && subgraphp->hasClockedState();
+        const bool publishBoundaryWrites = !m_inPre && !subgraphp->boundaryWrites().empty();
         if (hideClockedBoundaryContract && sourceBoundaryp == scopep && vscp->scopep() == scopep
             && vscp->varp()->isIO() && vscp->varp()->direction().isNonOutput()) {
             return;
@@ -481,70 +448,25 @@ class OrderGraphBuilder final : public VNVisitor {
             const bool coarseRead = use.m_read;
             const bool coarseWrite = publishBoundaryWrites && use.m_write;
             if (coarseRead || coarseWrite) {
-                addCoarseVarUsage(vscp, coarseRead, coarseWrite, nodep);
+                addCoarseVarUsage(vscp, coarseRead, coarseWrite, subgraphp);
             }
         } else {
-            addVarUsage(vscp, use.m_read, use.m_write, nodep, false, use.m_read);
+            addVarUsage(vscp, use.m_read, use.m_write, subgraphp, false, use.m_read);
         }
     }
 
     void addSubgraphCallPortUsage(AstCCall* nodep) {
         if (!isSubgraphWrapperCall(nodep)) return;
         ++m_subgraphStats.m_parentVisibleHelperCalls;
-        AstCFunc* const funcp = nodep->funcp();
-        AstScope* const scopep = funcp->scopep();
-        addSubgraphContractUsage(scopep, nodep);
-        for (const SubgraphCallUsage& use : getSubgraphCallUsage(funcp)) {
-            addSubgraphExternalUse(scopep, use, nodep);
-        }
+        UASSERT_OBJ(false, nodep,
+                    "Subgraph wrapper call reached parent order graph without AstSubgraphInstance "
+                    "contract");
     }
 
     void addSubgraphInstancePortUsage(AstSubgraphInstance* nodep) {
-        AstScope* const scopep = nodep->scopep();
         addSubgraphContractUsage(nodep);
         if (!nodep->readsExternalVars()) return;
-        for (const auto& use : nodep->externalUses()) {
-            addSubgraphExternalUse(scopep, {use.m_varscp, use.m_read, use.m_write}, nodep);
-        }
-    }
-
-    const std::vector<SubgraphCallUsage>& getSubgraphCallUsage(AstCFunc* funcp) {
-        const auto cacheIt = m_subgraphCallUsageCache.find(funcp);
-        if (cacheIt != m_subgraphCallUsageCache.end()) return cacheIt->second;
-
-        if (const auto* const summaryp = V3Sched::getSubgraphCallUsageSummary(funcp)) {
-            std::vector<SubgraphCallUsage> uses;
-            uses.reserve(summaryp->size());
-            for (const V3Sched::SubgraphCallUsageSummary& summary : *summaryp) {
-                uses.push_back(
-                    SubgraphCallUsage{summary.m_varscp, summary.m_read, summary.m_write});
-            }
-            return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
-        }
-
-        std::vector<SubgraphCallUsage> uses;
-        ++m_subgraphStats.m_callUsageFallbackScans;
-        std::unordered_map<AstVarScope*, size_t> useIndices;
-        std::unordered_set<AstCFunc*> seen;
-        std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
-            if (!seen.insert(scanFuncp).second) return;
-            scanFuncp->foreach([&](AstNodeVarRef* refp) {
-                AstVarScope* const vscp = refp->varScopep();
-                const auto pair = useIndices.emplace(vscp, uses.size());
-                if (pair.second) uses.push_back(SubgraphCallUsage{vscp, false, false});
-                SubgraphCallUsage& use = uses[pair.first->second];
-                use.m_read |= refp->access().isReadOrRW();
-                use.m_write |= refp->access().isWriteOrRW();
-            });
-            scanFuncp->foreach([&](AstCCall* callp) {
-                AstCFunc* const calledFuncp = callp->funcp();
-                if (calledFuncp->entryPoint()) return;
-                gather(calledFuncp);
-            });
-        };
-        gather(funcp);
-
-        return m_subgraphCallUsageCache.emplace(funcp, std::move(uses)).first->second;
+        for (const auto& use : nodep->externalUses()) { addSubgraphExternalUse(nodep, use); }
     }
 
     void scanSubgraphWrapperNode(AstNode* nodep, bool& sawInstance, bool& sawLegacyCall) const {
@@ -579,13 +501,10 @@ class OrderGraphBuilder final : public VNVisitor {
     void reportSubgraphStats() const {
         if (!v3Global.opt.subgraphSchedule() || !v3Global.opt.stats()) return;
         const bool sawSubgraphOrderGraph
-            = m_subgraphStats.m_callUsageFallbackScans || m_subgraphStats.m_coarseNodes
-              || m_subgraphStats.m_nestedContractUses || m_subgraphStats.m_parentVisibleHelperCalls
-              || m_subgraphStats.m_wrapperProcedures;
+            = m_subgraphStats.m_coarseNodes || m_subgraphStats.m_nestedContractUses
+              || m_subgraphStats.m_parentVisibleHelperCalls || m_subgraphStats.m_wrapperProcedures;
         if (!sawSubgraphOrderGraph) return;
         const string prefix = "Scheduling, Subgraph order graph, ";
-        V3Stats::addStat(prefix + "call usage fallback scans",
-                         m_subgraphStats.m_callUsageFallbackScans);
         V3Stats::addStat(prefix + "coarse nodes", m_subgraphStats.m_coarseNodes);
         V3Stats::addStat(prefix + "nested contract uses", m_subgraphStats.m_nestedContractUses);
         V3Stats::addStat(prefix + "parent-visible helper calls",
