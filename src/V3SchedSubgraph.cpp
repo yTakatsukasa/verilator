@@ -119,18 +119,10 @@ bool isSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
 
 namespace {
 
-enum class SubgraphWrapperKind : uint8_t {
-    Always,
-    AlwaysObserved,
-    AlwaysPost,
-    AlwaysPre,
-    AlwaysReactive,
-    InitialAutomatic,
-    Stmt
-};
+using SubgraphWrapperKind = AstSubgraphInstance::WrapperKind;
 
 struct SubgraphWrapper final {
-    SubgraphWrapperKind m_kind = SubgraphWrapperKind::Stmt;
+    SubgraphWrapperKind m_kind = SubgraphWrapperKind::STMT;
     VAlwaysKwd m_keyword = VAlwaysKwd::ALWAYS;
 };
 
@@ -142,47 +134,20 @@ SubgraphWrapper wrapperFromLogic(AstNode* nodep) {
     SubgraphWrapper result;
     AstNodeProcedure* const origp = VN_CAST(nodep, NodeProcedure);
     if (const AstAlways* const alwaysp = VN_CAST(origp, Always)) {
-        result.m_kind = SubgraphWrapperKind::Always;
+        result.m_kind = SubgraphWrapperKind::ALWAYS;
         result.m_keyword = alwaysp->keyword();
     } else if (VN_IS(origp, AlwaysObserved)) {
-        result.m_kind = SubgraphWrapperKind::AlwaysObserved;
+        result.m_kind = SubgraphWrapperKind::ALWAYS_OBSERVED;
     } else if (VN_IS(origp, AlwaysPost)) {
-        result.m_kind = SubgraphWrapperKind::AlwaysPost;
+        result.m_kind = SubgraphWrapperKind::ALWAYS_POST;
     } else if (VN_IS(origp, AlwaysPre)) {
-        result.m_kind = SubgraphWrapperKind::AlwaysPre;
+        result.m_kind = SubgraphWrapperKind::ALWAYS_PRE;
     } else if (VN_IS(origp, AlwaysReactive)) {
-        result.m_kind = SubgraphWrapperKind::AlwaysReactive;
+        result.m_kind = SubgraphWrapperKind::ALWAYS_REACTIVE;
     } else if (VN_IS(origp, InitialAutomatic)) {
-        result.m_kind = SubgraphWrapperKind::InitialAutomatic;
+        result.m_kind = SubgraphWrapperKind::INITIAL_AUTOMATIC;
     }
     return result;
-}
-
-AstNode* makeSubgraphWrapperLogic(FileLine* flp, const SubgraphWrapper& wrapper,
-                                  AstNodeStmt* callp) {
-    if (wrapper.m_kind == SubgraphWrapperKind::Always) {
-        return new AstAlways{flp, wrapper.m_keyword, nullptr, callp};
-    }
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre) {
-        AstAlwaysPre* const procp = new AstAlwaysPre{flp};
-        procp->addStmtsp(callp);
-        return procp;
-    }
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPost) {
-        AstAlwaysPost* const procp = new AstAlwaysPost{flp};
-        procp->addStmtsp(callp);
-        return procp;
-    }
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysObserved) {
-        return new AstAlwaysObserved{flp, nullptr, callp};
-    }
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysReactive) {
-        return new AstAlwaysReactive{flp, nullptr, callp};
-    }
-    if (wrapper.m_kind == SubgraphWrapperKind::InitialAutomatic) {
-        return new AstInitialAutomatic{flp, callp};
-    }
-    return callp;
 }
 
 void disableLifePostForExternalReads(const LogicByScope& subgraphLogic, AstScope* subgraphScopep) {
@@ -436,7 +401,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotScalars = 0;
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailClones = 0;
-    uint64_t m_wrapperInstances = 0;
+    uint64_t m_instances = 0;
 
     void report(const string& tag) const {
         if (!v3Global.opt.stats()) return;
@@ -472,7 +437,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot scalars", m_snapshotScalars);
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
-        V3Stats::addStat(prefix + "wrapper instances", m_wrapperInstances);
+        V3Stats::addStat(prefix + "instances", m_instances);
     }
 
     void noteOrderCacheCloneFailName(const string& name) {
@@ -1009,7 +974,7 @@ void collectSubgraphGroups(const std::vector<LogicByScope*>& logic,
 
 SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
     if (group.m_hasNonPostLate) return group.m_lateWrapper;
-    if (group.m_hasPost) return SubgraphWrapper{SubgraphWrapperKind::AlwaysPost};
+    if (group.m_hasPost) return SubgraphWrapper{SubgraphWrapperKind::ALWAYS_POST};
     return wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
 }
 
@@ -1037,7 +1002,7 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
 }
 
 AstSubgraphInstance::Phase subgraphPhaseFor(const SubgraphWrapper& wrapper, bool isEarly) {
-    if (wrapper.m_kind == SubgraphWrapperKind::AlwaysPre || isEarly) {
+    if (wrapper.m_kind == SubgraphWrapperKind::ALWAYS_PRE || isEarly) {
         return AstSubgraphInstance::Phase::PRE;
     }
     return AstSubgraphInstance::Phase::POST;
@@ -1075,9 +1040,11 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
     AstSubgraphInstance* const subgraphp
         = new AstSubgraphInstance{group.m_flp, group.m_scopep, nullptr};
     subgraphp->phase(phase);
-    activep->addStmtsp(makeSubgraphWrapperLogic(group.m_flp, wrapper, subgraphp));
+    subgraphp->wrapperKind(wrapper.m_kind);
+    subgraphp->keyword(wrapper.m_keyword);
+    activep->addStmtsp(subgraphp);
     batches.emplace(key, subgraphp);
-    ++state.m_stats.m_wrapperInstances;
+    ++state.m_stats.m_instances;
     return subgraphp;
 }
 

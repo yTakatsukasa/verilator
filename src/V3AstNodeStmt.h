@@ -1251,6 +1251,15 @@ public:
         PRE = 1,
         POST = 2,
     };
+    enum class WrapperKind : uint8_t {
+        ALWAYS,
+        ALWAYS_OBSERVED,
+        ALWAYS_POST,
+        ALWAYS_PRE,
+        ALWAYS_REACTIVE,
+        INITIAL_AUTOMATIC,
+        STMT,
+    };
     struct BoundaryReadContract final {
         AstVarScope* m_varscp = nullptr;
         bool m_derived = false;
@@ -1266,6 +1275,8 @@ private:
     std::vector<AstVarScope*> m_boundaryWrites;
     std::vector<ExternalUseContract> m_externalUses;
     Phase m_phase = Phase::NONE;
+    VAlwaysKwd m_keyword = VAlwaysKwd::ALWAYS;
+    WrapperKind m_wrapperKind = WrapperKind::STMT;
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
     bool m_readsExternalVars = false;
@@ -1308,6 +1319,10 @@ public:
     }
     Phase phase() const { return m_phase; }
     void phase(Phase phase) { m_phase = phase; }
+    VAlwaysKwd keyword() const { return m_keyword; }
+    void keyword(VAlwaysKwd keyword) { m_keyword = keyword; }
+    WrapperKind wrapperKind() const { return m_wrapperKind; }
+    void wrapperKind(WrapperKind kind) { m_wrapperKind = kind; }
     bool hasClockedState() const { return m_hasClockedState; }
     void hasClockedState(bool flag) { m_hasClockedState = flag; }
     bool hasPostPhase() const { return m_hasPostPhase; }
