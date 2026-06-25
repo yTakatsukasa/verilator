@@ -173,17 +173,17 @@ struct SubgraphGroup final {
     LogicByScope* m_ownerp = nullptr;
 };
 
-struct WrapperActiveKey final {
+struct SubgraphActiveKey final {
     LogicByScope* m_ownerp = nullptr;
     AstSenTree* m_senTreep = nullptr;
 
-    bool operator==(const WrapperActiveKey& other) const {
+    bool operator==(const SubgraphActiveKey& other) const {
         return m_ownerp == other.m_ownerp && m_senTreep == other.m_senTreep;
     }
 };
 
-struct WrapperActiveKeyHash final {
-    size_t operator()(const WrapperActiveKey& key) const {
+struct SubgraphActiveKeyHash final {
+    size_t operator()(const SubgraphActiveKey& key) const {
         size_t hash = std::hash<const void*>{}(key.m_ownerp);
         hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                 + (hash >> 2);
@@ -191,7 +191,7 @@ struct WrapperActiveKeyHash final {
     }
 };
 
-struct WrapperActiveEntry final {
+struct SubgraphActiveEntry final {
     AstScope* m_scopep = nullptr;
     AstActive* m_activep = nullptr;
 };
@@ -331,7 +331,13 @@ struct SubgraphSchedulePlan final {
 struct SubgraphScheduledGroup final {
     const SubgraphGroup* m_groupp = nullptr;
     SubgraphSchedulePlan m_plan;
-    AstActive* m_wrapperActivep = nullptr;
+    AstActive* m_subgraphActivep = nullptr;
+};
+
+struct SubgraphLogicInputStats final {
+    uint64_t m_actives = 0;
+    uint64_t m_nodes = 0;
+    uint64_t m_subgraphInstances = 0;
 };
 
 struct SnapshotRef final {
@@ -381,6 +387,12 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifacts = 0;
     uint64_t m_contractExternalUseScans = 0;
     uint64_t m_groups = 0;
+    uint64_t m_inputActivesAfter = 0;
+    uint64_t m_inputActivesBefore = 0;
+    uint64_t m_inputNodesAfter = 0;
+    uint64_t m_inputNodesBefore = 0;
+    uint64_t m_inputSubgraphInstancesAfter = 0;
+    uint64_t m_inputSubgraphInstancesBefore = 0;
     uint64_t m_orderCacheCloneFailOther = 0;
     uint64_t m_orderCacheCloneFailState = 0;
     uint64_t m_orderCacheCloneFailShadow = 0;
@@ -415,6 +427,13 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifacts", m_artifacts);
         V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
         V3Stats::addStat(prefix + "groups", m_groups);
+        V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
+        V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
+        V3Stats::addStat(prefix + "input nodes after", m_inputNodesAfter);
+        V3Stats::addStat(prefix + "input nodes before", m_inputNodesBefore);
+        V3Stats::addStat(prefix + "input subgraph instances after", m_inputSubgraphInstancesAfter);
+        V3Stats::addStat(prefix + "input subgraph instances before",
+                         m_inputSubgraphInstancesBefore);
         V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
         V3Stats::addStat(prefix + "order cache clone fail state", m_orderCacheCloneFailState);
         V3Stats::addStat(prefix + "order cache clone fail shadow", m_orderCacheCloneFailShadow);
@@ -972,6 +991,33 @@ void collectSubgraphGroups(const std::vector<LogicByScope*>& logic,
     }
 }
 
+SubgraphLogicInputStats collectSubgraphLogicInputStats(const std::vector<LogicByScope*>& logic) {
+    SubgraphLogicInputStats stats;
+    for (const LogicByScope* const lbsp : logic) {
+        for (const auto& pair : *lbsp) {
+            AstActive* const activep = pair.second;
+            ++stats.m_actives;
+            stats.m_nodes += activep->nodeCount();
+            activep->foreach([&](AstSubgraphInstance*) { ++stats.m_subgraphInstances; });
+        }
+    }
+    return stats;
+}
+
+void setSubgraphInputStatsBefore(SubgraphLoweringStats& stats,
+                                 const SubgraphLogicInputStats& input) {
+    stats.m_inputActivesBefore = input.m_actives;
+    stats.m_inputNodesBefore = input.m_nodes;
+    stats.m_inputSubgraphInstancesBefore = input.m_subgraphInstances;
+}
+
+void setSubgraphInputStatsAfter(SubgraphLoweringStats& stats,
+                                const SubgraphLogicInputStats& input) {
+    stats.m_inputActivesAfter = input.m_actives;
+    stats.m_inputNodesAfter = input.m_nodes;
+    stats.m_inputSubgraphInstancesAfter = input.m_subgraphInstances;
+}
+
 SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
     if (group.m_hasNonPostLate) return group.m_lateWrapper;
     if (group.m_hasPost) return SubgraphWrapper{SubgraphWrapperKind::ALWAYS_POST};
@@ -1017,14 +1063,14 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     }
 }
 
-AstActive* getOrCreateWrapperActive(const SubgraphGroup& group,
-                                    std::unordered_map<WrapperActiveKey, WrapperActiveEntry,
-                                                       WrapperActiveKeyHash>& wrapperActives) {
-    const WrapperActiveKey key{group.m_ownerp, group.m_senTreep};
-    const auto it = wrapperActives.find(key);
-    if (it != wrapperActives.end()) return it->second.m_activep;
+AstActive* getOrCreateSubgraphActive(const SubgraphGroup& group,
+                                     std::unordered_map<SubgraphActiveKey, SubgraphActiveEntry,
+                                                        SubgraphActiveKeyHash>& subgraphActives) {
+    const SubgraphActiveKey key{group.m_ownerp, group.m_senTreep};
+    const auto it = subgraphActives.find(key);
+    if (it != subgraphActives.end()) return it->second.m_activep;
     AstActive* const activep = new AstActive{group.m_flp, "subgraph", group.m_senTreep};
-    wrapperActives.emplace(key, WrapperActiveEntry{group.m_scopep, activep});
+    subgraphActives.emplace(key, SubgraphActiveEntry{group.m_scopep, activep});
     return activep;
 }
 
@@ -1190,7 +1236,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
 
 void materializeSubgraphSchedulePlan(
     const SubgraphGroup& group, const SubgraphSchedulePlan& plan, SubgraphLoweringState& state,
-    AstActive* wrapperActivep,
+    AstActive* subgraphActivep,
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
     if (!plan.m_artifactp) return;
     const SubgraphScheduleInstance& instance = plan.m_instance;
@@ -1199,7 +1245,7 @@ void materializeSubgraphSchedulePlan(
         stmtsp->addNext(util::callVoidFunc(tailFuncp));
     }
     AstSubgraphInstance* const subgraphp = getOrCreateSubgraphBatch(
-        group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, wrapperActivep,
+        group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, subgraphActivep,
         batches, state);
     subgraphp->addStmtsp(stmtsp);
     populateSubgraphInstanceContract(subgraphp, instance.m_contract);
@@ -1391,11 +1437,12 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                          const std::string& tag, bool slow,
                          const V3Order::ExternalDomainsProvider& externalDomains) {
     unsigned subgraphIndex = 0;
-    std::unordered_map<WrapperActiveKey, WrapperActiveEntry, WrapperActiveKeyHash> wrapperActives;
+    std::unordered_map<SubgraphActiveKey, SubgraphActiveEntry, SubgraphActiveKeyHash>
+        subgraphActives;
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash> batches;
     std::vector<SubgraphScheduledGroup> scheduledGroups;
     for (SubgraphGroup& group : groups) {
-        AstActive* const wrapperActivep = getOrCreateWrapperActive(group, wrapperActives);
+        AstActive* const subgraphActivep = getOrCreateSubgraphActive(group, subgraphActives);
         if (!group.m_earlyLogic.empty()) {
             const SubgraphWrapper wrapper
                 = wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp());
@@ -1403,7 +1450,7 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                 netlistp, group.m_earlyLogic, wrapper, true, nullptr, group, state, trigToSen, tag,
                 slow, externalDomains, subgraphIndex);
             if (plan.m_artifactp) {
-                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
+                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, subgraphActivep});
             }
         }
         if (!group.m_lateLogic.empty()) {
@@ -1436,20 +1483,20 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                 netlistp, group.m_lateLogic, wrapper, false, tailFuncps, group, state, trigToSen,
                 tag, slow, externalDomains, subgraphIndex);
             if (plan.m_artifactp) {
-                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, wrapperActivep});
+                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, subgraphActivep});
             }
         }
     }
     for (const SubgraphScheduledGroup& scheduled : scheduledGroups) {
         materializeSubgraphSchedulePlan(*scheduled.m_groupp, scheduled.m_plan, state,
-                                        scheduled.m_wrapperActivep, batches);
+                                        scheduled.m_subgraphActivep, batches);
     }
-    for (const auto& pair : wrapperActives) {
-        AstActive* const wrapperActivep = pair.second.m_activep;
-        if (wrapperActivep->stmtsp()) {
-            pair.first.m_ownerp->emplace_back(pair.second.m_scopep, wrapperActivep);
+    for (const auto& pair : subgraphActives) {
+        AstActive* const subgraphActivep = pair.second.m_activep;
+        if (subgraphActivep->stmtsp()) {
+            pair.first.m_ownerp->emplace_back(pair.second.m_scopep, subgraphActivep);
         } else {
-            wrapperActivep->deleteTree();
+            subgraphActivep->deleteTree();
         }
     }
 }
@@ -1475,6 +1522,7 @@ public:
         , m_slow{slow}
         , m_externalDomains{externalDomains}
         , m_state{tag} {
+        setSubgraphInputStatsBefore(m_state.m_stats, collectSubgraphLogicInputStats(m_logic));
         collectSubgraphGroups(m_logic, m_groups);
         m_state.m_stats.m_groups = m_groups.size();
     }
@@ -1495,6 +1543,7 @@ public:
         for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
             emitSnapshotProcedureForBucket(bucket, m_state, m_slow);
         }
+        setSubgraphInputStatsAfter(m_state.m_stats, collectSubgraphLogicInputStats(m_logic));
         m_state.m_stats.report(m_tag);
     }
 };
