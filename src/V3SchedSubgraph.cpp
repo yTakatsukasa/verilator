@@ -336,7 +336,14 @@ struct SubgraphScheduledGroup final {
 
 struct SubgraphLogicInputStats final {
     uint64_t m_actives = 0;
+    uint64_t m_directOtherStatements = 0;
+    uint64_t m_directSnapshotProcedures = 0;
+    uint64_t m_directStatements = 0;
+    uint64_t m_directSubgraphInstances = 0;
     uint64_t m_nodes = 0;
+    uint64_t m_parentVisibleNodes = 0;
+    uint64_t m_snapshotProcedureBodyNodes = 0;
+    uint64_t m_subgraphInstanceBodyNodes = 0;
     uint64_t m_subgraphInstances = 0;
 };
 
@@ -389,8 +396,22 @@ struct SubgraphLoweringStats final {
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
     uint64_t m_inputActivesBefore = 0;
+    uint64_t m_inputDirectOtherStatementsAfter = 0;
+    uint64_t m_inputDirectOtherStatementsBefore = 0;
+    uint64_t m_inputDirectSnapshotProceduresAfter = 0;
+    uint64_t m_inputDirectSnapshotProceduresBefore = 0;
+    uint64_t m_inputDirectStatementsAfter = 0;
+    uint64_t m_inputDirectStatementsBefore = 0;
+    uint64_t m_inputDirectSubgraphInstancesAfter = 0;
+    uint64_t m_inputDirectSubgraphInstancesBefore = 0;
     uint64_t m_inputNodesAfter = 0;
     uint64_t m_inputNodesBefore = 0;
+    uint64_t m_inputParentVisibleNodesAfter = 0;
+    uint64_t m_inputParentVisibleNodesBefore = 0;
+    uint64_t m_inputSnapshotProcedureBodyNodesAfter = 0;
+    uint64_t m_inputSnapshotProcedureBodyNodesBefore = 0;
+    uint64_t m_inputSubgraphInstanceBodyNodesAfter = 0;
+    uint64_t m_inputSubgraphInstanceBodyNodesBefore = 0;
     uint64_t m_inputSubgraphInstancesAfter = 0;
     uint64_t m_inputSubgraphInstancesBefore = 0;
     uint64_t m_orderCacheCloneFailOther = 0;
@@ -429,8 +450,34 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
         V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
+        V3Stats::addStat(prefix + "input direct other statements after",
+                         m_inputDirectOtherStatementsAfter);
+        V3Stats::addStat(prefix + "input direct other statements before",
+                         m_inputDirectOtherStatementsBefore);
+        V3Stats::addStat(prefix + "input direct snapshot procedures after",
+                         m_inputDirectSnapshotProceduresAfter);
+        V3Stats::addStat(prefix + "input direct snapshot procedures before",
+                         m_inputDirectSnapshotProceduresBefore);
+        V3Stats::addStat(prefix + "input direct statements after", m_inputDirectStatementsAfter);
+        V3Stats::addStat(prefix + "input direct statements before", m_inputDirectStatementsBefore);
+        V3Stats::addStat(prefix + "input direct subgraph instances after",
+                         m_inputDirectSubgraphInstancesAfter);
+        V3Stats::addStat(prefix + "input direct subgraph instances before",
+                         m_inputDirectSubgraphInstancesBefore);
         V3Stats::addStat(prefix + "input nodes after", m_inputNodesAfter);
         V3Stats::addStat(prefix + "input nodes before", m_inputNodesBefore);
+        V3Stats::addStat(prefix + "input parent visible nodes after",
+                         m_inputParentVisibleNodesAfter);
+        V3Stats::addStat(prefix + "input parent visible nodes before",
+                         m_inputParentVisibleNodesBefore);
+        V3Stats::addStat(prefix + "input snapshot procedure body nodes after",
+                         m_inputSnapshotProcedureBodyNodesAfter);
+        V3Stats::addStat(prefix + "input snapshot procedure body nodes before",
+                         m_inputSnapshotProcedureBodyNodesBefore);
+        V3Stats::addStat(prefix + "input subgraph instance body nodes after",
+                         m_inputSubgraphInstanceBodyNodesAfter);
+        V3Stats::addStat(prefix + "input subgraph instance body nodes before",
+                         m_inputSubgraphInstanceBodyNodesBefore);
         V3Stats::addStat(prefix + "input subgraph instances after", m_inputSubgraphInstancesAfter);
         V3Stats::addStat(prefix + "input subgraph instances before",
                          m_inputSubgraphInstancesBefore);
@@ -997,7 +1044,27 @@ SubgraphLogicInputStats collectSubgraphLogicInputStats(const std::vector<LogicBy
         for (const auto& pair : *lbsp) {
             AstActive* const activep = pair.second;
             ++stats.m_actives;
-            stats.m_nodes += activep->nodeCount();
+            const uint64_t activeNodes = activep->nodeCount();
+            uint64_t hiddenBodyNodes = 0;
+            stats.m_nodes += activeNodes;
+            for (AstNode* stmtp = activep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                ++stats.m_directStatements;
+                if (AstSubgraphInstance* const subgraphp = VN_CAST(stmtp, SubgraphInstance)) {
+                    ++stats.m_directSubgraphInstances;
+                    const uint64_t bodyNodes = subgraphp->nodeCount() - 1;
+                    hiddenBodyNodes += bodyNodes;
+                    stats.m_subgraphInstanceBodyNodes += bodyNodes;
+                } else {
+                    AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure);
+                    if (procp && V3Sched::isSubgraphSnapshotProcedure(procp)) {
+                        ++stats.m_directSnapshotProcedures;
+                        stats.m_snapshotProcedureBodyNodes += procp->nodeCount() - 1;
+                    } else {
+                        ++stats.m_directOtherStatements;
+                    }
+                }
+            }
+            stats.m_parentVisibleNodes += activeNodes - hiddenBodyNodes;
             activep->foreach([&](AstSubgraphInstance*) { ++stats.m_subgraphInstances; });
         }
     }
@@ -1007,14 +1074,28 @@ SubgraphLogicInputStats collectSubgraphLogicInputStats(const std::vector<LogicBy
 void setSubgraphInputStatsBefore(SubgraphLoweringStats& stats,
                                  const SubgraphLogicInputStats& input) {
     stats.m_inputActivesBefore = input.m_actives;
+    stats.m_inputDirectOtherStatementsBefore = input.m_directOtherStatements;
+    stats.m_inputDirectSnapshotProceduresBefore = input.m_directSnapshotProcedures;
+    stats.m_inputDirectStatementsBefore = input.m_directStatements;
+    stats.m_inputDirectSubgraphInstancesBefore = input.m_directSubgraphInstances;
     stats.m_inputNodesBefore = input.m_nodes;
+    stats.m_inputParentVisibleNodesBefore = input.m_parentVisibleNodes;
+    stats.m_inputSnapshotProcedureBodyNodesBefore = input.m_snapshotProcedureBodyNodes;
+    stats.m_inputSubgraphInstanceBodyNodesBefore = input.m_subgraphInstanceBodyNodes;
     stats.m_inputSubgraphInstancesBefore = input.m_subgraphInstances;
 }
 
 void setSubgraphInputStatsAfter(SubgraphLoweringStats& stats,
                                 const SubgraphLogicInputStats& input) {
     stats.m_inputActivesAfter = input.m_actives;
+    stats.m_inputDirectOtherStatementsAfter = input.m_directOtherStatements;
+    stats.m_inputDirectSnapshotProceduresAfter = input.m_directSnapshotProcedures;
+    stats.m_inputDirectStatementsAfter = input.m_directStatements;
+    stats.m_inputDirectSubgraphInstancesAfter = input.m_directSubgraphInstances;
     stats.m_inputNodesAfter = input.m_nodes;
+    stats.m_inputParentVisibleNodesAfter = input.m_parentVisibleNodes;
+    stats.m_inputSnapshotProcedureBodyNodesAfter = input.m_snapshotProcedureBodyNodes;
+    stats.m_inputSubgraphInstanceBodyNodesAfter = input.m_subgraphInstanceBodyNodes;
     stats.m_inputSubgraphInstancesAfter = input.m_subgraphInstances;
 }
 
