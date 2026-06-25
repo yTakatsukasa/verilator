@@ -242,20 +242,17 @@ struct SubgraphOrderCacheEntry final {
 struct SubgraphOrderCacheKey final {
     std::vector<uintptr_t> m_domainShape;
     AstNodeModule* m_modp = nullptr;
-    AstSenTree* m_senTreep = nullptr;
     bool m_isEarly = false;
 
     bool operator==(const SubgraphOrderCacheKey& other) const {
-        return m_modp == other.m_modp && m_senTreep == other.m_senTreep
-               && m_isEarly == other.m_isEarly && m_domainShape == other.m_domainShape;
+        return m_modp == other.m_modp && m_isEarly == other.m_isEarly
+               && m_domainShape == other.m_domainShape;
     }
 };
 
 struct SubgraphOrderCacheKeyHash final {
     size_t operator()(const SubgraphOrderCacheKey& key) const {
         size_t hash = std::hash<const void*>{}(key.m_modp);
-        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
-                + (hash >> 2);
         hash ^= std::hash<bool>{}(key.m_isEarly) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                 + (hash >> 2);
         for (const uintptr_t value : key.m_domainShape) {
@@ -270,14 +267,12 @@ struct SubgraphScheduleArtifactKey final {
     std::vector<uintptr_t> m_domainShape;
     AstNodeModule* m_modp = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
-    AstSenTree* m_senTreep = nullptr;
     std::vector<uintptr_t> m_tailShape;
     SubgraphWrapper m_wrapper;
 
     bool operator==(const SubgraphScheduleArtifactKey& other) const {
-        return m_modp == other.m_modp && m_phase == other.m_phase && m_senTreep == other.m_senTreep
-               && m_wrapper == other.m_wrapper && m_domainShape == other.m_domainShape
-               && m_tailShape == other.m_tailShape;
+        return m_modp == other.m_modp && m_phase == other.m_phase && m_wrapper == other.m_wrapper
+               && m_domainShape == other.m_domainShape && m_tailShape == other.m_tailShape;
     }
 };
 
@@ -286,8 +281,6 @@ struct SubgraphScheduleArtifactKeyHash final {
         size_t hash = std::hash<const void*>{}(key.m_modp);
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_phase)) + 0x9e3779b97f4a7c15ULL
                 + (hash << 6) + (hash >> 2);
-        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
-                + (hash >> 2);
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_kind))
                 + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
@@ -1219,7 +1212,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
         subgraphLogic, group.m_scopep, externalDomains);
     cacheKey.m_modp = group.m_scopep->modp();
-    cacheKey.m_senTreep = group.m_senTreep;
     cacheKey.m_isEarly = isEarly;
     SubgraphLogicSig logicSig;
     if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
@@ -1228,7 +1220,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_domainShape = cacheKey.m_domainShape;
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
-    artifactKey.m_senTreep = cacheKey.m_senTreep;
     artifactKey.m_tailShape = buildTailShape(tailFuncps);
     artifactKey.m_wrapper = wrapper;
     const bool cacheableArtifact = canShare && tag != "stl";
