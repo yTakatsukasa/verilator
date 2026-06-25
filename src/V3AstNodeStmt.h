@@ -1250,6 +1250,7 @@ public:
         NONE = 0,
         PRE = 1,
         POST = 2,
+        SNAPSHOT = 3,
     };
     enum class WrapperKind : uint8_t {
         ALWAYS,

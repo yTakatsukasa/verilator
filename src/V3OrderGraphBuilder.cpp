@@ -161,11 +161,16 @@ class OrderGraphBuilder final : public VNVisitor {
         ++m_subgraphStats.m_coarseNodes;
         addSubgraphInstancePortUsage(nodep);
         const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
-        if (v3Global.opt.subgraphSchedule() && barrierKeyp && m_inClocked && !m_inPost) {
-            if (nodep->phase() == AstSubgraphInstance::Phase::PRE) {
+        if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
+            if (nodep->phase() == AstSubgraphInstance::Phase::SNAPSHOT) {
+                addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), false, true, nodep);
+                addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
+            } else if (m_inClocked && !m_inPost
+                       && nodep->phase() == AstSubgraphInstance::Phase::PRE) {
                 addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), true, false, nodep);
                 addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), false, true, nodep);
-            } else if (nodep->phase() == AstSubgraphInstance::Phase::POST) {
+            } else if (m_inClocked && !m_inPost
+                       && nodep->phase() == AstSubgraphInstance::Phase::POST) {
                 addPhaseUsage(getSubgraphPostPhaseVtxp(barrierKeyp), false, true, nodep);
                 addPhaseUsage(getSubgraphClockedPhaseVtxp(barrierKeyp), true, false, nodep);
             }

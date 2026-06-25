@@ -337,11 +337,13 @@ struct SubgraphScheduledGroup final {
 struct SubgraphLogicInputStats final {
     uint64_t m_actives = 0;
     uint64_t m_directOtherStatements = 0;
+    uint64_t m_directSnapshotInstances = 0;
     uint64_t m_directSnapshotProcedures = 0;
     uint64_t m_directStatements = 0;
     uint64_t m_directSubgraphInstances = 0;
     uint64_t m_nodes = 0;
     uint64_t m_parentVisibleNodes = 0;
+    uint64_t m_snapshotInstanceBodyNodes = 0;
     uint64_t m_snapshotProcedureBodyNodes = 0;
     uint64_t m_subgraphInstanceBodyNodes = 0;
     uint64_t m_subgraphInstances = 0;
@@ -398,6 +400,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_inputActivesBefore = 0;
     uint64_t m_inputDirectOtherStatementsAfter = 0;
     uint64_t m_inputDirectOtherStatementsBefore = 0;
+    uint64_t m_inputDirectSnapshotInstancesAfter = 0;
+    uint64_t m_inputDirectSnapshotInstancesBefore = 0;
     uint64_t m_inputDirectSnapshotProceduresAfter = 0;
     uint64_t m_inputDirectSnapshotProceduresBefore = 0;
     uint64_t m_inputDirectStatementsAfter = 0;
@@ -408,6 +412,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_inputNodesBefore = 0;
     uint64_t m_inputParentVisibleNodesAfter = 0;
     uint64_t m_inputParentVisibleNodesBefore = 0;
+    uint64_t m_inputSnapshotInstanceBodyNodesAfter = 0;
+    uint64_t m_inputSnapshotInstanceBodyNodesBefore = 0;
     uint64_t m_inputSnapshotProcedureBodyNodesAfter = 0;
     uint64_t m_inputSnapshotProcedureBodyNodesBefore = 0;
     uint64_t m_inputSubgraphInstanceBodyNodesAfter = 0;
@@ -454,6 +460,10 @@ struct SubgraphLoweringStats final {
                          m_inputDirectOtherStatementsAfter);
         V3Stats::addStat(prefix + "input direct other statements before",
                          m_inputDirectOtherStatementsBefore);
+        V3Stats::addStat(prefix + "input direct snapshot instances after",
+                         m_inputDirectSnapshotInstancesAfter);
+        V3Stats::addStat(prefix + "input direct snapshot instances before",
+                         m_inputDirectSnapshotInstancesBefore);
         V3Stats::addStat(prefix + "input direct snapshot procedures after",
                          m_inputDirectSnapshotProceduresAfter);
         V3Stats::addStat(prefix + "input direct snapshot procedures before",
@@ -470,6 +480,10 @@ struct SubgraphLoweringStats final {
                          m_inputParentVisibleNodesAfter);
         V3Stats::addStat(prefix + "input parent visible nodes before",
                          m_inputParentVisibleNodesBefore);
+        V3Stats::addStat(prefix + "input snapshot instance body nodes after",
+                         m_inputSnapshotInstanceBodyNodesAfter);
+        V3Stats::addStat(prefix + "input snapshot instance body nodes before",
+                         m_inputSnapshotInstanceBodyNodesBefore);
         V3Stats::addStat(prefix + "input snapshot procedure body nodes after",
                          m_inputSnapshotProcedureBodyNodesAfter);
         V3Stats::addStat(prefix + "input snapshot procedure body nodes before",
@@ -1054,6 +1068,10 @@ SubgraphLogicInputStats collectSubgraphLogicInputStats(const std::vector<LogicBy
                     const uint64_t bodyNodes = subgraphp->nodeCount() - 1;
                     hiddenBodyNodes += bodyNodes;
                     stats.m_subgraphInstanceBodyNodes += bodyNodes;
+                    if (subgraphp->phase() == AstSubgraphInstance::Phase::SNAPSHOT) {
+                        ++stats.m_directSnapshotInstances;
+                        stats.m_snapshotInstanceBodyNodes += bodyNodes;
+                    }
                 } else {
                     AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure);
                     if (procp && V3Sched::isSubgraphSnapshotProcedure(procp)) {
@@ -1075,11 +1093,13 @@ void setSubgraphInputStatsBefore(SubgraphLoweringStats& stats,
                                  const SubgraphLogicInputStats& input) {
     stats.m_inputActivesBefore = input.m_actives;
     stats.m_inputDirectOtherStatementsBefore = input.m_directOtherStatements;
+    stats.m_inputDirectSnapshotInstancesBefore = input.m_directSnapshotInstances;
     stats.m_inputDirectSnapshotProceduresBefore = input.m_directSnapshotProcedures;
     stats.m_inputDirectStatementsBefore = input.m_directStatements;
     stats.m_inputDirectSubgraphInstancesBefore = input.m_directSubgraphInstances;
     stats.m_inputNodesBefore = input.m_nodes;
     stats.m_inputParentVisibleNodesBefore = input.m_parentVisibleNodes;
+    stats.m_inputSnapshotInstanceBodyNodesBefore = input.m_snapshotInstanceBodyNodes;
     stats.m_inputSnapshotProcedureBodyNodesBefore = input.m_snapshotProcedureBodyNodes;
     stats.m_inputSubgraphInstanceBodyNodesBefore = input.m_subgraphInstanceBodyNodes;
     stats.m_inputSubgraphInstancesBefore = input.m_subgraphInstances;
@@ -1089,11 +1109,13 @@ void setSubgraphInputStatsAfter(SubgraphLoweringStats& stats,
                                 const SubgraphLogicInputStats& input) {
     stats.m_inputActivesAfter = input.m_actives;
     stats.m_inputDirectOtherStatementsAfter = input.m_directOtherStatements;
+    stats.m_inputDirectSnapshotInstancesAfter = input.m_directSnapshotInstances;
     stats.m_inputDirectSnapshotProceduresAfter = input.m_directSnapshotProcedures;
     stats.m_inputDirectStatementsAfter = input.m_directStatements;
     stats.m_inputDirectSubgraphInstancesAfter = input.m_directSubgraphInstances;
     stats.m_inputNodesAfter = input.m_nodes;
     stats.m_inputParentVisibleNodesAfter = input.m_parentVisibleNodes;
+    stats.m_inputSnapshotInstanceBodyNodesAfter = input.m_snapshotInstanceBodyNodes;
     stats.m_inputSnapshotProcedureBodyNodesAfter = input.m_snapshotProcedureBodyNodes;
     stats.m_inputSubgraphInstanceBodyNodesAfter = input.m_subgraphInstanceBodyNodes;
     stats.m_inputSubgraphInstancesAfter = input.m_subgraphInstances;
@@ -1351,8 +1373,11 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
     AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
     if (bucket.m_sourceVars.empty()) return;
     ++state.m_stats.m_snapshotProcedures;
-    AstAlways* const procp = new AstAlways{bucket.m_sourceVars.front()->fileline(),
-                                           VAlwaysKwd::ALWAYS, nullptr, nullptr};
+    FileLine* const flp = bucket.m_sourceVars.front()->fileline();
+    AstSubgraphInstance* const snapshotp = new AstSubgraphInstance{flp, topScopep, nullptr};
+    snapshotp->keyword(VAlwaysKwd::ALWAYS);
+    snapshotp->phase(AstSubgraphInstance::Phase::SNAPSHOT);
+    snapshotp->wrapperKind(AstSubgraphInstance::WrapperKind::ALWAYS);
     std::unordered_map<AstScope*, std::vector<AstVarScope*>> localBoundarySources;
     for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
         if (sourceVscp->scopep()->modp()->subgraphBoundary() && sourceVscp->varp()->isIO()
@@ -1397,7 +1422,7 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
                 SubgraphLoweringState::makeSnapshotExpr(snapshotRef, flp, VAccess::WRITE));
             callp->addArgsp(new AstVarRef{flp, sourceVscp, VAccess::READ});
         }
-        procp->addStmtsp(callp->makeStmt());
+        snapshotp->addStmtsp(callp->makeStmt());
     }
     for (AstVarScope* const sourceVscp : bucket.m_sourceVars) {
         if (localBoundarySources.count(sourceVscp->scopep())
@@ -1407,14 +1432,13 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
         }
         const SnapshotRef& snapshotRef
             = state.getSnapshotRef(bucket.m_ownerp, bucket.m_senTreep, sourceVscp);
-        procp->addStmtsp(
+        snapshotp->addStmtsp(
             new AstAssign{sourceVscp->fileline(),
                           SubgraphLoweringState::makeSnapshotExpr(
                               snapshotRef, sourceVscp->fileline(), VAccess::WRITE),
                           new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}});
     }
-    V3Sched::rememberSubgraphSnapshotProcedure(procp);
-    bucket.m_ownerp->add(topScopep, bucket.m_senTreep, procp);
+    bucket.m_ownerp->add(topScopep, bucket.m_senTreep, snapshotp);
 }
 
 void collectRegionWrittenVars(const std::vector<LogicByScope*>& logic,
