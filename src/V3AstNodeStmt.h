@@ -1280,7 +1280,6 @@ private:
     WrapperKind m_wrapperKind = WrapperKind::STMT;
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
-    bool m_readsExternalVars = false;
 
 public:
     AstSubgraphInstance(FileLine* fl, AstScope* scopep, AstNode* stmtsp)
@@ -1328,8 +1327,6 @@ public:
     void hasClockedState(bool flag) { m_hasClockedState = flag; }
     bool hasPostPhase() const { return m_hasPostPhase; }
     void hasPostPhase(bool flag) { m_hasPostPhase = flag; }
-    bool readsExternalVars() const { return m_readsExternalVars; }
-    void readsExternalVars(bool flag) { m_readsExternalVars = flag; }
     bool maybePointedTo() const override VL_MT_SAFE { return true; }
     int instrCount() const override { return 1; }
     bool sameNode(const AstNode* samep) const override {

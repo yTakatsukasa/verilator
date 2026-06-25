@@ -463,8 +463,9 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphInstancePortUsage(AstSubgraphInstance* nodep) {
+        if (nodep->phase() == AstSubgraphInstance::Phase::SNAPSHOT) return;
         addSubgraphContractUsage(nodep);
-        if (!nodep->readsExternalVars()) return;
+        if (nodep->externalUses().empty()) return;
         for (const auto& use : nodep->externalUses()) { addSubgraphExternalUse(nodep, use); }
     }
 

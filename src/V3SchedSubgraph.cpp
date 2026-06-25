@@ -31,7 +31,6 @@ struct SubgraphInstanceContract final {
     std::vector<AstSubgraphInstance::ExternalUseContract> m_externalUses;
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
-    bool m_readsExternalVars = false;
 
     void addExternalUse(AstVarScope* vscp, bool read, bool write) {
         for (AstSubgraphInstance::ExternalUseContract& use : m_externalUses) {
@@ -92,7 +91,6 @@ const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep)
     SubgraphInstanceContract contract;
     contract.m_hasClockedState = summaryp->m_parentStub.m_hasClockedState;
     contract.m_hasPostPhase = summaryp->m_parentStub.m_hasPostPhase;
-    contract.m_readsExternalVars = summaryp->m_parentStub.m_readsExternalVars;
     contract.m_boundaryReads.reserve(summaryp->m_parentStub.m_boundaryReads.size());
     contract.m_boundaryWrites.reserve(summaryp->m_parentStub.m_boundaryWrites.size());
     for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryReads) {
@@ -1138,7 +1136,6 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
                                       const SubgraphInstanceContract& contract) {
     subgraphp->hasClockedState(contract.m_hasClockedState);
     subgraphp->hasPostPhase(contract.m_hasPostPhase);
-    subgraphp->readsExternalVars(contract.m_readsExternalVars);
     for (const auto& read : contract.m_boundaryReads) {
         subgraphp->addBoundaryRead(read.m_varscp, read.m_derived);
     }
