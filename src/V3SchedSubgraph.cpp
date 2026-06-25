@@ -428,11 +428,26 @@ struct SubgraphLoweringStats final {
     uint64_t m_tailClones = 0;
     uint64_t m_instances = 0;
 
+    static uint64_t ratioPermille(uint64_t numerator, uint64_t denominator) {
+        if (!denominator) return 0;
+        return numerator * 1000 / denominator;
+    }
+
     void report(const string& tag) const {
         if (!v3Global.opt.stats()) return;
         const string prefix = "Scheduling, Subgraph " + tag + ", ";
+        const uint64_t artifactLookups = m_artifactMisses + m_artifactReuses;
+        const uint64_t inputParentVisibleNodesReduced
+            = m_inputParentVisibleNodesBefore > m_inputParentVisibleNodesAfter
+                  ? m_inputParentVisibleNodesBefore - m_inputParentVisibleNodesAfter
+                  : 0;
+        const uint64_t inputHiddenBodyNodesAfter
+            = m_inputSubgraphInstanceBodyNodesAfter + m_inputSnapshotInstanceBodyNodesAfter;
+        const uint64_t orderCacheLookups = m_orderCacheHits + m_orderCacheMisses;
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
+        V3Stats::addStat(prefix + "artifact reuse permille",
+                         ratioPermille(m_artifactReuses, artifactLookups));
         V3Stats::addStat(prefix + "artifact reuse clone fails", m_artifactReuseCloneFails);
         V3Stats::addStat(prefix + "artifact tail clone fails", m_artifactTailCloneFails);
         V3Stats::addStat(prefix + "artifact tail reuse candidates", m_artifactTailReuseCandidates);
@@ -462,10 +477,16 @@ struct SubgraphLoweringStats final {
                          m_inputDirectSubgraphInstancesBefore);
         V3Stats::addStat(prefix + "input nodes after", m_inputNodesAfter);
         V3Stats::addStat(prefix + "input nodes before", m_inputNodesBefore);
+        V3Stats::addStat(prefix + "input hidden body nodes after", inputHiddenBodyNodesAfter);
         V3Stats::addStat(prefix + "input parent visible nodes after",
                          m_inputParentVisibleNodesAfter);
         V3Stats::addStat(prefix + "input parent visible nodes before",
                          m_inputParentVisibleNodesBefore);
+        V3Stats::addStat(prefix + "input parent visible nodes reduced",
+                         inputParentVisibleNodesReduced);
+        V3Stats::addStat(
+            prefix + "input parent visible reduction permille",
+            ratioPermille(inputParentVisibleNodesReduced, m_inputParentVisibleNodesBefore));
         V3Stats::addStat(prefix + "input snapshot instance body nodes after",
                          m_inputSnapshotInstanceBodyNodesAfter);
         V3Stats::addStat(prefix + "input snapshot instance body nodes before",
@@ -491,6 +512,8 @@ struct SubgraphLoweringStats final {
         }
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
+        V3Stats::addStat(prefix + "order cache hit permille",
+                         ratioPermille(m_orderCacheHits, orderCacheLookups));
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
         V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
