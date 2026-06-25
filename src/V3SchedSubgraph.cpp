@@ -267,12 +267,11 @@ struct SubgraphScheduleArtifactKey final {
     std::vector<uintptr_t> m_domainShape;
     AstNodeModule* m_modp = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
-    std::vector<uintptr_t> m_tailShape;
     SubgraphWrapper m_wrapper;
 
     bool operator==(const SubgraphScheduleArtifactKey& other) const {
         return m_modp == other.m_modp && m_phase == other.m_phase && m_wrapper == other.m_wrapper
-               && m_domainShape == other.m_domainShape && m_tailShape == other.m_tailShape;
+               && m_domainShape == other.m_domainShape;
     }
 };
 
@@ -286,10 +285,6 @@ struct SubgraphScheduleArtifactKeyHash final {
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
                 + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         for (const uintptr_t value : key.m_domainShape) {
-            hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
-                    + (hash >> 2);
-        }
-        for (const uintptr_t value : key.m_tailShape) {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
         }
@@ -1187,18 +1182,6 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
     return subgraphp;
 }
 
-std::vector<uintptr_t> buildTailShape(const std::vector<AstCFunc*>* tailFuncps) {
-    std::vector<uintptr_t> result;
-    if (!tailFuncps) return result;
-    result.reserve(1 + tailFuncps->size() * 2);
-    result.push_back(tailFuncps->size());
-    for (AstCFunc* const tailFuncp : *tailFuncps) {
-        result.push_back(reinterpret_cast<uintptr_t>(tailFuncp));
-        result.push_back(reinterpret_cast<uintptr_t>(tailFuncp->scopep()));
-    }
-    return result;
-}
-
 SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
     bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
@@ -1220,7 +1203,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_domainShape = cacheKey.m_domainShape;
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
-    artifactKey.m_tailShape = buildTailShape(tailFuncps);
     artifactKey.m_wrapper = wrapper;
     const bool cacheableArtifact = canShare && tag != "stl";
     if (cacheableArtifact) {
