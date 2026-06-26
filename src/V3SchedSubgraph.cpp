@@ -904,27 +904,31 @@ public:
             ++m_stats.m_artifactReuseMissNoEntry;
             return nullptr;
         }
-        SubgraphScheduleArtifact* const artifactp = it->second;
-        if (!artifactp->m_cloneable) {
-            switch (artifactp->m_uncloneableReason) {
-            case SubgraphArtifactUncloneableReason::TRIGGERED:
-                ++m_stats.m_artifactReuseSkipTriggered;
-                break;
-            case SubgraphArtifactUncloneableReason::CLONE_FAIL:
-                ++m_stats.m_artifactReuseSkipCloneFail;
-                break;
-            case SubgraphArtifactUncloneableReason::NONE:
-                ++m_stats.m_artifactReuseSkipOther;
-                break;
+        bool sawCloneFail = false;
+        bool sawLogicMismatch = false;
+        bool sawOther = false;
+        bool sawTriggered = false;
+        for (SubgraphScheduleArtifact* const artifactp : it->second) {
+            if (!artifactp->m_cloneable) {
+                switch (artifactp->m_uncloneableReason) {
+                case SubgraphArtifactUncloneableReason::TRIGGERED: sawTriggered = true; break;
+                case SubgraphArtifactUncloneableReason::CLONE_FAIL: sawCloneFail = true; break;
+                case SubgraphArtifactUncloneableReason::NONE: sawOther = true; break;
+                }
+                continue;
             }
-            return nullptr;
+            templateVarMap.clear();
+            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
+                sawLogicMismatch = true;
+                continue;
+            }
+            return artifactp;
         }
-        templateVarMap.clear();
-        if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
-            ++m_stats.m_artifactReuseMissLogicMismatch;
-            return nullptr;
-        }
-        return artifactp;
+        if (sawLogicMismatch) ++m_stats.m_artifactReuseMissLogicMismatch;
+        if (sawTriggered) ++m_stats.m_artifactReuseSkipTriggered;
+        if (sawCloneFail) ++m_stats.m_artifactReuseSkipCloneFail;
+        if (sawOther) ++m_stats.m_artifactReuseSkipOther;
+        return nullptr;
     }
 
     SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key,
@@ -941,7 +945,7 @@ public:
             artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::TRIGGERED;
         SubgraphScheduleArtifact* const resultp = artifactp.get();
         m_subgraphArtifacts.push_back(std::move(artifactp));
-        if (cacheable) m_subgraphArtifactCache.emplace(key, resultp);
+        if (cacheable) m_subgraphArtifactCache[key].push_back(resultp);
         ++m_stats.m_artifactMisses;
         ++m_stats.m_artifacts;
         return resultp;
@@ -1069,7 +1073,7 @@ public:
     }
 
     bool m_snapshotCrossBoundaryReads = false;
-    std::unordered_map<SubgraphScheduleArtifactKey, SubgraphScheduleArtifact*,
+    std::unordered_map<SubgraphScheduleArtifactKey, std::vector<SubgraphScheduleArtifact*>,
                        SubgraphScheduleArtifactKeyHash>
         m_subgraphArtifactCache;
     std::vector<std::unique_ptr<SubgraphScheduleArtifact>> m_subgraphArtifacts;
