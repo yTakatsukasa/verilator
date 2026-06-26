@@ -305,12 +305,20 @@ struct SubgraphScheduleArtifactKeyHash final {
     }
 };
 
+enum class SubgraphArtifactUncloneableReason : uint8_t {
+    NONE,
+    TRIGGERED,
+    CLONE_FAIL,
+};
+
 struct SubgraphScheduleArtifact final {
     AstCFunc* m_callFuncp = nullptr;
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
     AstScope* m_scopep = nullptr;
     bool m_cloneable = true;
+    SubgraphArtifactUncloneableReason m_uncloneableReason
+        = SubgraphArtifactUncloneableReason::NONE;
 };
 
 struct SubgraphScheduleInstance final {
@@ -405,6 +413,12 @@ public:
 
 struct SubgraphLoweringStats final {
     uint64_t m_artifactMisses = 0;
+    uint64_t m_artifactReuseLookups = 0;
+    uint64_t m_artifactReuseMissLogicMismatch = 0;
+    uint64_t m_artifactReuseMissNoEntry = 0;
+    uint64_t m_artifactReuseSkipCloneFail = 0;
+    uint64_t m_artifactReuseSkipOther = 0;
+    uint64_t m_artifactReuseSkipTriggered = 0;
     uint64_t m_artifactReuses = 0;
     uint64_t m_artifactReuseCloneFails = 0;
     uint64_t m_artifactTailCloneFails = 0;
@@ -476,6 +490,13 @@ struct SubgraphLoweringStats final {
             = m_inputSubgraphInstanceBodyNodesAfter + m_inputSnapshotInstanceBodyNodesAfter;
         const uint64_t orderCacheLookups = m_orderCacheHits + m_orderCacheMisses;
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
+        V3Stats::addStat(prefix + "artifact reuse lookups", m_artifactReuseLookups);
+        V3Stats::addStat(prefix + "artifact reuse miss logic mismatch",
+                         m_artifactReuseMissLogicMismatch);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry", m_artifactReuseMissNoEntry);
+        V3Stats::addStat(prefix + "artifact reuse skip clone fail", m_artifactReuseSkipCloneFail);
+        V3Stats::addStat(prefix + "artifact reuse skip other", m_artifactReuseSkipOther);
+        V3Stats::addStat(prefix + "artifact reuse skip triggered", m_artifactReuseSkipTriggered);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
         V3Stats::addStat(prefix + "artifact reuse permille",
                          ratioPermille(m_artifactReuses, artifactLookups));
@@ -877,12 +898,30 @@ public:
     SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, const LogicByScope& currentLogic,
         std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
+        ++m_stats.m_artifactReuseLookups;
         const auto it = m_subgraphArtifactCache.find(key);
-        if (it == m_subgraphArtifactCache.end()) return nullptr;
+        if (it == m_subgraphArtifactCache.end()) {
+            ++m_stats.m_artifactReuseMissNoEntry;
+            return nullptr;
+        }
         SubgraphScheduleArtifact* const artifactp = it->second;
-        if (!artifactp->m_cloneable) return nullptr;
+        if (!artifactp->m_cloneable) {
+            switch (artifactp->m_uncloneableReason) {
+            case SubgraphArtifactUncloneableReason::TRIGGERED:
+                ++m_stats.m_artifactReuseSkipTriggered;
+                break;
+            case SubgraphArtifactUncloneableReason::CLONE_FAIL:
+                ++m_stats.m_artifactReuseSkipCloneFail;
+                break;
+            case SubgraphArtifactUncloneableReason::NONE:
+                ++m_stats.m_artifactReuseSkipOther;
+                break;
+            }
+            return nullptr;
+        }
         templateVarMap.clear();
         if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
+            ++m_stats.m_artifactReuseMissLogicMismatch;
             return nullptr;
         }
         return artifactp;
@@ -898,6 +937,8 @@ public:
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
         artifactp->m_cloneable = cloneable;
+        if (!cloneable)
+            artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::TRIGGERED;
         SubgraphScheduleArtifact* const resultp = artifactp.get();
         m_subgraphArtifacts.push_back(std::move(artifactp));
         if (cacheable) m_subgraphArtifactCache.emplace(key, resultp);
@@ -1295,6 +1336,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 return plan;
             }
             artifactp->m_cloneable = false;
+            artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::CLONE_FAIL;
             ++state.m_stats.m_artifactReuseCloneFails;
             if (tailFuncps) ++state.m_stats.m_artifactTailCloneFails;
         }
