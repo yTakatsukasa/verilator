@@ -897,6 +897,7 @@ public:
 
     SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, const LogicByScope& currentLogic,
+        AstScope* currentScopep,
         std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
         ++m_stats.m_artifactReuseLookups;
         const auto it = m_subgraphArtifactCache.find(key);
@@ -909,7 +910,7 @@ public:
         bool sawOther = false;
         bool sawTriggered = false;
         for (SubgraphScheduleArtifact* const artifactp : it->second) {
-            if (!artifactp->m_cloneable) {
+            if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep) {
                 switch (artifactp->m_uncloneableReason) {
                 case SubgraphArtifactUncloneableReason::TRIGGERED: sawTriggered = true; break;
                 case SubgraphArtifactUncloneableReason::CLONE_FAIL: sawCloneFail = true; break;
@@ -1310,7 +1311,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
         SubgraphScheduleArtifact* const artifactp = state.findReusableSubgraphScheduleArtifact(
-            artifactKey, subgraphLogic, templateVarMap);
+            artifactKey, subgraphLogic, group.m_scopep, templateVarMap);
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
             if (artifactp->m_scopep == group.m_scopep) {
