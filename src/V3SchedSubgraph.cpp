@@ -362,6 +362,24 @@ struct SnapshotBucket final {
     std::unordered_map<AstVarScope*, SnapshotRef> m_snapshotRefs;
 };
 
+struct SnapshotBucketKey final {
+    LogicByScope* m_ownerp = nullptr;
+    AstSenTree* m_senTreep = nullptr;
+
+    bool operator==(const SnapshotBucketKey& other) const {
+        return m_ownerp == other.m_ownerp && m_senTreep == other.m_senTreep;
+    }
+};
+
+struct SnapshotBucketKeyHash final {
+    size_t operator()(const SnapshotBucketKey& key) const {
+        size_t hash = std::hash<const void*>{}(key.m_ownerp);
+        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        return hash;
+    }
+};
+
 class SnapshotNameAllocator final {
     std::unordered_map<AstScope*, std::unordered_set<std::string>> m_usedNames;
 
@@ -889,13 +907,14 @@ public:
     }
 
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
-        for (SnapshotBucket& bucket : m_snapshotBuckets) {
-            if (bucket.m_ownerp == ownerp && bucket.m_senTreep == senTreep) return bucket;
-        }
+        const SnapshotBucketKey key{ownerp, senTreep};
+        const auto it = m_snapshotBucketIndex.find(key);
+        if (it != m_snapshotBucketIndex.end()) return m_snapshotBuckets[it->second];
         m_snapshotBuckets.emplace_back();
         SnapshotBucket& bucket = m_snapshotBuckets.back();
         bucket.m_ownerp = ownerp;
         bucket.m_senTreep = senTreep;
+        m_snapshotBucketIndex.emplace(key, m_snapshotBuckets.size() - 1);
         return bucket;
     }
 
@@ -1015,6 +1034,7 @@ public:
     std::vector<std::unique_ptr<SubgraphScheduleArtifact>> m_subgraphArtifacts;
     std::unordered_map<SubgraphOrderCacheKey, SubgraphOrderCacheEntry, SubgraphOrderCacheKeyHash>
         m_subgraphOrderCache;
+    std::unordered_map<SnapshotBucketKey, size_t, SnapshotBucketKeyHash> m_snapshotBucketIndex;
     std::vector<SnapshotBucket> m_snapshotBuckets;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
@@ -1373,6 +1393,20 @@ AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const s
     return vscp;
 }
 
+bool lessSnapshotSource(AstVarScope* lhsp, AstVarScope* rhsp) {
+    const string lhsScope = lhsp->scopep()->name();
+    const string rhsScope = rhsp->scopep()->name();
+    if (lhsScope != rhsScope) return lhsScope < rhsScope;
+    const string lhsName = lhsp->varp()->name();
+    const string rhsName = rhsp->varp()->name();
+    if (lhsName != rhsName) return lhsName < rhsName;
+    return lhsp < rhsp;
+}
+
+void canonicalizeSnapshotBucketSources(SnapshotBucket& bucket) {
+    std::sort(bucket.m_sourceVars.begin(), bucket.m_sourceVars.end(), lessSnapshotSource);
+}
+
 void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweringState& state,
                                     bool slow) {
     static unsigned s_snapshotHelperIndex = 0;
@@ -1391,9 +1425,13 @@ void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweri
             localBoundarySources[sourceVscp->scopep()].push_back(sourceVscp);
         }
     }
-    for (const auto& pair : localBoundarySources) {
-        AstScope* const boundaryScopep = pair.first;
-        const std::vector<AstVarScope*>& sourceVscps = pair.second;
+    std::vector<AstScope*> localBoundaryScopes;
+    localBoundaryScopes.reserve(localBoundarySources.size());
+    for (const auto& pair : localBoundarySources) localBoundaryScopes.push_back(pair.first);
+    std::sort(localBoundaryScopes.begin(), localBoundaryScopes.end(),
+              [](AstScope* lhsp, AstScope* rhsp) { return lhsp->name() < rhsp->name(); });
+    for (AstScope* const boundaryScopep : localBoundaryScopes) {
+        const std::vector<AstVarScope*>& sourceVscps = localBoundarySources[boundaryScopep];
         FileLine* const flp = sourceVscps.front()->fileline();
         std::string helperCName = "__VsubgraphSnapshotHelper";
         for (AstVarScope* const sourceVscp : sourceVscps) {
@@ -1483,6 +1521,7 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
     }
     SnapshotNameAllocator snapshotNames;
     for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
+        canonicalizeSnapshotBucketSources(bucket);
         struct SnapshotDTypeGroup final {
             AstScope* m_scopep = nullptr;
             AstNodeDType* m_dtypep = nullptr;
