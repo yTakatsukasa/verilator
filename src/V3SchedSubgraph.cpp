@@ -32,6 +32,20 @@ struct SubgraphInstanceContract final {
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
 
+    void addBoundaryRead(AstVarScope* vscp, bool derived) {
+        for (AstSubgraphInstance::BoundaryReadContract& read : m_boundaryReads) {
+            if (read.m_varscp != vscp) continue;
+            read.m_derived |= derived;
+            return;
+        }
+        m_boundaryReads.push_back({vscp, derived});
+    }
+    void addBoundaryWrite(AstVarScope* vscp) {
+        for (AstVarScope* const scanp : m_boundaryWrites) {
+            if (scanp == vscp) return;
+        }
+        m_boundaryWrites.push_back(vscp);
+    }
     void addExternalUse(AstVarScope* vscp, bool read, bool write) {
         for (AstSubgraphInstance::ExternalUseContract& use : m_externalUses) {
             if (use.m_varscp != vscp) continue;
@@ -94,11 +108,10 @@ const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep)
     contract.m_boundaryReads.reserve(summaryp->m_parentStub.m_boundaryReads.size());
     contract.m_boundaryWrites.reserve(summaryp->m_parentStub.m_boundaryWrites.size());
     for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryReads) {
-        contract.m_boundaryReads.push_back(
-            {vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp)});
+        contract.addBoundaryRead(vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp));
     }
     for (AstVarScope* const vscp : summaryp->m_parentStub.m_boundaryWrites) {
-        contract.m_boundaryWrites.push_back(vscp);
+        contract.addBoundaryWrite(vscp);
     }
     return &scopeContracts.emplace(scopep, std::move(contract)).first->second;
 }
