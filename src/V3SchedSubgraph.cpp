@@ -389,6 +389,34 @@ struct SnapshotBucketKeyHash final {
     }
 };
 
+struct TailCloneKey final {
+    AstScope* m_boundaryScopep = nullptr;
+    LogicByScope* m_ownerp = nullptr;
+    AstSenTree* m_senTreep = nullptr;
+    bool m_slow = false;
+    AstCFunc* m_tailFuncp = nullptr;
+
+    bool operator==(const TailCloneKey& other) const {
+        return m_boundaryScopep == other.m_boundaryScopep && m_ownerp == other.m_ownerp
+               && m_senTreep == other.m_senTreep && m_slow == other.m_slow
+               && m_tailFuncp == other.m_tailFuncp;
+    }
+};
+
+struct TailCloneKeyHash final {
+    size_t operator()(const TailCloneKey& key) const {
+        size_t hash = std::hash<const void*>{}(key.m_boundaryScopep);
+        hash ^= std::hash<const void*>{}(key.m_ownerp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        hash ^= std::hash<bool>{}(key.m_slow) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<const void*>{}(key.m_tailFuncp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
+        return hash;
+    }
+};
+
 class SnapshotNameAllocator final {
     std::unordered_map<AstScope*, std::unordered_set<std::string>> m_usedNames;
 
@@ -472,6 +500,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotProcedures = 0;
     uint64_t m_snapshotScalars = 0;
     uint64_t m_snapshotSources = 0;
+    uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
     uint64_t m_instances = 0;
 
@@ -581,6 +610,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot procedures", m_snapshotProcedures);
         V3Stats::addStat(prefix + "snapshot scalars", m_snapshotScalars);
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
+        V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
         V3Stats::addStat(prefix + "instances", m_instances);
     }
@@ -1047,6 +1077,13 @@ public:
 
     AstCFunc* cloneTailFuncForNba(AstCFunc* tailFuncp, AstScope* boundaryScopep,
                                   LogicByScope* ownerp, AstSenTree* senTreep, bool slow) {
+        const TailCloneKey key{boundaryScopep, ownerp, senTreep, slow, tailFuncp};
+        const auto it = m_tailCloneCache.find(key);
+        if (it != m_tailCloneCache.end()) {
+            ++m_stats.m_tailCloneReuses;
+            return it->second;
+        }
+
         static unsigned s_tailCloneIndex = 0;
         const bool shareSubgraphHelper
             = boundaryScopep->modp()->subgraphBoundary() && !tailFuncp->cname().empty();
@@ -1070,6 +1107,7 @@ public:
             clonep->addStmtsp(bodyp);
         }
         ++m_stats.m_tailClones;
+        m_tailCloneCache.emplace(key, clonep);
         return clonep;
     }
 
@@ -1091,6 +1129,7 @@ public:
         m_subgraphOrderCache;
     std::unordered_map<SnapshotBucketKey, size_t, SnapshotBucketKeyHash> m_snapshotBucketIndex;
     std::vector<SnapshotBucket> m_snapshotBuckets;
+    std::unordered_map<TailCloneKey, AstCFunc*, TailCloneKeyHash> m_tailCloneCache;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
     SubgraphLoweringStats m_stats;
