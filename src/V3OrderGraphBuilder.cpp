@@ -85,6 +85,18 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_coarseNodes = 0;
         uint64_t m_nestedContractUses = 0;
     };
+    enum class SubgraphContractUseMode : uint8_t {
+        COARSE,
+        FORCE_NOT_POST,
+        FORCE_POST,
+        NORMAL,
+    };
+    struct SubgraphContractUse final {
+        AstVarScope* m_vscp = nullptr;
+        SubgraphContractUseMode m_mode = SubgraphContractUseMode::NORMAL;
+        bool m_read = false;
+        bool m_write = false;
+    };
 
     // NODE STATE
     //  AstVarScope::user1    -> OrderUser instance for variable (via m_orderUser)
@@ -406,30 +418,62 @@ class OrderGraphBuilder final : public VNVisitor {
         if (isRead) m_graphp->addHardEdge(phaseVtxp, m_logicVxp, WEIGHT_MEDIUM);
     }
 
-    void addSubgraphContractUsage(AstSubgraphInstance* nodep) {
+    void addSubgraphContractUse(std::vector<SubgraphContractUse>& uses, AstVarScope* vscp,
+                                SubgraphContractUseMode mode, bool read, bool write) {
+        if (!vscp || (!read && !write)) return;
+        for (SubgraphContractUse& use : uses) {
+            if (use.m_vscp != vscp || use.m_mode != mode) continue;
+            use.m_read |= read;
+            use.m_write |= write;
+            return;
+        }
+        uses.push_back(SubgraphContractUse{vscp, mode, read, write});
+    }
+
+    void emitSubgraphContractUse(const SubgraphContractUse& use, AstSubgraphInstance* nodep) {
+        switch (use.m_mode) {
+        case SubgraphContractUseMode::COARSE:
+            addCoarseVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
+            return;
+        case SubgraphContractUseMode::FORCE_NOT_POST:
+            addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep, false, true);
+            return;
+        case SubgraphContractUseMode::FORCE_POST:
+            addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep, true);
+            return;
+        case SubgraphContractUseMode::NORMAL:
+            addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
+            return;
+        }
+    }
+
+    void collectSubgraphContractUsage(AstSubgraphInstance* nodep,
+                                      std::vector<SubgraphContractUse>& uses) {
         const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
         if (!hideClockedBoundaryContract) {
             for (const auto& read : nodep->boundaryReads()) {
                 AstVarScope* const vscp = read.m_varscp;
-                if (!vscp) continue;
                 if (read.m_derived) {
-                    addCoarseVarUsage(vscp, true, false, nodep);
+                    addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, true,
+                                           false);
                 } else {
-                    addVarUsage(vscp, true, false, nodep, false, true);
+                    addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::FORCE_NOT_POST,
+                                           true, false);
                 }
             }
         }
         if (publishBoundaryWrites) {
             for (AstVarScope* const vscp : nodep->boundaryWrites()) {
-                if (!vscp) continue;
-                addVarUsage(vscp, false, true, nodep, true);
+                addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::FORCE_POST, false,
+                                       true);
             }
         }
     }
 
-    void addSubgraphExternalUse(AstSubgraphInstance* subgraphp,
-                                const AstSubgraphInstance::ExternalUseContract& use) {
+    void collectSubgraphExternalUse(AstSubgraphInstance* subgraphp,
+                                    const AstSubgraphInstance::ExternalUseContract& use,
+                                    std::vector<SubgraphContractUse>& uses) {
         AstScope* const scopep = subgraphp->scopep();
         AstVarScope* const vscp = use.m_varscp;
         if (!vscp) return;
@@ -449,10 +493,14 @@ class OrderGraphBuilder final : public VNVisitor {
             const bool coarseRead = use.m_read;
             const bool coarseWrite = publishBoundaryWrites && use.m_write;
             if (coarseRead || coarseWrite) {
-                addCoarseVarUsage(vscp, coarseRead, coarseWrite, subgraphp);
+                addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, coarseRead,
+                                       coarseWrite);
             }
         } else {
-            addVarUsage(vscp, use.m_read, use.m_write, subgraphp, false, use.m_read);
+            addSubgraphContractUse(uses, vscp,
+                                   use.m_read ? SubgraphContractUseMode::FORCE_NOT_POST
+                                              : SubgraphContractUseMode::NORMAL,
+                                   use.m_read, use.m_write);
         }
     }
 
@@ -464,9 +512,12 @@ class OrderGraphBuilder final : public VNVisitor {
 
     void addSubgraphInstancePortUsage(AstSubgraphInstance* nodep) {
         if (nodep->phase() == AstSubgraphInstance::Phase::SNAPSHOT) return;
-        addSubgraphContractUsage(nodep);
-        if (nodep->externalUses().empty()) return;
-        for (const auto& use : nodep->externalUses()) { addSubgraphExternalUse(nodep, use); }
+        std::vector<SubgraphContractUse> uses;
+        collectSubgraphContractUsage(nodep, uses);
+        for (const auto& use : nodep->externalUses()) {
+            collectSubgraphExternalUse(nodep, use, uses);
+        }
+        for (const SubgraphContractUse& use : uses) emitSubgraphContractUse(use, nodep);
     }
 
     void reportSubgraphStats() const {
