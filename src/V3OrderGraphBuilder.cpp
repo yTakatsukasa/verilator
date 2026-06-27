@@ -83,6 +83,12 @@ class OrderGraphBuilder final : public VNVisitor {
     using VarVertexType = OrderUser::VarVertexType;
     struct SubgraphStats final {
         uint64_t m_coarseNodes = 0;
+        uint64_t m_contractUsesCanonical = 0;
+        uint64_t m_contractUsesCoarse = 0;
+        uint64_t m_contractUsesForceNotPost = 0;
+        uint64_t m_contractUsesForcePost = 0;
+        uint64_t m_contractUsesNormal = 0;
+        uint64_t m_contractUsesRaw = 0;
         uint64_t m_nestedContractUses = 0;
     };
     enum class SubgraphContractUseMode : uint8_t {
@@ -421,6 +427,7 @@ class OrderGraphBuilder final : public VNVisitor {
     void addSubgraphContractUse(std::vector<SubgraphContractUse>& uses, AstVarScope* vscp,
                                 SubgraphContractUseMode mode, bool read, bool write) {
         if (!vscp || (!read && !write)) return;
+        ++m_subgraphStats.m_contractUsesRaw;
         for (SubgraphContractUse& use : uses) {
             if (use.m_vscp != vscp || use.m_mode != mode) continue;
             use.m_read |= read;
@@ -431,17 +438,22 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void emitSubgraphContractUse(const SubgraphContractUse& use, AstSubgraphInstance* nodep) {
+        ++m_subgraphStats.m_contractUsesCanonical;
         switch (use.m_mode) {
         case SubgraphContractUseMode::COARSE:
+            ++m_subgraphStats.m_contractUsesCoarse;
             addCoarseVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
             return;
         case SubgraphContractUseMode::FORCE_NOT_POST:
+            ++m_subgraphStats.m_contractUsesForceNotPost;
             addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep, false, true);
             return;
         case SubgraphContractUseMode::FORCE_POST:
+            ++m_subgraphStats.m_contractUsesForcePost;
             addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep, true);
             return;
         case SubgraphContractUseMode::NORMAL:
+            ++m_subgraphStats.m_contractUsesNormal;
             addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
             return;
         }
@@ -529,6 +541,15 @@ class OrderGraphBuilder final : public VNVisitor {
         if (!sawSubgraphOrderGraph) return;
         const string prefix = "Scheduling, Subgraph order graph, ";
         V3Stats::addStat(prefix + "coarse nodes", m_subgraphStats.m_coarseNodes);
+        V3Stats::addStat(prefix + "contract uses canonical",
+                         m_subgraphStats.m_contractUsesCanonical);
+        V3Stats::addStat(prefix + "contract uses coarse", m_subgraphStats.m_contractUsesCoarse);
+        V3Stats::addStat(prefix + "contract uses force not post",
+                         m_subgraphStats.m_contractUsesForceNotPost);
+        V3Stats::addStat(prefix + "contract uses force post",
+                         m_subgraphStats.m_contractUsesForcePost);
+        V3Stats::addStat(prefix + "contract uses normal", m_subgraphStats.m_contractUsesNormal);
+        V3Stats::addStat(prefix + "contract uses raw", m_subgraphStats.m_contractUsesRaw);
         V3Stats::addStat(prefix + "nested contract uses", m_subgraphStats.m_nestedContractUses);
         V3Stats::addStat(prefix + "phase vertices clocked", m_subgraphClockedPhaseVtxps.size());
         V3Stats::addStat(prefix + "phase vertices post", m_subgraphPostPhaseVtxps.size());
