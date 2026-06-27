@@ -998,7 +998,12 @@ public:
         const bool externalRead = !isUnderBoundaryScope(sourceScopep, boundaryScopep);
         if (!boundaryInput && !externalRead) return false;
 
-        if (sourceScopep != boundaryScopep && boundaryScopeFor(sourceScopep)) return true;
+        if (sourceScopep != boundaryScopep && boundaryScopeFor(sourceScopep)) {
+            const bool otherBoundaryInput
+                = sourceVscp->varp()->isIO() && sourceVscp->varp()->direction().isNonOutput();
+            if (otherBoundaryInput) return m_regionWrittenVars.count(sourceVscp);
+            return true;
+        }
 
         return m_regionWrittenVars.count(sourceVscp);
     }
