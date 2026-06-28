@@ -18,6 +18,7 @@
 
 #include "V3SchedSubgraph.h"
 
+#include "V3Hasher.h"
 #include "V3Stats.h"
 #include "V3SubgraphSummary.h"
 
@@ -389,17 +390,37 @@ struct SnapshotBucketKeyHash final {
     }
 };
 
+struct TailCloneRefSig final {
+    uintptr_t m_access = 0;
+    const AstVarScope* m_vscp = nullptr;
+
+    bool operator==(const TailCloneRefSig& other) const {
+        return m_access == other.m_access && m_vscp == other.m_vscp;
+    }
+};
+
+struct TailCloneSig final {
+    V3Hash m_bodyHash;
+    std::vector<const AstCFunc*> m_calls;
+    std::vector<TailCloneRefSig> m_refs;
+
+    bool operator==(const TailCloneSig& other) const {
+        return m_bodyHash == other.m_bodyHash && m_calls == other.m_calls
+               && m_refs == other.m_refs;
+    }
+};
+
 struct TailCloneKey final {
     AstScope* m_boundaryScopep = nullptr;
     LogicByScope* m_ownerp = nullptr;
     AstSenTree* m_senTreep = nullptr;
     bool m_slow = false;
-    AstCFunc* m_tailFuncp = nullptr;
+    TailCloneSig m_tailSig;
 
     bool operator==(const TailCloneKey& other) const {
         return m_boundaryScopep == other.m_boundaryScopep && m_ownerp == other.m_ownerp
                && m_senTreep == other.m_senTreep && m_slow == other.m_slow
-               && m_tailFuncp == other.m_tailFuncp;
+               && m_tailSig == other.m_tailSig;
     }
 };
 
@@ -411,8 +432,18 @@ struct TailCloneKeyHash final {
         hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                 + (hash >> 2);
         hash ^= std::hash<bool>{}(key.m_slow) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
-        hash ^= std::hash<const void*>{}(key.m_tailFuncp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+        hash ^= std::hash<V3Hash>{}(key.m_tailSig.m_bodyHash) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                 + (hash >> 2);
+        for (const AstCFunc* const funcp : key.m_tailSig.m_calls) {
+            hash ^= std::hash<const void*>{}(funcp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+        }
+        for (const TailCloneRefSig& ref : key.m_tailSig.m_refs) {
+            hash ^= std::hash<uintptr_t>{}(ref.m_access) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+            hash ^= std::hash<const void*>{}(ref.m_vscp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+        }
         return hash;
     }
 };
@@ -767,6 +798,16 @@ public:
         return found;
     }
 
+    static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
+        TailCloneSig result;
+        if (funcp->stmtsp()) result.m_bodyHash = V3Hasher::uncachedHash(funcp->stmtsp());
+        funcp->foreach([&](AstCCall* callp) { result.m_calls.push_back(callp->funcp()); });
+        funcp->foreach([&](AstVarRef* refp) {
+            result.m_refs.push_back({static_cast<uintptr_t>(refp->access()), refp->varScopep()});
+        });
+        return result;
+    }
+
     static AstCFunc* cloneOrderedFuncGraph(
         AstCFunc* funcp, AstScope* destBoundaryScopep,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
@@ -1077,7 +1118,8 @@ public:
 
     AstCFunc* cloneTailFuncForNba(AstCFunc* tailFuncp, AstScope* boundaryScopep,
                                   LogicByScope* ownerp, AstSenTree* senTreep, bool slow) {
-        const TailCloneKey key{boundaryScopep, ownerp, senTreep, slow, tailFuncp};
+        const TailCloneKey key{boundaryScopep, ownerp, senTreep, slow,
+                               buildTailCloneSig(tailFuncp)};
         const auto it = m_tailCloneCache.find(key);
         if (it != m_tailCloneCache.end()) {
             ++m_stats.m_tailCloneReuses;
