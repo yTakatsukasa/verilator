@@ -390,6 +390,25 @@ struct SnapshotBucketKeyHash final {
     }
 };
 
+struct SnapshotSourceSetKey final {
+    std::vector<AstVarScope*> m_sourceVars;
+
+    bool operator==(const SnapshotSourceSetKey& other) const {
+        return m_sourceVars == other.m_sourceVars;
+    }
+};
+
+struct SnapshotSourceSetKeyHash final {
+    size_t operator()(const SnapshotSourceSetKey& key) const {
+        size_t hash = 0;
+        for (const AstVarScope* const vscp : key.m_sourceVars) {
+            hash ^= std::hash<const void*>{}(vscp) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                    + (hash >> 2);
+        }
+        return hash;
+    }
+};
+
 struct TailCloneRefSig final {
     uintptr_t m_access = 0;
     const AstVarScope* m_vscp = nullptr;
@@ -530,6 +549,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotHelpers = 0;
     uint64_t m_snapshotProcedures = 0;
     uint64_t m_snapshotScalars = 0;
+    uint64_t m_snapshotSourceSetDuplicates = 0;
+    uint64_t m_snapshotSourceSets = 0;
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
@@ -640,6 +661,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot helpers", m_snapshotHelpers);
         V3Stats::addStat(prefix + "snapshot procedures", m_snapshotProcedures);
         V3Stats::addStat(prefix + "snapshot scalars", m_snapshotScalars);
+        V3Stats::addStat(prefix + "snapshot source set duplicates", m_snapshotSourceSetDuplicates);
+        V3Stats::addStat(prefix + "snapshot source sets", m_snapshotSourceSets);
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
@@ -1171,6 +1194,7 @@ public:
         m_subgraphOrderCache;
     std::unordered_map<SnapshotBucketKey, size_t, SnapshotBucketKeyHash> m_snapshotBucketIndex;
     std::vector<SnapshotBucket> m_snapshotBuckets;
+    std::unordered_set<SnapshotSourceSetKey, SnapshotSourceSetKeyHash> m_snapshotSourceSets;
     std::unordered_map<TailCloneKey, AstCFunc*, TailCloneKeyHash> m_tailCloneCache;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
@@ -1553,6 +1577,16 @@ void canonicalizeSnapshotBucketSources(SnapshotBucket& bucket) {
     std::sort(bucket.m_sourceVars.begin(), bucket.m_sourceVars.end(), lessSnapshotSource);
 }
 
+void registerSnapshotSourceSet(SnapshotBucket& bucket, SubgraphLoweringState& state) {
+    SnapshotSourceSetKey key;
+    key.m_sourceVars = bucket.m_sourceVars;
+    if (state.m_snapshotSourceSets.insert(std::move(key)).second) {
+        ++state.m_stats.m_snapshotSourceSets;
+    } else {
+        ++state.m_stats.m_snapshotSourceSetDuplicates;
+    }
+}
+
 void emitSnapshotProcedureForBucket(const SnapshotBucket& bucket, SubgraphLoweringState& state,
                                     bool slow) {
     static unsigned s_snapshotHelperIndex = 0;
@@ -1668,6 +1702,7 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups, SubgraphLoweri
     SnapshotNameAllocator snapshotNames;
     for (SnapshotBucket& bucket : state.m_snapshotBuckets) {
         canonicalizeSnapshotBucketSources(bucket);
+        registerSnapshotSourceSet(bucket, state);
         struct SnapshotDTypeGroup final {
             AstScope* m_scopep = nullptr;
             AstNodeDType* m_dtypep = nullptr;
