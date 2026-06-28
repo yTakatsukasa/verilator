@@ -533,6 +533,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactTailReuses = 0;
     uint64_t m_artifacts = 0;
     uint64_t m_contractExternalUseScans = 0;
+    uint64_t m_contractExternalUseSnapshotSkips = 0;
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
     uint64_t m_inputActivesBefore = 0;
@@ -619,6 +620,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact tail reuses", m_artifactTailReuses);
         V3Stats::addStat(prefix + "artifacts", m_artifacts);
         V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
+        V3Stats::addStat(prefix + "contract external use snapshot skips",
+                         m_contractExternalUseSnapshotSkips);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
         V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
@@ -1006,6 +1009,10 @@ public:
             if (!seen.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
+                if (0 == vscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
+                    ++m_stats.m_contractExternalUseSnapshotSkips;
+                    return;
+                }
                 const bool externalToSubgraph
                     = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
                 if (!externalToSubgraph) return;
