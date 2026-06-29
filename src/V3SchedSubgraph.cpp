@@ -318,6 +318,7 @@ struct SubgraphScheduleInstance final {
     AstCFunc* m_callFuncp = nullptr;
     SubgraphInstanceContract m_contract;
     AstScope* m_scopep = nullptr;
+    bool m_sharedCall = false;
     std::vector<AstCFunc*> m_tailFuncps;
 };
 
@@ -514,6 +515,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseMissLogicMismatch = 0;
     uint64_t m_artifactReuseMissNoEntry = 0;
     uint64_t m_artifactReuseScopeCloneHits = 0;
+    uint64_t m_artifactReuseSharedCalls = 0;
     uint64_t m_artifactReuseSkipCloneFail = 0;
     uint64_t m_artifactReuseSkipOther = 0;
     uint64_t m_artifactReuseSkipTriggered = 0;
@@ -600,6 +602,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact reuse miss no entry", m_artifactReuseMissNoEntry);
         V3Stats::addStat(prefix + "artifact reuse scope clone hits",
                          m_artifactReuseScopeCloneHits);
+        V3Stats::addStat(prefix + "artifact reuse shared calls", m_artifactReuseSharedCalls);
         V3Stats::addStat(prefix + "artifact reuse skip clone fail", m_artifactReuseSkipCloneFail);
         V3Stats::addStat(prefix + "artifact reuse skip other", m_artifactReuseSkipOther);
         V3Stats::addStat(prefix + "artifact reuse skip triggered", m_artifactReuseSkipTriggered);
@@ -1048,6 +1051,25 @@ public:
         ++m_stats.m_contractExternalUseScans;
     }
 
+    void appendContractExternalUses(SubgraphInstanceContract& contract, const LogicByScope& logic,
+                                    AstScope* boundaryScopep) {
+        logic.foreachLogic([&](AstNode* logicp) {
+            logicp->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                if (0 == vscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
+                    ++m_stats.m_contractExternalUseSnapshotSkips;
+                    return;
+                }
+                const bool externalToSubgraph
+                    = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
+                if (!externalToSubgraph) return;
+                contract.addExternalUse(vscp, refp->access().isReadOrRW(),
+                                        refp->access().isWriteOrRW());
+            });
+        });
+        ++m_stats.m_contractExternalUseScans;
+    }
+
     SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, const LogicByScope& currentLogic,
         AstScope* currentScopep,
@@ -1426,6 +1448,16 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     }
 }
 
+void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
+                                              SubgraphLoweringState& state,
+                                              const LogicByScope& logic) {
+    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
+    state.appendContractExternalUses(instance.m_contract, logic, instance.m_scopep);
+    for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
+        state.appendContractExternalUses(instance.m_contract, tailFuncp, instance.m_scopep);
+    }
+}
+
 AstActive* getOrCreateSubgraphActive(const SubgraphGroup& group,
                                      std::unordered_map<SubgraphActiveKey, SubgraphActiveEntry,
                                                         SubgraphActiveKeyHash>& subgraphActives) {
@@ -1485,8 +1517,14 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             artifactKey, subgraphLogic, group.m_scopep, templateVarMap);
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
+            bool sharedCall = false;
             if (artifactp->m_scopep == group.m_scopep) {
                 callFuncp = artifactp->m_callFuncp;
+            } else if (!tailFuncps && artifactp->m_callFuncp->isLoose()
+                       && artifactp->m_callFuncp->scopep()->modp() == group.m_scopep->modp()) {
+                callFuncp = artifactp->m_callFuncp;
+                sharedCall = true;
+                ++state.m_stats.m_artifactReuseSharedCalls;
             } else {
                 const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
                 if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
@@ -1503,16 +1541,22 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             }
             if (callFuncp) {
                 if (tag == "stl") state.m_stlSubgraphFuncs[group.m_scopep].push_back(callFuncp);
-                SubgraphLoweringState::discardLogic(subgraphLogic);
                 plan.m_artifactp = artifactp;
                 plan.m_instance.m_callFuncp = callFuncp;
                 plan.m_instance.m_scopep = group.m_scopep;
+                plan.m_instance.m_sharedCall = sharedCall;
                 if (tailFuncps) {
                     for (AstCFunc* const tailFuncp : *tailFuncps) {
                         plan.m_instance.m_tailFuncps.push_back(tailFuncp);
                     }
                 }
-                populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                if (sharedCall) {
+                    populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                             subgraphLogic);
+                } else {
+                    populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                }
+                SubgraphLoweringState::discardLogic(subgraphLogic);
                 plan.m_phase = phase;
                 plan.m_wrapper = wrapper;
                 ++state.m_stats.m_artifactReuses;
@@ -1596,7 +1640,13 @@ void materializeSubgraphSchedulePlan(
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
     if (!plan.m_artifactp) return;
     const SubgraphScheduleInstance& instance = plan.m_instance;
-    AstNodeStmt* stmtsp = util::callVoidFunc(instance.m_callFuncp);
+    AstCCall* const callp = new AstCCall{instance.m_callFuncp->fileline(), instance.m_callFuncp};
+    if (instance.m_sharedCall) {
+        callp->selfPointer(
+            VSelfPointerText{VSelfPointerText::VlSyms{}, instance.m_scopep->nameDotless()});
+    }
+    callp->dtypeSetVoid();
+    AstNodeStmt* stmtsp = callp->makeStmt();
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         stmtsp->addNext(util::callVoidFunc(tailFuncp));
     }

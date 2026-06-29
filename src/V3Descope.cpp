@@ -250,6 +250,10 @@ class DescopeVisitor final : public VNVisitor {
         iterateChildren(nodep);
         // Convert the hierch name
         UASSERT_OBJ(m_scopep, nodep, "Node not under scope");
+        if (!nodep->selfPointer().isEmpty() && nodep->funcp()->isLoose()
+            && !nodep->funcp()->isStatic()) {
+            return;
+        }
         const AstScope* const scopep = nodep->funcp()->scopep();
         nodep->selfPointer(descopedSelfPointer(scopep));
         // Can't do this, as we may have more calls later
