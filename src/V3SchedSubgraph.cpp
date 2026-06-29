@@ -556,6 +556,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneFailTemp = 0;
     uint64_t m_orderCacheCloneFailVlem = 0;
     std::map<string, uint64_t> m_orderCacheCloneFailNames;
+    uint64_t m_orderCacheCloneGeneratedVarRemaps = 0;
     uint64_t m_orderCacheEntries = 0;
     uint64_t m_orderCacheHits = 0;
     uint64_t m_orderCacheMisses = 0;
@@ -669,6 +670,8 @@ struct SubgraphLoweringStats final {
         for (const auto& itr : m_orderCacheCloneFailNames) {
             V3Stats::addStat(prefix + "order cache clone fail name " + itr.first, itr.second);
         }
+        V3Stats::addStat(prefix + "order cache clone generated var remaps",
+                         m_orderCacheCloneGeneratedVarRemaps);
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
         V3Stats::addStat(prefix + "order cache hit permille",
@@ -854,6 +857,25 @@ public:
         return result;
     }
 
+    static bool canRemapGeneratedCloneVarByName(const AstVarScope* vscp) {
+        const string& name = vscp->varp()->name();
+        return name.rfind("__Vcell", 0) == 0 || name.rfind("__Vfunc", 0) == 0
+               || name.rfind("__VlemCall", 0) == 0 || name.rfind("__Vtemp", 0) == 0;
+    }
+
+    static AstVarScope* findGeneratedCloneVarByName(AstScope* destScopep,
+                                                    const AstVarScope* sourceVscp) {
+        if (!canRemapGeneratedCloneVarByName(sourceVscp)) return nullptr;
+        const string& name = sourceVscp->varp()->name();
+        for (AstVarScope* scanp = destScopep->varsp(); scanp;
+             scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->varp()->name() != name) continue;
+            if (!scanp->dtypep()->similarDType(sourceVscp->dtypep())) continue;
+            return scanp;
+        }
+        return nullptr;
+    }
+
     static AstCFunc* cloneOrderedFuncGraph(
         AstCFunc* funcp, AstScope* destBoundaryScopep,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
@@ -903,6 +925,12 @@ public:
                 if (argVars.count(refp->varp())) return;
                 const AstVarScope* const sourceVscp = refp->varScopep();
                 if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) {
+                    if (AstVarScope* const mappedVscp
+                        = findGeneratedCloneVarByName(destBoundaryScopep, sourceVscp)) {
+                        resolvedVarMap.emplace(sourceVscp, mappedVscp);
+                        ++stats.m_orderCacheCloneGeneratedVarRemaps;
+                        return;
+                    }
                     noteUnmappedVar(sourceVscp);
                     failed = true;
                 }
