@@ -591,7 +591,7 @@ struct SubgraphLoweringStats final {
                   ? m_inputParentVisibleNodesBefore - m_inputParentVisibleNodesAfter
                   : 0;
         const uint64_t inputHiddenBodyNodesAfter
-            = m_inputSubgraphInstanceBodyNodesAfter + m_inputSnapshotInstanceBodyNodesAfter;
+            = m_inputSubgraphInstanceBodyNodesAfter + m_inputSnapshotProcedureBodyNodesAfter;
         const uint64_t orderCacheLookups = m_orderCacheHits + m_orderCacheMisses;
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
         V3Stats::addStat(prefix + "artifact reuse lookups", m_artifactReuseLookups);
@@ -1335,7 +1335,9 @@ SubgraphLogicInputStats collectSubgraphLogicInputStats(const std::vector<LogicBy
                     AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure);
                     if (procp && V3Sched::isSubgraphSnapshotProcedure(procp)) {
                         ++stats.m_directSnapshotProcedures;
-                        stats.m_snapshotProcedureBodyNodes += procp->nodeCount() - 1;
+                        const uint64_t bodyNodes = procp->nodeCount() - 1;
+                        hiddenBodyNodes += bodyNodes;
+                        stats.m_snapshotProcedureBodyNodes += bodyNodes;
                     } else {
                         ++stats.m_directOtherStatements;
                     }
