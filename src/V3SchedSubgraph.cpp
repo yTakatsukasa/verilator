@@ -241,6 +241,8 @@ struct SubgraphLogicRefSig final {
 };
 
 struct SubgraphLogicNodeSig final {
+    std::vector<std::string> m_constValues;
+    std::vector<uintptr_t> m_nodeTypes;
     uintptr_t m_type = 0;
     std::vector<SubgraphLogicRefSig> m_refs;
 };
@@ -333,6 +335,7 @@ enum class SubgraphInstanceLocalVarKind : uint8_t {
 struct SubgraphSharedHelperContext final {
     AstScope* m_currentScopep = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    bool m_currentScopeHasTailFuncps = false;
     bool m_hasTailFuncps = false;
 };
 
@@ -343,8 +346,16 @@ struct SubgraphScheduleArtifact final {
     std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     bool m_cloneable = true;
+    bool m_scopeHasTailFuncps = false;
+    bool m_triggeredShareable = false;
     SubgraphArtifactUncloneableReason m_uncloneableReason
         = SubgraphArtifactUncloneableReason::NONE;
+};
+
+struct SubgraphTriggeredRefInfo final {
+    bool m_hasTriggered = false;
+    bool m_shareable = true;
+    bool m_writesNonLocal = false;
 };
 
 struct SubgraphScheduleInstance final {
@@ -846,6 +857,12 @@ public:
             result.push_back(SubgraphLogicNodeSig{});
             SubgraphLogicNodeSig& nodeSig = result.back();
             nodeSig.m_type = static_cast<uintptr_t>(logicp->type());
+            logicp->foreach([&](AstNode* nodep) {
+                nodeSig.m_nodeTypes.push_back(static_cast<uintptr_t>(nodep->type()));
+                if (AstConst* const constp = VN_CAST(nodep, Const)) {
+                    nodeSig.m_constValues.push_back(constp->num().toString());
+                }
+            });
             logicp->foreach([&](AstVarRef* refp) {
                 nodeSig.m_refs.push_back(
                     {static_cast<uintptr_t>(refp->access()), refp->varScopep()});
@@ -865,6 +882,18 @@ public:
             const SubgraphLogicNodeSig& templateNode = templateSig[i];
             AstNode* const currentNodep = currentNodes[i];
             if (templateNode.m_type != static_cast<uintptr_t>(currentNodep->type())) {
+                return false;
+            }
+            SubgraphLogicNodeSig currentNodeSig;
+            currentNodeSig.m_type = static_cast<uintptr_t>(currentNodep->type());
+            currentNodep->foreach([&](AstNode* nodep) {
+                currentNodeSig.m_nodeTypes.push_back(static_cast<uintptr_t>(nodep->type()));
+                if (AstConst* const constp = VN_CAST(nodep, Const)) {
+                    currentNodeSig.m_constValues.push_back(constp->num().toString());
+                }
+            });
+            if (templateNode.m_nodeTypes != currentNodeSig.m_nodeTypes
+                || templateNode.m_constValues != currentNodeSig.m_constValues) {
                 return false;
             }
 
@@ -977,15 +1006,25 @@ public:
         }
     }
 
-    static bool orderedFuncHasTriggeredRefs(AstCFunc* funcp, SubgraphLoweringStats& stats) {
+    static SubgraphTriggeredRefInfo analyzeOrderedFuncTriggeredRefs(AstCFunc* funcp,
+                                                                    AstScope* boundaryScopep,
+                                                                    SubgraphLoweringStats& stats) {
         std::unordered_set<AstCFunc*> seenFuncs;
-        bool found = false;
+        SubgraphTriggeredRefInfo result;
         std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
             if (!seenFuncs.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
                 noteTriggeredRefKind(vscp, stats);
-                if (isTriggeredStateVar(vscp)) found = true;
+                if (refp->access().isWriteOrRW() && !isRemappableInstanceLocalVar(vscp)) {
+                    result.m_writesNonLocal = true;
+                }
+                if (!isTriggeredStateVar(vscp)) return;
+                result.m_hasTriggered = true;
+                if (instanceLocalVarKind(vscp)
+                    == SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC) {
+                    result.m_shareable = false;
+                }
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
@@ -994,7 +1033,7 @@ public:
             });
         };
         gather(funcp);
-        return found;
+        return result;
     }
 
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
@@ -1254,6 +1293,15 @@ public:
                || phase == AstSubgraphInstance::Phase::POST;
     }
 
+    static bool scopeHasDerivedBoundaryReads(AstScope* scopep) {
+        const SubgraphInstanceContract* const contractp = getSubgraphScopeContract(scopep);
+        if (!contractp) return false;
+        for (const AstSubgraphInstance::BoundaryReadContract& read : contractp->m_boundaryReads) {
+            if (read.m_derived) return true;
+        }
+        return false;
+    }
+
     static SubgraphSharedHelperSkipReason
     classifySharedHelperUse(SubgraphScheduleArtifact* artifactp,
                             const SubgraphSharedHelperContext& context) {
@@ -1264,7 +1312,18 @@ public:
         if (artifactp->m_callFuncp->scopep()->modp() != context.m_currentScopep->modp()) {
             return SubgraphSharedHelperSkipReason::MODULE_MISMATCH;
         }
+        if (scopeHasDerivedBoundaryReads(artifactp->m_scopep)
+            || scopeHasDerivedBoundaryReads(context.m_currentScopep)) {
+            return SubgraphSharedHelperSkipReason::OTHER;
+        }
         if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
+        if (artifactp->m_uncloneableReason == SubgraphArtifactUncloneableReason::TRIGGERED
+            && artifactp->m_triggeredShareable) {
+            if (artifactp->m_scopeHasTailFuncps || context.m_currentScopeHasTailFuncps) {
+                return SubgraphSharedHelperSkipReason::TRIGGERED;
+            }
+            return SubgraphSharedHelperSkipReason::NONE;
+        }
         switch (artifactp->m_uncloneableReason) {
         case SubgraphArtifactUncloneableReason::TRIGGERED:
             return SubgraphSharedHelperSkipReason::TRIGGERED;
@@ -1321,18 +1380,19 @@ public:
         bool sawOther = false;
         bool sawTriggered = false;
         for (SubgraphScheduleArtifact* const artifactp : it->second) {
-            if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep) {
+            templateVarMap.clear();
+            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
+                sawLogicMismatch = true;
+                continue;
+            }
+            if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep
+                && !canUseSharedHelper(artifactp, sharedContext)) {
                 noteSharedReuseSkip(classifySharedHelperUse(artifactp, sharedContext));
                 switch (artifactp->m_uncloneableReason) {
                 case SubgraphArtifactUncloneableReason::TRIGGERED: sawTriggered = true; break;
                 case SubgraphArtifactUncloneableReason::CLONE_FAIL: sawCloneFail = true; break;
                 case SubgraphArtifactUncloneableReason::NONE: sawOther = true; break;
                 }
-                continue;
-            }
-            templateVarMap.clear();
-            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
-                sawLogicMismatch = true;
                 continue;
             }
             return artifactp;
@@ -1347,13 +1407,17 @@ public:
     SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key,
                                                            AstScope* scopep, AstCFunc* callFuncp,
                                                            SubgraphLogicSig&& logicSig,
-                                                           bool cloneable, bool cacheable) {
+                                                           bool cloneable, bool scopeHasTailFuncps,
+                                                           bool triggeredShareable,
+                                                           bool cacheable) {
         std::unique_ptr<SubgraphScheduleArtifact> artifactp{new SubgraphScheduleArtifact};
         artifactp->m_callFuncp = callFuncp;
         artifactp->m_key = key;
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
         artifactp->m_cloneable = cloneable;
+        artifactp->m_scopeHasTailFuncps = scopeHasTailFuncps;
+        artifactp->m_triggeredShareable = triggeredShareable;
         if (!cloneable)
             artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::TRIGGERED;
         SubgraphScheduleArtifact* const resultp = artifactp.get();
@@ -1748,7 +1812,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     const bool cacheableArtifact = canShare && tag != "stl";
-    const SubgraphSharedHelperContext sharedContext{group.m_scopep, phase, tailFuncps != nullptr};
+    const bool scopeHasTailFuncps = state.m_stlSubgraphFuncs.count(group.m_scopep);
+    const SubgraphSharedHelperContext sharedContext{group.m_scopep, phase, scopeHasTailFuncps,
+                                                    tailFuncps != nullptr};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
@@ -1840,11 +1906,12 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             util::splitCheck(funcp);
             if (canShare
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
+                const SubgraphTriggeredRefInfo triggeredInfo
+                    = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(funcp, group.m_scopep,
+                                                                             state.m_stats);
                 state.m_subgraphOrderCache.emplace(
                     cacheKey,
-                    SubgraphOrderCacheEntry{funcp, logicSig,
-                                            !SubgraphLoweringState::orderedFuncHasTriggeredRefs(
-                                                funcp, state.m_stats)});
+                    SubgraphOrderCacheEntry{funcp, logicSig, !triggeredInfo.m_hasTriggered});
                 ++state.m_stats.m_orderCacheEntries;
             }
         }
@@ -1857,16 +1924,21 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
         callFuncp = tailFuncp;
     }
-    const bool cloneableArtifact
-        = !SubgraphLoweringState::orderedFuncHasTriggeredRefs(callFuncp, state.m_stats);
+    const SubgraphTriggeredRefInfo triggeredInfo
+        = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(callFuncp, group.m_scopep,
+                                                                 state.m_stats);
+    const bool cloneableArtifact = !triggeredInfo.m_hasTriggered;
+    const bool triggeredShareableArtifact = triggeredInfo.m_hasTriggered
+                                            && triggeredInfo.m_shareable
+                                            && triggeredInfo.m_writesNonLocal;
     if (tailFuncps) {
         for (AstCFunc* const tailFuncp : *tailFuncps) {
             plan.m_instance.m_tailFuncps.push_back(tailFuncp);
         }
     }
-    plan.m_artifactp = state.makeSubgraphScheduleArtifact(artifactKey, group.m_scopep, callFuncp,
-                                                          std::move(logicSig), cloneableArtifact,
-                                                          cacheableArtifact);
+    plan.m_artifactp = state.makeSubgraphScheduleArtifact(
+        artifactKey, group.m_scopep, callFuncp, std::move(logicSig), cloneableArtifact,
+        scopeHasTailFuncps, triggeredShareableArtifact, cacheableArtifact);
     plan.m_instance.m_callFuncp = callFuncp;
     plan.m_instance.m_scopep = group.m_scopep;
     populateSubgraphScheduleInstanceContract(plan.m_instance, state);
