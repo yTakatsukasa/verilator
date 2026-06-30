@@ -318,6 +318,15 @@ enum class SubgraphSharedHelperSkipReason : uint8_t {
     TRIGGERED,
 };
 
+enum class SubgraphInstanceLocalVarKind : uint8_t {
+    NONE,
+    DELAYED_SHADOW,
+    LOCAL_TEMP,
+    TRIGGER_PREV,
+    TRIGGER_STATE,
+    VLEM_TEMP,
+};
+
 struct SubgraphSharedHelperContext final {
     AstScope* m_currentScopep = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
@@ -586,6 +595,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneFailTemp = 0;
     uint64_t m_orderCacheCloneFailVlem = 0;
     std::map<string, uint64_t> m_orderCacheCloneFailNames;
+    uint64_t m_orderCacheCloneGeneratedVarRemapDelayed = 0;
+    uint64_t m_orderCacheCloneGeneratedVarRemapTemp = 0;
+    uint64_t m_orderCacheCloneGeneratedVarRemapTrigger = 0;
+    uint64_t m_orderCacheCloneGeneratedVarRemapVlem = 0;
     uint64_t m_orderCacheCloneGeneratedVarRemaps = 0;
     uint64_t m_orderCacheEntries = 0;
     uint64_t m_orderCacheHits = 0;
@@ -715,6 +728,14 @@ struct SubgraphLoweringStats final {
         for (const auto& itr : m_orderCacheCloneFailNames) {
             V3Stats::addStat(prefix + "order cache clone fail name " + itr.first, itr.second);
         }
+        V3Stats::addStat(prefix + "order cache clone generated var remap delayed",
+                         m_orderCacheCloneGeneratedVarRemapDelayed);
+        V3Stats::addStat(prefix + "order cache clone generated var remap temp",
+                         m_orderCacheCloneGeneratedVarRemapTemp);
+        V3Stats::addStat(prefix + "order cache clone generated var remap trigger",
+                         m_orderCacheCloneGeneratedVarRemapTrigger);
+        V3Stats::addStat(prefix + "order cache clone generated var remap vlem",
+                         m_orderCacheCloneGeneratedVarRemapVlem);
         V3Stats::addStat(prefix + "order cache clone generated var remaps",
                          m_orderCacheCloneGeneratedVarRemaps);
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
@@ -868,6 +889,49 @@ public:
         return shareable;
     }
 
+    static bool nameEndsWith(const string& name, const string& suffix) {
+        return name.size() >= suffix.size()
+               && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+
+    static SubgraphInstanceLocalVarKind instanceLocalVarKind(const string& name) {
+        if (name.rfind("__Vdly", 0) == 0) { return SubgraphInstanceLocalVarKind::DELAYED_SHADOW; }
+        if (name.rfind("__Vtrigprev", 0) == 0 || name.rfind("__Vtrigcurr", 0) == 0
+            || name.rfind("__VtrigSched", 0) == 0) {
+            return SubgraphInstanceLocalVarKind::TRIGGER_PREV;
+        }
+        if (name.rfind("__V", 0) == 0
+            && (nameEndsWith(name, "Triggered") || nameEndsWith(name, "TriggeredAcc"))) {
+            return SubgraphInstanceLocalVarKind::TRIGGER_STATE;
+        }
+        if (name.rfind("__Vcell", 0) == 0 || name.rfind("__Vfunc", 0) == 0
+            || name.rfind("__Vtemp", 0) == 0) {
+            return SubgraphInstanceLocalVarKind::LOCAL_TEMP;
+        }
+        if (name.rfind("__VlemCall", 0) == 0) { return SubgraphInstanceLocalVarKind::VLEM_TEMP; }
+        return SubgraphInstanceLocalVarKind::NONE;
+    }
+
+    static SubgraphInstanceLocalVarKind instanceLocalVarKind(const AstVarScope* vscp) {
+        return instanceLocalVarKind(vscp->varp()->name());
+    }
+
+    static bool isRemappableInstanceLocalVar(const AstVarScope* vscp) {
+        switch (instanceLocalVarKind(vscp)) {
+        case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+        case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
+        case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+        case SubgraphInstanceLocalVarKind::VLEM_TEMP: return true;
+        case SubgraphInstanceLocalVarKind::NONE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE: return false;
+        }
+        return false;
+    }
+
+    static bool isTriggeredStateVar(const AstVarScope* vscp) {
+        return instanceLocalVarKind(vscp) == SubgraphInstanceLocalVarKind::TRIGGER_STATE;
+    }
+
     static bool orderedFuncHasTriggeredRefs(AstCFunc* funcp) {
         std::unordered_set<AstCFunc*> seenFuncs;
         bool found = false;
@@ -875,11 +939,7 @@ public:
             if (found || !seenFuncs.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstVarRef* refp) {
                 if (found) return;
-                const string& name = refp->varp()->name();
-                if (name.rfind("__V", 0) == 0 && name.size() >= 9
-                    && name.substr(name.size() - 9) == "Triggered") {
-                    found = true;
-                }
+                if (isTriggeredStateVar(refp->varScopep())) found = true;
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 if (found) return;
@@ -903,9 +963,7 @@ public:
     }
 
     static bool canRemapGeneratedCloneVarByName(const AstVarScope* vscp) {
-        const string& name = vscp->varp()->name();
-        return name.rfind("__Vcell", 0) == 0 || name.rfind("__Vfunc", 0) == 0
-               || name.rfind("__VlemCall", 0) == 0 || name.rfind("__Vtemp", 0) == 0;
+        return isRemappableInstanceLocalVar(vscp);
     }
 
     static AstVarScope* findGeneratedCloneVarByName(AstScope* destScopep,
@@ -919,6 +977,26 @@ public:
             return scanp;
         }
         return nullptr;
+    }
+
+    static void noteGeneratedVarRemap(const AstVarScope* sourceVscp,
+                                      SubgraphLoweringStats& stats) {
+        switch (instanceLocalVarKind(sourceVscp)) {
+        case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+            ++stats.m_orderCacheCloneGeneratedVarRemapDelayed;
+            return;
+        case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
+            ++stats.m_orderCacheCloneGeneratedVarRemapTemp;
+            return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+            ++stats.m_orderCacheCloneGeneratedVarRemapTrigger;
+            return;
+        case SubgraphInstanceLocalVarKind::VLEM_TEMP:
+            ++stats.m_orderCacheCloneGeneratedVarRemapVlem;
+            return;
+        case SubgraphInstanceLocalVarKind::NONE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE: return;
+        }
     }
 
     static AstCFunc* cloneOrderedFuncGraph(
@@ -943,15 +1021,22 @@ public:
         const auto noteUnmappedVar = [&](const AstVarScope* vscp) {
             const string& name = vscp->varp()->name();
             stats.noteOrderCacheCloneFailName(name);
+            switch (instanceLocalVarKind(vscp)) {
+            case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+            case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+            case SubgraphInstanceLocalVarKind::TRIGGER_STATE:
+                ++stats.m_orderCacheCloneFailShadow;
+                return;
+            case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
+                ++stats.m_orderCacheCloneFailTemp;
+                return;
+            case SubgraphInstanceLocalVarKind::VLEM_TEMP:
+                ++stats.m_orderCacheCloneFailVlem;
+                return;
+            case SubgraphInstanceLocalVarKind::NONE: break;
+            }
             if (name.rfind("__PVT__", 0) == 0) {
                 ++stats.m_orderCacheCloneFailState;
-            } else if (name.rfind("__Vdly", 0) == 0 || name.rfind("__Vtrig", 0) == 0) {
-                ++stats.m_orderCacheCloneFailShadow;
-            } else if (name.rfind("__Vfunc", 0) == 0 || name.rfind("__Vtemp", 0) == 0
-                       || name.rfind("__Vcell", 0) == 0) {
-                ++stats.m_orderCacheCloneFailTemp;
-            } else if (name.rfind("__VlemCall", 0) == 0) {
-                ++stats.m_orderCacheCloneFailVlem;
             } else {
                 ++stats.m_orderCacheCloneFailOther;
             }
@@ -973,6 +1058,7 @@ public:
                     if (AstVarScope* const mappedVscp
                         = findGeneratedCloneVarByName(destBoundaryScopep, sourceVscp)) {
                         resolvedVarMap.emplace(sourceVscp, mappedVscp);
+                        noteGeneratedVarRemap(sourceVscp, stats);
                         ++stats.m_orderCacheCloneGeneratedVarRemaps;
                         return;
                     }
