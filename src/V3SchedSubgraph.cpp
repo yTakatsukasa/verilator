@@ -322,8 +322,11 @@ enum class SubgraphInstanceLocalVarKind : uint8_t {
     NONE,
     DELAYED_SHADOW,
     LOCAL_TEMP,
+    TRIGGER_CURR,
     TRIGGER_PREV,
+    TRIGGER_SCHED,
     TRIGGER_STATE,
+    TRIGGER_STATE_ACC,
     VLEM_TEMP,
 };
 
@@ -618,6 +621,12 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
+    uint64_t m_triggeredRefCurr = 0;
+    uint64_t m_triggeredRefOther = 0;
+    uint64_t m_triggeredRefPrev = 0;
+    uint64_t m_triggeredRefSched = 0;
+    uint64_t m_triggeredRefState = 0;
+    uint64_t m_triggeredRefStateAcc = 0;
     uint64_t m_instances = 0;
 
     static uint64_t ratioPermille(uint64_t numerator, uint64_t denominator) {
@@ -758,6 +767,12 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
+        V3Stats::addStat(prefix + "triggered ref curr", m_triggeredRefCurr);
+        V3Stats::addStat(prefix + "triggered ref other", m_triggeredRefOther);
+        V3Stats::addStat(prefix + "triggered ref prev", m_triggeredRefPrev);
+        V3Stats::addStat(prefix + "triggered ref sched", m_triggeredRefSched);
+        V3Stats::addStat(prefix + "triggered ref state", m_triggeredRefState);
+        V3Stats::addStat(prefix + "triggered ref state acc", m_triggeredRefStateAcc);
         V3Stats::addStat(prefix + "instances", m_instances);
     }
 
@@ -896,13 +911,20 @@ public:
 
     static SubgraphInstanceLocalVarKind instanceLocalVarKind(const string& name) {
         if (name.rfind("__Vdly", 0) == 0) { return SubgraphInstanceLocalVarKind::DELAYED_SHADOW; }
-        if (name.rfind("__Vtrigprev", 0) == 0 || name.rfind("__Vtrigcurr", 0) == 0
-            || name.rfind("__VtrigSched", 0) == 0) {
+        if (name.rfind("__Vtrigcurr", 0) == 0) {
+            return SubgraphInstanceLocalVarKind::TRIGGER_CURR;
+        }
+        if (name.rfind("__Vtrigprev", 0) == 0) {
             return SubgraphInstanceLocalVarKind::TRIGGER_PREV;
         }
-        if (name.rfind("__V", 0) == 0
-            && (nameEndsWith(name, "Triggered") || nameEndsWith(name, "TriggeredAcc"))) {
+        if (name.rfind("__VtrigSched", 0) == 0) {
+            return SubgraphInstanceLocalVarKind::TRIGGER_SCHED;
+        }
+        if (name.rfind("__V", 0) == 0 && nameEndsWith(name, "Triggered")) {
             return SubgraphInstanceLocalVarKind::TRIGGER_STATE;
+        }
+        if (name.rfind("__V", 0) == 0 && nameEndsWith(name, "TriggeredAcc")) {
+            return SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC;
         }
         if (name.rfind("__Vcell", 0) == 0 || name.rfind("__Vfunc", 0) == 0
             || name.rfind("__Vtemp", 0) == 0) {
@@ -920,29 +942,52 @@ public:
         switch (instanceLocalVarKind(vscp)) {
         case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
         case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
+        case SubgraphInstanceLocalVarKind::TRIGGER_CURR:
         case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+        case SubgraphInstanceLocalVarKind::TRIGGER_SCHED:
         case SubgraphInstanceLocalVarKind::VLEM_TEMP: return true;
         case SubgraphInstanceLocalVarKind::NONE:
-        case SubgraphInstanceLocalVarKind::TRIGGER_STATE: return false;
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC: return false;
         }
         return false;
     }
 
     static bool isTriggeredStateVar(const AstVarScope* vscp) {
-        return instanceLocalVarKind(vscp) == SubgraphInstanceLocalVarKind::TRIGGER_STATE;
+        const SubgraphInstanceLocalVarKind kind = instanceLocalVarKind(vscp);
+        return kind == SubgraphInstanceLocalVarKind::TRIGGER_STATE
+               || kind == SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC;
     }
 
-    static bool orderedFuncHasTriggeredRefs(AstCFunc* funcp) {
+    static void noteTriggeredRefKind(const AstVarScope* vscp, SubgraphLoweringStats& stats) {
+        switch (instanceLocalVarKind(vscp)) {
+        case SubgraphInstanceLocalVarKind::TRIGGER_CURR: ++stats.m_triggeredRefCurr; return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_PREV: ++stats.m_triggeredRefPrev; return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_SCHED: ++stats.m_triggeredRefSched; return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE: ++stats.m_triggeredRefState; return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC:
+            ++stats.m_triggeredRefStateAcc;
+            return;
+        case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+        case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
+        case SubgraphInstanceLocalVarKind::NONE:
+        case SubgraphInstanceLocalVarKind::VLEM_TEMP:
+            if (0 == vscp->varp()->name().rfind("__Vtrig", 0)) ++stats.m_triggeredRefOther;
+            return;
+        }
+    }
+
+    static bool orderedFuncHasTriggeredRefs(AstCFunc* funcp, SubgraphLoweringStats& stats) {
         std::unordered_set<AstCFunc*> seenFuncs;
         bool found = false;
         std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
-            if (found || !seenFuncs.insert(scanFuncp).second) return;
+            if (!seenFuncs.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstVarRef* refp) {
-                if (found) return;
-                if (isTriggeredStateVar(refp->varScopep())) found = true;
+                AstVarScope* const vscp = refp->varScopep();
+                noteTriggeredRefKind(vscp, stats);
+                if (isTriggeredStateVar(vscp)) found = true;
             });
             scanFuncp->foreach([&](AstCCall* callp) {
-                if (found) return;
                 AstCFunc* const calledFuncp = callp->funcp();
                 if (calledFuncp->entryPoint()) return;
                 gather(calledFuncp);
@@ -988,14 +1033,17 @@ public:
         case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
             ++stats.m_orderCacheCloneGeneratedVarRemapTemp;
             return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_CURR:
         case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+        case SubgraphInstanceLocalVarKind::TRIGGER_SCHED:
             ++stats.m_orderCacheCloneGeneratedVarRemapTrigger;
             return;
         case SubgraphInstanceLocalVarKind::VLEM_TEMP:
             ++stats.m_orderCacheCloneGeneratedVarRemapVlem;
             return;
         case SubgraphInstanceLocalVarKind::NONE:
-        case SubgraphInstanceLocalVarKind::TRIGGER_STATE: return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC: return;
         }
     }
 
@@ -1023,8 +1071,11 @@ public:
             stats.noteOrderCacheCloneFailName(name);
             switch (instanceLocalVarKind(vscp)) {
             case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+            case SubgraphInstanceLocalVarKind::TRIGGER_CURR:
             case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+            case SubgraphInstanceLocalVarKind::TRIGGER_SCHED:
             case SubgraphInstanceLocalVarKind::TRIGGER_STATE:
+            case SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC:
                 ++stats.m_orderCacheCloneFailShadow;
                 return;
             case SubgraphInstanceLocalVarKind::LOCAL_TEMP:
@@ -1790,9 +1841,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             if (canShare
                 && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
                 state.m_subgraphOrderCache.emplace(
-                    cacheKey, SubgraphOrderCacheEntry{
-                                  funcp, logicSig,
-                                  !SubgraphLoweringState::orderedFuncHasTriggeredRefs(funcp)});
+                    cacheKey,
+                    SubgraphOrderCacheEntry{funcp, logicSig,
+                                            !SubgraphLoweringState::orderedFuncHasTriggeredRefs(
+                                                funcp, state.m_stats)});
                 ++state.m_stats.m_orderCacheEntries;
             }
         }
@@ -1805,7 +1857,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
         callFuncp = tailFuncp;
     }
-    const bool cloneableArtifact = !SubgraphLoweringState::orderedFuncHasTriggeredRefs(callFuncp);
+    const bool cloneableArtifact
+        = !SubgraphLoweringState::orderedFuncHasTriggeredRefs(callFuncp, state.m_stats);
     if (tailFuncps) {
         for (AstCFunc* const tailFuncp : *tailFuncps) {
             plan.m_instance.m_tailFuncps.push_back(tailFuncp);

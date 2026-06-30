@@ -16,5 +16,7 @@ test.execute()
 
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+([1-9]\d*)")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
 
 test.passes()
