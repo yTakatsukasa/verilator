@@ -28,11 +28,13 @@ module t (
   logic [15:0] y2;
   logic [15:0] y3;
   logic [15:0] y4;
+  logic [15:0] y5;
   logic [15:0] ref0;
   logic [15:0] ref1;
   logic [15:0] ref2;
   logic [15:0] ref3;
   logic [15:0] ref4;
+  logic [15:0] ref5;
 
   sg_node i_sg0 (
     .clk(clk),
@@ -98,6 +100,14 @@ module t (
     .y_o(y4)
   );
 
+  sg_node_blocking i_sg5 (
+    .clk(clk),
+    .rst_n(rst_n),
+    .a_i(a),
+    .b_i(b),
+    .y_o(y5)
+  );
+
   sg_node_blocking_ref i_ref3 (
     .clk(clk),
     .rst_n(rst_n),
@@ -112,6 +122,14 @@ module t (
     .a_i(a),
     .b_i(b),
     .y_o(ref4)
+  );
+
+  sg_node_blocking_ref i_ref5 (
+    .clk(clk),
+    .rst_n(rst_n),
+    .a_i(a),
+    .b_i(b),
+    .y_o(ref5)
   );
 
   always_ff @(posedge clk) begin
@@ -131,6 +149,7 @@ module t (
       `checkh(y2, ref2);
       `checkh(y3, ref3);
       `checkh(y4, ref4);
+      `checkh(y5, ref5);
     end
 
     if (cyc == 40) begin
