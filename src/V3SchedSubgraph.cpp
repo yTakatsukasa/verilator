@@ -280,15 +280,19 @@ struct SubgraphOrderCacheKeyHash final {
 struct SubgraphScheduleArtifactKey final {
     std::vector<uintptr_t> m_domainShape;
     AstNodeModule* m_modp = nullptr;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
 
     bool operator==(const SubgraphScheduleArtifactKey& other) const {
-        return m_modp == other.m_modp && m_domainShape == other.m_domainShape;
+        return m_modp == other.m_modp && m_phase == other.m_phase
+               && m_domainShape == other.m_domainShape;
     }
 };
 
 struct SubgraphScheduleArtifactKeyHash final {
     size_t operator()(const SubgraphScheduleArtifactKey& key) const {
         size_t hash = std::hash<const void*>{}(key.m_modp);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_phase)) + 0x9e3779b97f4a7c15ULL
+                + (hash << 6) + (hash >> 2);
         for (const uintptr_t value : key.m_domainShape) {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
@@ -301,6 +305,23 @@ enum class SubgraphArtifactUncloneableReason : uint8_t {
     NONE,
     TRIGGERED,
     CLONE_FAIL,
+};
+
+enum class SubgraphSharedHelperSkipReason : uint8_t {
+    NONE,
+    CLONE_FAIL,
+    MODULE_MISMATCH,
+    NON_LOOSE,
+    OTHER,
+    PHASE,
+    TAIL,
+    TRIGGERED,
+};
+
+struct SubgraphSharedHelperContext final {
+    AstScope* m_currentScopep = nullptr;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    bool m_hasTailFuncps = false;
 };
 
 struct SubgraphScheduleArtifact final {
@@ -520,6 +541,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseSharedSkipModuleMismatch = 0;
     uint64_t m_artifactReuseSharedSkipNonLoose = 0;
     uint64_t m_artifactReuseSharedSkipOther = 0;
+    uint64_t m_artifactReuseSharedSkipPhase = 0;
     uint64_t m_artifactReuseSharedSkipTail = 0;
     uint64_t m_artifactReuseSharedSkipTriggered = 0;
     uint64_t m_artifactReuseSkipCloneFail = 0;
@@ -617,6 +639,8 @@ struct SubgraphLoweringStats final {
                          m_artifactReuseSharedSkipNonLoose);
         V3Stats::addStat(prefix + "artifact reuse shared skip other",
                          m_artifactReuseSharedSkipOther);
+        V3Stats::addStat(prefix + "artifact reuse shared skip phase",
+                         m_artifactReuseSharedSkipPhase);
         V3Stats::addStat(prefix + "artifact reuse shared skip tail",
                          m_artifactReuseSharedSkipTail);
         V3Stats::addStat(prefix + "artifact reuse shared skip triggered",
@@ -1088,33 +1112,67 @@ public:
         ++m_stats.m_contractExternalUseScans;
     }
 
-    void noteSharedReuseSkip(SubgraphScheduleArtifact* artifactp, AstScope* currentScopep,
-                             bool hasTailFuncps) {
-        if (hasTailFuncps) {
-            ++m_stats.m_artifactReuseSharedSkipTail;
-        } else if (!artifactp->m_callFuncp->isLoose()) {
-            ++m_stats.m_artifactReuseSharedSkipNonLoose;
-        } else if (artifactp->m_callFuncp->scopep()->modp() != currentScopep->modp()) {
+    static bool sharedHelperSupportsPhase(AstSubgraphInstance::Phase phase) {
+        return phase == AstSubgraphInstance::Phase::PRE
+               || phase == AstSubgraphInstance::Phase::POST;
+    }
+
+    static SubgraphSharedHelperSkipReason
+    classifySharedHelperUse(SubgraphScheduleArtifact* artifactp,
+                            const SubgraphSharedHelperContext& context) {
+        if (context.m_hasTailFuncps) return SubgraphSharedHelperSkipReason::TAIL;
+        if (!sharedHelperSupportsPhase(context.m_phase))
+            return SubgraphSharedHelperSkipReason::PHASE;
+        if (!artifactp->m_callFuncp->isLoose()) return SubgraphSharedHelperSkipReason::NON_LOOSE;
+        if (artifactp->m_callFuncp->scopep()->modp() != context.m_currentScopep->modp()) {
+            return SubgraphSharedHelperSkipReason::MODULE_MISMATCH;
+        }
+        if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
+        switch (artifactp->m_uncloneableReason) {
+        case SubgraphArtifactUncloneableReason::TRIGGERED:
+            return SubgraphSharedHelperSkipReason::TRIGGERED;
+        case SubgraphArtifactUncloneableReason::CLONE_FAIL:
+            return SubgraphSharedHelperSkipReason::CLONE_FAIL;
+        case SubgraphArtifactUncloneableReason::NONE: return SubgraphSharedHelperSkipReason::OTHER;
+        }
+        return SubgraphSharedHelperSkipReason::OTHER;
+    }
+
+    static bool canUseSharedHelper(SubgraphScheduleArtifact* artifactp,
+                                   const SubgraphSharedHelperContext& context) {
+        return classifySharedHelperUse(artifactp, context) == SubgraphSharedHelperSkipReason::NONE;
+    }
+
+    void noteSharedReuseSkip(SubgraphSharedHelperSkipReason reason) {
+        switch (reason) {
+        case SubgraphSharedHelperSkipReason::NONE: return;
+        case SubgraphSharedHelperSkipReason::CLONE_FAIL:
+            ++m_stats.m_artifactReuseSharedSkipCloneFail;
+            return;
+        case SubgraphSharedHelperSkipReason::MODULE_MISMATCH:
             ++m_stats.m_artifactReuseSharedSkipModuleMismatch;
-        } else {
-            switch (artifactp->m_uncloneableReason) {
-            case SubgraphArtifactUncloneableReason::TRIGGERED:
-                ++m_stats.m_artifactReuseSharedSkipTriggered;
-                return;
-            case SubgraphArtifactUncloneableReason::CLONE_FAIL:
-                ++m_stats.m_artifactReuseSharedSkipCloneFail;
-                return;
-            case SubgraphArtifactUncloneableReason::NONE:
-                ++m_stats.m_artifactReuseSharedSkipOther;
-                return;
-            }
+            return;
+        case SubgraphSharedHelperSkipReason::NON_LOOSE:
+            ++m_stats.m_artifactReuseSharedSkipNonLoose;
+            return;
+        case SubgraphSharedHelperSkipReason::OTHER:
+            ++m_stats.m_artifactReuseSharedSkipOther;
+            return;
+        case SubgraphSharedHelperSkipReason::PHASE:
+            ++m_stats.m_artifactReuseSharedSkipPhase;
+            return;
+        case SubgraphSharedHelperSkipReason::TAIL: ++m_stats.m_artifactReuseSharedSkipTail; return;
+        case SubgraphSharedHelperSkipReason::TRIGGERED:
+            ++m_stats.m_artifactReuseSharedSkipTriggered;
+            return;
         }
     }
 
     SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, const LogicByScope& currentLogic,
         AstScope* currentScopep,
-        std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap, bool hasTailFuncps) {
+        std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
+        const SubgraphSharedHelperContext& sharedContext) {
         ++m_stats.m_artifactReuseLookups;
         const auto it = m_subgraphArtifactCache.find(key);
         if (it == m_subgraphArtifactCache.end()) {
@@ -1127,7 +1185,7 @@ public:
         bool sawTriggered = false;
         for (SubgraphScheduleArtifact* const artifactp : it->second) {
             if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep) {
-                noteSharedReuseSkip(artifactp, currentScopep, hasTailFuncps);
+                noteSharedReuseSkip(classifySharedHelperUse(artifactp, sharedContext));
                 switch (artifactp->m_uncloneableReason) {
                 case SubgraphArtifactUncloneableReason::TRIGGERED: sawTriggered = true; break;
                 case SubgraphArtifactUncloneableReason::CLONE_FAIL: sawCloneFail = true; break;
@@ -1551,24 +1609,26 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     SubgraphScheduleArtifactKey artifactKey;
     artifactKey.m_domainShape = cacheKey.m_domainShape;
     artifactKey.m_modp = cacheKey.m_modp;
+    artifactKey.m_phase = phase;
     const bool cacheableArtifact = canShare && tag != "stl";
+    const SubgraphSharedHelperContext sharedContext{group.m_scopep, phase, tailFuncps != nullptr};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
         SubgraphScheduleArtifact* const artifactp = state.findReusableSubgraphScheduleArtifact(
-            artifactKey, subgraphLogic, group.m_scopep, templateVarMap, tailFuncps != nullptr);
+            artifactKey, subgraphLogic, group.m_scopep, templateVarMap, sharedContext);
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
             bool sharedCall = false;
             if (artifactp->m_scopep == group.m_scopep) {
                 callFuncp = artifactp->m_callFuncp;
-            } else if (!tailFuncps && artifactp->m_callFuncp->isLoose()
-                       && artifactp->m_callFuncp->scopep()->modp() == group.m_scopep->modp()) {
+            } else if (SubgraphLoweringState::canUseSharedHelper(artifactp, sharedContext)) {
                 callFuncp = artifactp->m_callFuncp;
                 sharedCall = true;
                 ++state.m_stats.m_artifactReuseSharedCalls;
             } else {
-                state.noteSharedReuseSkip(artifactp, group.m_scopep, tailFuncps != nullptr);
+                state.noteSharedReuseSkip(
+                    SubgraphLoweringState::classifySharedHelperUse(artifactp, sharedContext));
                 const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
                 if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
                     callFuncp = cloneIt->second;
