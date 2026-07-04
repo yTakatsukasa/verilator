@@ -332,10 +332,15 @@ enum class SubgraphInstanceLocalVarKind : uint8_t {
     VLEM_TEMP,
 };
 
-struct SubgraphSharedHelperContext final {
+struct SubgraphScheduleBundleContext final {
     AstScope* m_currentScopep = nullptr;
-    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    bool m_currentScopeHasDerivedBoundaryReads = false;
     bool m_currentScopeHasInputTailWrites = false;
+};
+
+struct SubgraphSharedHelperContext final {
+    const SubgraphScheduleBundleContext* m_bundlep = nullptr;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
     bool m_hasTailFuncps = false;
 };
 
@@ -1358,18 +1363,20 @@ public:
         if (context.m_hasTailFuncps) return SubgraphSharedHelperSkipReason::TAIL;
         if (!sharedHelperSupportsPhase(context.m_phase))
             return SubgraphSharedHelperSkipReason::PHASE;
+        const SubgraphScheduleBundleContext& bundleContext = *context.m_bundlep;
         if (!artifactp->m_callFuncp->isLoose()) return SubgraphSharedHelperSkipReason::NON_LOOSE;
-        if (artifactp->m_callFuncp->scopep()->modp() != context.m_currentScopep->modp()) {
+        if (artifactp->m_callFuncp->scopep()->modp() != bundleContext.m_currentScopep->modp()) {
             return SubgraphSharedHelperSkipReason::MODULE_MISMATCH;
         }
         if (scopeHasDerivedBoundaryReads(artifactp->m_scopep)
-            || scopeHasDerivedBoundaryReads(context.m_currentScopep)) {
+            || bundleContext.m_currentScopeHasDerivedBoundaryReads) {
             return SubgraphSharedHelperSkipReason::OTHER;
         }
         if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
         if (artifactp->m_uncloneableReason == SubgraphArtifactUncloneableReason::TRIGGERED
             && artifactp->m_triggeredShareable) {
-            if (artifactp->m_scopeHasInputTailWrites || context.m_currentScopeHasInputTailWrites) {
+            if (artifactp->m_scopeHasInputTailWrites
+                || bundleContext.m_currentScopeHasInputTailWrites) {
                 return SubgraphSharedHelperSkipReason::TRIGGERED;
             }
             return SubgraphSharedHelperSkipReason::NONE;
@@ -1416,9 +1423,10 @@ public:
 
     SubgraphScheduleArtifactReuse
     findReusableSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key,
-                                         const LogicByScope& currentLogic, AstScope* currentScopep,
+                                         const LogicByScope& currentLogic,
                                          const SubgraphSharedHelperContext& sharedContext) {
         SubgraphScheduleArtifactReuse reuse;
+        AstScope* const currentScopep = sharedContext.m_bundlep->m_currentScopep;
         ++m_stats.m_artifactReuseLookups;
         const auto it = m_subgraphArtifactCache.find(key);
         if (it == m_subgraphArtifactCache.end()) {
@@ -1826,6 +1834,15 @@ bool tailFuncsWriteBoundaryInputs(const std::vector<AstCFunc*>& tailFuncps, AstS
     return false;
 }
 
+void refreshSubgraphScheduleBundleContext(SubgraphScheduleBundleContext& context,
+                                          const SubgraphLoweringState& state) {
+    context.m_currentScopeHasInputTailWrites = false;
+    const auto stlFuncsIt = state.m_stlSubgraphFuncs.find(context.m_currentScopep);
+    if (stlFuncsIt == state.m_stlSubgraphFuncs.end()) return;
+    context.m_currentScopeHasInputTailWrites
+        = tailFuncsWriteBoundaryInputs(stlFuncsIt->second, context.m_currentScopep);
+}
+
 AstActive* getOrCreateSubgraphActive(const SubgraphGroup& group,
                                      std::unordered_map<SubgraphActiveKey, SubgraphActiveEntry,
                                                         SubgraphActiveKeyHash>& subgraphActives) {
@@ -1860,8 +1877,9 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
 SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
     bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
-    SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
-    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
+    const SubgraphScheduleBundleContext& bundleContext, SubgraphLoweringState& state,
+    const V3Order::TrigToSenMap& trigToSen, const std::string& tag, bool slow,
+    const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
     SubgraphSchedulePlan plan;
     if (subgraphLogic.empty()) return plan;
     const bool canShare
@@ -1880,17 +1898,12 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     const bool cacheableArtifact = canShare && tag != "stl";
-    bool scopeHasInputTailWrites = false;
-    const auto stlFuncsIt = state.m_stlSubgraphFuncs.find(group.m_scopep);
-    if (stlFuncsIt != state.m_stlSubgraphFuncs.end()) {
-        scopeHasInputTailWrites = tailFuncsWriteBoundaryInputs(stlFuncsIt->second, group.m_scopep);
-    }
-    const SubgraphSharedHelperContext sharedContext{group.m_scopep, phase, scopeHasInputTailWrites,
-                                                    tailFuncps != nullptr};
+    const bool scopeHasInputTailWrites = bundleContext.m_currentScopeHasInputTailWrites;
+    const SubgraphSharedHelperContext sharedContext{&bundleContext, phase, tailFuncps != nullptr};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         SubgraphScheduleArtifactReuse reuse = state.findReusableSubgraphScheduleArtifact(
-            artifactKey, subgraphLogic, group.m_scopep, sharedContext);
+            artifactKey, subgraphLogic, sharedContext);
         SubgraphScheduleArtifact* const artifactp = reuse.m_artifactp;
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
@@ -2029,18 +2042,16 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     return plan;
 }
 
-void appendSubgraphScheduleBundlePlan(SubgraphScheduleBundle& bundle, AstNetlist* netlistp,
-                                      LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
-                                      bool isEarly, const std::vector<AstCFunc*>* tailFuncps,
-                                      const SubgraphGroup& group, SubgraphLoweringState& state,
-                                      const V3Order::TrigToSenMap& trigToSen,
-                                      const std::string& tag, bool slow,
-                                      const V3Order::ExternalDomainsProvider& externalDomains,
-                                      unsigned& subgraphIndex) {
+void appendSubgraphScheduleBundlePlan(
+    SubgraphScheduleBundle& bundle, AstNetlist* netlistp, LogicByScope& subgraphLogic,
+    const SubgraphWrapper& wrapper, bool isEarly, const std::vector<AstCFunc*>* tailFuncps,
+    const SubgraphGroup& group, const SubgraphScheduleBundleContext& bundleContext,
+    SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
+    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
     if (subgraphLogic.empty()) return;
-    SubgraphSchedulePlan plan
-        = buildSubgraphSchedulePlan(netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group,
-                                    state, trigToSen, tag, slow, externalDomains, subgraphIndex);
+    SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
+        netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group, bundleContext, state,
+        trigToSen, tag, slow, externalDomains, subgraphIndex);
     if (plan.m_artifactp) {
         bundle.m_plans.push_back(std::move(plan));
         ++state.m_stats.m_bundlePlans;
@@ -2330,13 +2341,18 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
     for (SubgraphGroup& group : groups) {
         AstActive* const subgraphActivep = getOrCreateSubgraphActive(group, subgraphActives);
         SubgraphScheduleBundle bundle;
+        SubgraphScheduleBundleContext bundleContext;
+        bundleContext.m_currentScopep = group.m_scopep;
+        bundleContext.m_currentScopeHasDerivedBoundaryReads
+            = SubgraphLoweringState::scopeHasDerivedBoundaryReads(group.m_scopep);
         ++state.m_stats.m_bundleBuilds;
         if (!group.m_earlyLogic.empty()) {
             const SubgraphWrapper wrapper
                 = wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp());
+            refreshSubgraphScheduleBundleContext(bundleContext, state);
             appendSubgraphScheduleBundlePlan(bundle, netlistp, group.m_earlyLogic, wrapper, true,
-                                             nullptr, group, state, trigToSen, tag, slow,
-                                             externalDomains, subgraphIndex);
+                                             nullptr, group, bundleContext, state, trigToSen, tag,
+                                             slow, externalDomains, subgraphIndex);
         }
         if (!group.m_lateLogic.empty()) {
             SubgraphWrapper wrapper = lateWrapperForGroup(group);
@@ -2364,9 +2380,10 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                     }
                 }
             }
+            refreshSubgraphScheduleBundleContext(bundleContext, state);
             appendSubgraphScheduleBundlePlan(bundle, netlistp, group.m_lateLogic, wrapper, false,
-                                             tailFuncps, group, state, trigToSen, tag, slow,
-                                             externalDomains, subgraphIndex);
+                                             tailFuncps, group, bundleContext, state, trigToSen,
+                                             tag, slow, externalDomains, subgraphIndex);
         }
         if (bundle.empty()) {
             ++state.m_stats.m_bundleEmpty;
