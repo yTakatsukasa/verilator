@@ -352,6 +352,15 @@ struct SubgraphScheduleArtifact final {
         = SubgraphArtifactUncloneableReason::NONE;
 };
 
+struct SubgraphScheduleRemap final {
+    std::unordered_map<const AstVarScope*, AstVarScope*> m_templateVarMap;
+};
+
+struct SubgraphScheduleArtifactReuse final {
+    SubgraphScheduleArtifact* m_artifactp = nullptr;
+    SubgraphScheduleRemap m_remap;
+};
+
 struct SubgraphTriggeredRefInfo final {
     bool m_hasTriggered = false;
     bool m_shareable = true;
@@ -1395,24 +1404,25 @@ public:
         }
     }
 
-    SubgraphScheduleArtifact* findReusableSubgraphScheduleArtifact(
-        const SubgraphScheduleArtifactKey& key, const LogicByScope& currentLogic,
-        AstScope* currentScopep,
-        std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
-        const SubgraphSharedHelperContext& sharedContext) {
+    SubgraphScheduleArtifactReuse
+    findReusableSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key,
+                                         const LogicByScope& currentLogic, AstScope* currentScopep,
+                                         const SubgraphSharedHelperContext& sharedContext) {
+        SubgraphScheduleArtifactReuse reuse;
         ++m_stats.m_artifactReuseLookups;
         const auto it = m_subgraphArtifactCache.find(key);
         if (it == m_subgraphArtifactCache.end()) {
             ++m_stats.m_artifactReuseMissNoEntry;
-            return nullptr;
+            return reuse;
         }
         bool sawCloneFail = false;
         bool sawLogicMismatch = false;
         bool sawOther = false;
         bool sawTriggered = false;
         for (SubgraphScheduleArtifact* const artifactp : it->second) {
-            templateVarMap.clear();
-            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic, templateVarMap)) {
+            reuse.m_remap.m_templateVarMap.clear();
+            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic,
+                                          reuse.m_remap.m_templateVarMap)) {
                 sawLogicMismatch = true;
                 continue;
             }
@@ -1426,13 +1436,15 @@ public:
                 }
                 continue;
             }
-            return artifactp;
+            reuse.m_artifactp = artifactp;
+            return reuse;
         }
         if (sawLogicMismatch) ++m_stats.m_artifactReuseMissLogicMismatch;
         if (sawTriggered) ++m_stats.m_artifactReuseSkipTriggered;
         if (sawCloneFail) ++m_stats.m_artifactReuseSkipCloneFail;
         if (sawOther) ++m_stats.m_artifactReuseSkipOther;
-        return nullptr;
+        reuse.m_remap.m_templateVarMap.clear();
+        return reuse;
     }
 
     SubgraphScheduleArtifact*
@@ -1867,9 +1879,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                                     tailFuncps != nullptr};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
-        std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-        SubgraphScheduleArtifact* const artifactp = state.findReusableSubgraphScheduleArtifact(
-            artifactKey, subgraphLogic, group.m_scopep, templateVarMap, sharedContext);
+        SubgraphScheduleArtifactReuse reuse = state.findReusableSubgraphScheduleArtifact(
+            artifactKey, subgraphLogic, group.m_scopep, sharedContext);
+        SubgraphScheduleArtifact* const artifactp = reuse.m_artifactp;
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
             bool sharedCall = false;
@@ -1888,7 +1900,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     ++state.m_stats.m_artifactReuseScopeCloneHits;
                 } else {
                     callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                        artifactp->m_callFuncp, group.m_scopep, templateVarMap, state.m_stats);
+                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap,
+                        state.m_stats);
                     if (callFuncp) {
                         artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
                         ++state.m_stats.m_orderedFuncClones;
