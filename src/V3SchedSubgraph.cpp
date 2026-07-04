@@ -591,6 +591,11 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactTailReuseCandidates = 0;
     uint64_t m_artifactTailReuses = 0;
     uint64_t m_artifacts = 0;
+    uint64_t m_bundleBuilds = 0;
+    uint64_t m_bundleEmpty = 0;
+    uint64_t m_bundleMaterialized = 0;
+    uint64_t m_bundleMaterializedPlans = 0;
+    uint64_t m_bundlePlans = 0;
     uint64_t m_contractExternalUseScans = 0;
     uint64_t m_contractExternalUseSnapshotSkips = 0;
     uint64_t m_groups = 0;
@@ -709,6 +714,11 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact tail reuse candidates", m_artifactTailReuseCandidates);
         V3Stats::addStat(prefix + "artifact tail reuses", m_artifactTailReuses);
         V3Stats::addStat(prefix + "artifacts", m_artifacts);
+        V3Stats::addStat(prefix + "bundle builds", m_bundleBuilds);
+        V3Stats::addStat(prefix + "bundle empty", m_bundleEmpty);
+        V3Stats::addStat(prefix + "bundle materialized", m_bundleMaterialized);
+        V3Stats::addStat(prefix + "bundle materialized plans", m_bundleMaterializedPlans);
+        V3Stats::addStat(prefix + "bundle plans", m_bundlePlans);
         V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
         V3Stats::addStat(prefix + "contract external use snapshot skips",
                          m_contractExternalUseSnapshotSkips);
@@ -2025,10 +2035,13 @@ SubgraphScheduleBundle buildSubgraphScheduleBundle(
     SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
     bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
     SubgraphScheduleBundle bundle;
+    ++state.m_stats.m_bundleBuilds;
     SubgraphSchedulePlan plan
         = buildSubgraphSchedulePlan(netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group,
                                     state, trigToSen, tag, slow, externalDomains, subgraphIndex);
     if (plan.m_artifactp) bundle.m_plans.push_back(std::move(plan));
+    if (bundle.empty()) ++state.m_stats.m_bundleEmpty;
+    state.m_stats.m_bundlePlans += bundle.m_plans.size();
     return bundle;
 }
 
@@ -2059,6 +2072,8 @@ void materializeSubgraphScheduleBundle(
     const SubgraphGroup& group, const SubgraphScheduleBundle& bundle, SubgraphLoweringState& state,
     AstActive* subgraphActivep,
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
+    ++state.m_stats.m_bundleMaterialized;
+    state.m_stats.m_bundleMaterializedPlans += bundle.m_plans.size();
     for (const SubgraphSchedulePlan& plan : bundle.m_plans) {
         materializeSubgraphSchedulePlan(group, plan, state, subgraphActivep, batches);
     }
