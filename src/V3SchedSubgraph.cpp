@@ -590,6 +590,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseMissLogicMismatch = 0;
     uint64_t m_artifactReuseMissNoEntry = 0;
     uint64_t m_artifactReuseScopeCloneHits = 0;
+    uint64_t m_artifactReuseScopeClones = 0;
     uint64_t m_artifactReuseSharedCalls = 0;
     uint64_t m_artifactReuseSharedSkipCloneFail = 0;
     uint64_t m_artifactReuseSharedSkipModuleMismatch = 0;
@@ -697,6 +698,10 @@ struct SubgraphLoweringStats final {
         const uint64_t inputHiddenBodyNodesAfter
             = m_inputSubgraphInstanceBodyNodesAfter + m_inputSnapshotProcedureBodyNodesAfter;
         const uint64_t orderCacheLookups = m_orderCacheHits + m_orderCacheMisses;
+        const uint64_t artifactReuseScopeCloneCalls
+            = m_artifactReuseScopeCloneHits + m_artifactReuseScopeClones;
+        const uint64_t artifactReuseHelperCalls
+            = m_artifactReuseSharedCalls + artifactReuseScopeCloneCalls;
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
         V3Stats::addStat(prefix + "artifact reuse lookups", m_artifactReuseLookups);
         V3Stats::addStat(prefix + "artifact reuse miss logic mismatch",
@@ -704,7 +709,14 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact reuse miss no entry", m_artifactReuseMissNoEntry);
         V3Stats::addStat(prefix + "artifact reuse scope clone hits",
                          m_artifactReuseScopeCloneHits);
+        V3Stats::addStat(prefix + "artifact reuse scope clone calls",
+                         artifactReuseScopeCloneCalls);
+        V3Stats::addStat(prefix + "artifact reuse scope clones", m_artifactReuseScopeClones);
         V3Stats::addStat(prefix + "artifact reuse shared calls", m_artifactReuseSharedCalls);
+        V3Stats::addStat(prefix + "artifact reuse shared clone avoids",
+                         m_artifactReuseSharedCalls);
+        V3Stats::addStat(prefix + "artifact reuse shared call permille",
+                         ratioPermille(m_artifactReuseSharedCalls, artifactReuseHelperCalls));
         V3Stats::addStat(prefix + "artifact reuse shared skip clone fail",
                          m_artifactReuseSharedSkipCloneFail);
         V3Stats::addStat(prefix + "artifact reuse shared skip module mismatch",
@@ -734,7 +746,11 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "bundle empty", m_bundleEmpty);
         V3Stats::addStat(prefix + "bundle materialized", m_bundleMaterialized);
         V3Stats::addStat(prefix + "bundle materialized plans", m_bundleMaterializedPlans);
+        V3Stats::addStat(prefix + "bundle materialized plans per bundle permille",
+                         ratioPermille(m_bundleMaterializedPlans, m_bundleMaterialized));
         V3Stats::addStat(prefix + "bundle plans", m_bundlePlans);
+        V3Stats::addStat(prefix + "bundle plans per build permille",
+                         ratioPermille(m_bundlePlans, m_bundleBuilds));
         V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
         V3Stats::addStat(prefix + "contract external use snapshot skips",
                          m_contractExternalUseSnapshotSkips);
@@ -1938,6 +1954,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         state.m_stats);
                     if (callFuncp) {
                         artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
+                        ++state.m_stats.m_artifactReuseScopeClones;
                         ++state.m_stats.m_orderedFuncClones;
                     }
                 }
