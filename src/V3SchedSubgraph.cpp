@@ -56,6 +56,17 @@ struct SubgraphInstanceContract final {
         }
         m_externalUses.push_back({vscp, read, write});
     }
+    void mergeFrom(const SubgraphInstanceContract& other) {
+        m_hasClockedState |= other.m_hasClockedState;
+        m_hasPostPhase |= other.m_hasPostPhase;
+        for (const AstSubgraphInstance::BoundaryReadContract& read : other.m_boundaryReads) {
+            addBoundaryRead(read.m_varscp, read.m_derived);
+        }
+        for (AstVarScope* const vscp : other.m_boundaryWrites) addBoundaryWrite(vscp);
+        for (const AstSubgraphInstance::ExternalUseContract& use : other.m_externalUses) {
+            addExternalUse(use.m_varscp, use.m_read, use.m_write);
+        }
+    }
 };
 
 using SubgraphInstanceContractMap = std::unordered_map<const AstScope*, SubgraphInstanceContract>;
@@ -2058,11 +2069,11 @@ void appendSubgraphScheduleBundlePlan(
     }
 }
 
-void materializeSubgraphSchedulePlan(
+AstSubgraphInstance* materializeSubgraphSchedulePlan(
     const SubgraphGroup& group, const SubgraphSchedulePlan& plan, SubgraphLoweringState& state,
     AstActive* subgraphActivep,
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
-    if (!plan.m_artifactp) return;
+    if (!plan.m_artifactp) return nullptr;
     const SubgraphScheduleInstance& instance = plan.m_instance;
     AstCCall* const callp = new AstCCall{instance.m_callFuncp->fileline(), instance.m_callFuncp};
     if (instance.m_sharedCall) {
@@ -2078,7 +2089,7 @@ void materializeSubgraphSchedulePlan(
         group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, subgraphActivep,
         batches, state);
     subgraphp->addStmtsp(stmtsp);
-    populateSubgraphInstanceContract(subgraphp, instance.m_contract);
+    return subgraphp;
 }
 
 void materializeSubgraphScheduleBundle(
@@ -2087,8 +2098,15 @@ void materializeSubgraphScheduleBundle(
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
     ++state.m_stats.m_bundleMaterialized;
     state.m_stats.m_bundleMaterializedPlans += bundle.m_plans.size();
+    std::unordered_map<AstSubgraphInstance*, SubgraphInstanceContract> contractBySubgraph;
     for (const SubgraphSchedulePlan& plan : bundle.m_plans) {
-        materializeSubgraphSchedulePlan(group, plan, state, subgraphActivep, batches);
+        AstSubgraphInstance* const subgraphp
+            = materializeSubgraphSchedulePlan(group, plan, state, subgraphActivep, batches);
+        if (!subgraphp) continue;
+        contractBySubgraph[subgraphp].mergeFrom(plan.m_instance.m_contract);
+    }
+    for (const auto& pair : contractBySubgraph) {
+        populateSubgraphInstanceContract(pair.first, pair.second);
     }
 }
 
