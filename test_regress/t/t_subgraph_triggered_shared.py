@@ -17,8 +17,10 @@ test.execute()
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle builds\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized plans\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle plans\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, schedule plans\s+([1-9]\d*)")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+([1-9]\d*)")
 test.file_grep(test.stats,
