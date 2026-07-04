@@ -373,9 +373,15 @@ struct SubgraphSchedulePlan final {
     SubgraphWrapper m_wrapper;
 };
 
+struct SubgraphScheduleBundle final {
+    std::vector<SubgraphSchedulePlan> m_plans;
+
+    bool empty() const { return m_plans.empty(); }
+};
+
 struct SubgraphScheduledGroup final {
+    SubgraphScheduleBundle m_bundle;
     const SubgraphGroup* m_groupp = nullptr;
-    SubgraphSchedulePlan m_plan;
     AstActive* m_subgraphActivep = nullptr;
 };
 
@@ -2000,6 +2006,19 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     return plan;
 }
 
+SubgraphScheduleBundle buildSubgraphScheduleBundle(
+    AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
+    bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
+    SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
+    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
+    SubgraphScheduleBundle bundle;
+    SubgraphSchedulePlan plan
+        = buildSubgraphSchedulePlan(netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group,
+                                    state, trigToSen, tag, slow, externalDomains, subgraphIndex);
+    if (plan.m_artifactp) bundle.m_plans.push_back(std::move(plan));
+    return bundle;
+}
+
 void materializeSubgraphSchedulePlan(
     const SubgraphGroup& group, const SubgraphSchedulePlan& plan, SubgraphLoweringState& state,
     AstActive* subgraphActivep,
@@ -2021,6 +2040,15 @@ void materializeSubgraphSchedulePlan(
         batches, state);
     subgraphp->addStmtsp(stmtsp);
     populateSubgraphInstanceContract(subgraphp, instance.m_contract);
+}
+
+void materializeSubgraphScheduleBundle(
+    const SubgraphGroup& group, const SubgraphScheduleBundle& bundle, SubgraphLoweringState& state,
+    AstActive* subgraphActivep,
+    std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
+    for (const SubgraphSchedulePlan& plan : bundle.m_plans) {
+        materializeSubgraphSchedulePlan(group, plan, state, subgraphActivep, batches);
+    }
 }
 
 AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
@@ -2274,11 +2302,12 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
         if (!group.m_earlyLogic.empty()) {
             const SubgraphWrapper wrapper
                 = wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp());
-            const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
+            SubgraphScheduleBundle bundle = buildSubgraphScheduleBundle(
                 netlistp, group.m_earlyLogic, wrapper, true, nullptr, group, state, trigToSen, tag,
                 slow, externalDomains, subgraphIndex);
-            if (plan.m_artifactp) {
-                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, subgraphActivep});
+            if (!bundle.empty()) {
+                scheduledGroups.push_back(
+                    SubgraphScheduledGroup{std::move(bundle), &group, subgraphActivep});
             }
         }
         if (!group.m_lateLogic.empty()) {
@@ -2307,17 +2336,18 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                     }
                 }
             }
-            const SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
+            SubgraphScheduleBundle bundle = buildSubgraphScheduleBundle(
                 netlistp, group.m_lateLogic, wrapper, false, tailFuncps, group, state, trigToSen,
                 tag, slow, externalDomains, subgraphIndex);
-            if (plan.m_artifactp) {
-                scheduledGroups.push_back(SubgraphScheduledGroup{&group, plan, subgraphActivep});
+            if (!bundle.empty()) {
+                scheduledGroups.push_back(
+                    SubgraphScheduledGroup{std::move(bundle), &group, subgraphActivep});
             }
         }
     }
     for (const SubgraphScheduledGroup& scheduled : scheduledGroups) {
-        materializeSubgraphSchedulePlan(*scheduled.m_groupp, scheduled.m_plan, state,
-                                        scheduled.m_subgraphActivep, batches);
+        materializeSubgraphScheduleBundle(*scheduled.m_groupp, scheduled.m_bundle, state,
+                                          scheduled.m_subgraphActivep, batches);
     }
     for (const auto& pair : subgraphActives) {
         AstActive* const subgraphActivep = pair.second.m_activep;
