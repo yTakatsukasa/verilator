@@ -2029,20 +2029,22 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     return plan;
 }
 
-SubgraphScheduleBundle buildSubgraphScheduleBundle(
-    AstNetlist* netlistp, LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
-    bool isEarly, const std::vector<AstCFunc*>* tailFuncps, const SubgraphGroup& group,
-    SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
-    bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
-    SubgraphScheduleBundle bundle;
-    ++state.m_stats.m_bundleBuilds;
+void appendSubgraphScheduleBundlePlan(SubgraphScheduleBundle& bundle, AstNetlist* netlistp,
+                                      LogicByScope& subgraphLogic, const SubgraphWrapper& wrapper,
+                                      bool isEarly, const std::vector<AstCFunc*>* tailFuncps,
+                                      const SubgraphGroup& group, SubgraphLoweringState& state,
+                                      const V3Order::TrigToSenMap& trigToSen,
+                                      const std::string& tag, bool slow,
+                                      const V3Order::ExternalDomainsProvider& externalDomains,
+                                      unsigned& subgraphIndex) {
+    if (subgraphLogic.empty()) return;
     SubgraphSchedulePlan plan
         = buildSubgraphSchedulePlan(netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group,
                                     state, trigToSen, tag, slow, externalDomains, subgraphIndex);
-    if (plan.m_artifactp) bundle.m_plans.push_back(std::move(plan));
-    if (bundle.empty()) ++state.m_stats.m_bundleEmpty;
-    state.m_stats.m_bundlePlans += bundle.m_plans.size();
-    return bundle;
+    if (plan.m_artifactp) {
+        bundle.m_plans.push_back(std::move(plan));
+        ++state.m_stats.m_bundlePlans;
+    }
 }
 
 void materializeSubgraphSchedulePlan(
@@ -2327,16 +2329,14 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
     std::vector<SubgraphScheduledGroup> scheduledGroups;
     for (SubgraphGroup& group : groups) {
         AstActive* const subgraphActivep = getOrCreateSubgraphActive(group, subgraphActives);
+        SubgraphScheduleBundle bundle;
+        ++state.m_stats.m_bundleBuilds;
         if (!group.m_earlyLogic.empty()) {
             const SubgraphWrapper wrapper
                 = wrapperFromLogic(group.m_earlyLogic.front().second->stmtsp());
-            SubgraphScheduleBundle bundle = buildSubgraphScheduleBundle(
-                netlistp, group.m_earlyLogic, wrapper, true, nullptr, group, state, trigToSen, tag,
-                slow, externalDomains, subgraphIndex);
-            if (!bundle.empty()) {
-                scheduledGroups.push_back(
-                    SubgraphScheduledGroup{std::move(bundle), &group, subgraphActivep});
-            }
+            appendSubgraphScheduleBundlePlan(bundle, netlistp, group.m_earlyLogic, wrapper, true,
+                                             nullptr, group, state, trigToSen, tag, slow,
+                                             externalDomains, subgraphIndex);
         }
         if (!group.m_lateLogic.empty()) {
             SubgraphWrapper wrapper = lateWrapperForGroup(group);
@@ -2364,13 +2364,15 @@ void lowerSubgraphGroups(AstNetlist* netlistp, std::vector<SubgraphGroup>& group
                     }
                 }
             }
-            SubgraphScheduleBundle bundle = buildSubgraphScheduleBundle(
-                netlistp, group.m_lateLogic, wrapper, false, tailFuncps, group, state, trigToSen,
-                tag, slow, externalDomains, subgraphIndex);
-            if (!bundle.empty()) {
-                scheduledGroups.push_back(
-                    SubgraphScheduledGroup{std::move(bundle), &group, subgraphActivep});
-            }
+            appendSubgraphScheduleBundlePlan(bundle, netlistp, group.m_lateLogic, wrapper, false,
+                                             tailFuncps, group, state, trigToSen, tag, slow,
+                                             externalDomains, subgraphIndex);
+        }
+        if (bundle.empty()) {
+            ++state.m_stats.m_bundleEmpty;
+        } else {
+            scheduledGroups.push_back(
+                SubgraphScheduledGroup{std::move(bundle), &group, subgraphActivep});
         }
     }
     for (const SubgraphScheduledGroup& scheduled : scheduledGroups) {
