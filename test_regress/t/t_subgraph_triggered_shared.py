@@ -23,16 +23,16 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared cal
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle builds\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized plans\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, bundle materialized plans per bundle permille\s+([1-9]\d*)")
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph nba, bundle materialized plans per bundle permille\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle plans\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle plans per build permille\s+([1-9]\d*)")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, bundle plans per build permille\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, schedule plans\s+([1-9]\d*)")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact shareable\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
 
 test.passes()
