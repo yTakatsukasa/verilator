@@ -21,7 +21,7 @@ test.execute()
 
 test.file_grep(out_filename, r'"name":"sub".*"subgraphBoundary":true')
 test.file_grep(cpp_filename, r"Vt_subgraph_boundary_sub___nba_sequent__TOP__t__DOT__i_sub0__")
-test.file_grep(cpp_filename, r"t__DOT__i_ref0__DOT__q")
+test.file_grep(cpp_filename, r"TOP__t__DOT__i_ref0\.__PVT__q")
 test.file_grep(sub_cpp_filename, r"___nba_sequent__TOP__t__DOT__i_sub0__")
 
 with open(out_filename, 'r', encoding="utf8") as fh:
