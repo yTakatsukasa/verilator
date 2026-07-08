@@ -19,6 +19,7 @@
 #include "V3SchedSubgraph.h"
 
 #include "V3Hasher.h"
+#include "V3Os.h"
 #include "V3Stats.h"
 #include "V3SubgraphSummary.h"
 
@@ -314,6 +315,24 @@ struct SubgraphScheduleArtifactKeyHash final {
     }
 };
 
+size_t hashDomainShape(const std::vector<uintptr_t>& domainShape) {
+    size_t hash = 0;
+    for (const uintptr_t value : domainShape) {
+        hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    }
+    return hash;
+}
+
+uint64_t statStartUsecs() {
+    if (!v3Global.opt.stats()) return 0;
+    return V3Os::timeUsecs();
+}
+
+void addElapsedUsecs(uint64_t& accum, uint64_t startUsecs) {
+    if (!startUsecs) return;
+    accum += V3Os::timeUsecs() - startUsecs;
+}
+
 enum class SubgraphArtifactUncloneableReason : uint8_t {
     NONE,
     TRIGGERED,
@@ -585,10 +604,18 @@ public:
 };
 
 struct SubgraphLoweringStats final {
+    uint64_t m_artifactKeyMaxEntriesPerFullKey = 0;
+    uint64_t m_artifactKeyUniqueDomainShapes = 0;
+    uint64_t m_artifactKeyUniqueFull = 0;
+    uint64_t m_artifactKeyUniqueModules = 0;
     uint64_t m_artifactMisses = 0;
     uint64_t m_artifactReuseLookups = 0;
     uint64_t m_artifactReuseMissLogicMismatch = 0;
     uint64_t m_artifactReuseMissNoEntry = 0;
+    uint64_t m_artifactReuseMissNoEntrySameDomainShape = 0;
+    uint64_t m_artifactReuseMissNoEntrySameModule = 0;
+    uint64_t m_artifactReuseMissNoEntrySameModuleDomainShape = 0;
+    uint64_t m_artifactReuseMissNoEntrySameModulePhase = 0;
     uint64_t m_artifactReuseScopeCloneHits = 0;
     uint64_t m_artifactReuseScopeClones = 0;
     uint64_t m_artifactReuseSharedCalls = 0;
@@ -669,6 +696,17 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
+    uint64_t m_timeBuildPlansUsecs = 0;
+    uint64_t m_timeCollectGroupsUsecs = 0;
+    uint64_t m_timeCollectInputStatsUsecs = 0;
+    uint64_t m_timeCollectRegionWrittenVarsUsecs = 0;
+    uint64_t m_timeEmitSnapshotsUsecs = 0;
+    uint64_t m_timeInternalOrderUsecs = 0;
+    uint64_t m_timeLookupArtifactsUsecs = 0;
+    uint64_t m_timeLowerGroupsUsecs = 0;
+    uint64_t m_timeMaterializeUsecs = 0;
+    uint64_t m_timePrepareSnapshotsUsecs = 0;
+    uint64_t m_timeTotalUsecs = 0;
     uint64_t m_triggeredArtifactCandidates = 0;
     uint64_t m_triggeredArtifactInputTailWrites = 0;
     uint64_t m_triggeredArtifactNoNonLocalWrites = 0;
@@ -687,6 +725,8 @@ struct SubgraphLoweringStats final {
         return numerator * 1000 / denominator;
     }
 
+    static double seconds(uint64_t usecs) { return usecs / 1.0e6; }
+
     void report(const string& tag) const {
         if (!v3Global.opt.stats()) return;
         const string prefix = "Scheduling, Subgraph " + tag + ", ";
@@ -702,11 +742,25 @@ struct SubgraphLoweringStats final {
             = m_artifactReuseScopeCloneHits + m_artifactReuseScopeClones;
         const uint64_t artifactReuseHelperCalls
             = m_artifactReuseSharedCalls + artifactReuseScopeCloneCalls;
+        V3Stats::addStat(prefix + "artifact key max entries per full key",
+                         m_artifactKeyMaxEntriesPerFullKey);
+        V3Stats::addStat(prefix + "artifact key unique domain shapes",
+                         m_artifactKeyUniqueDomainShapes);
+        V3Stats::addStat(prefix + "artifact key unique full", m_artifactKeyUniqueFull);
+        V3Stats::addStat(prefix + "artifact key unique modules", m_artifactKeyUniqueModules);
         V3Stats::addStat(prefix + "artifact misses", m_artifactMisses);
         V3Stats::addStat(prefix + "artifact reuse lookups", m_artifactReuseLookups);
         V3Stats::addStat(prefix + "artifact reuse miss logic mismatch",
                          m_artifactReuseMissLogicMismatch);
         V3Stats::addStat(prefix + "artifact reuse miss no entry", m_artifactReuseMissNoEntry);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry same domain shape",
+                         m_artifactReuseMissNoEntrySameDomainShape);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry same module",
+                         m_artifactReuseMissNoEntrySameModule);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry same module domain shape",
+                         m_artifactReuseMissNoEntrySameModuleDomainShape);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry same module phase",
+                         m_artifactReuseMissNoEntrySameModulePhase);
         V3Stats::addStat(prefix + "artifact reuse scope clone hits",
                          m_artifactReuseScopeCloneHits);
         V3Stats::addStat(prefix + "artifact reuse scope clone calls",
@@ -840,6 +894,21 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
+        V3Stats::addStat(prefix + "time build plans sec", seconds(m_timeBuildPlansUsecs), 6);
+        V3Stats::addStat(prefix + "time collect groups sec", seconds(m_timeCollectGroupsUsecs), 6);
+        V3Stats::addStat(prefix + "time collect input stats sec",
+                         seconds(m_timeCollectInputStatsUsecs), 6);
+        V3Stats::addStat(prefix + "time collect region written vars sec",
+                         seconds(m_timeCollectRegionWrittenVarsUsecs), 6);
+        V3Stats::addStat(prefix + "time emit snapshots sec", seconds(m_timeEmitSnapshotsUsecs), 6);
+        V3Stats::addStat(prefix + "time internal order sec", seconds(m_timeInternalOrderUsecs), 6);
+        V3Stats::addStat(prefix + "time lookup artifacts sec", seconds(m_timeLookupArtifactsUsecs),
+                         6);
+        V3Stats::addStat(prefix + "time lower groups sec", seconds(m_timeLowerGroupsUsecs), 6);
+        V3Stats::addStat(prefix + "time materialize sec", seconds(m_timeMaterializeUsecs), 6);
+        V3Stats::addStat(prefix + "time prepare snapshots sec",
+                         seconds(m_timePrepareSnapshotsUsecs), 6);
+        V3Stats::addStat(prefix + "time total sec", seconds(m_timeTotalUsecs), 6);
         V3Stats::addStat(prefix + "triggered artifact candidates", m_triggeredArtifactCandidates);
         V3Stats::addStat(prefix + "triggered artifact input tail writes",
                          m_triggeredArtifactInputTailWrites);
@@ -1458,6 +1527,7 @@ public:
         const auto it = m_subgraphArtifactCache.find(key);
         if (it == m_subgraphArtifactCache.end()) {
             ++m_stats.m_artifactReuseMissNoEntry;
+            noteArtifactNoEntry(key);
             return reuse;
         }
         bool sawCloneFail = false;
@@ -1492,6 +1562,27 @@ public:
         return reuse;
     }
 
+    void noteArtifactNoEntry(const SubgraphScheduleArtifactKey& key) {
+        bool sameDomainShape = false;
+        bool sameModule = false;
+        bool sameModuleDomainShape = false;
+        bool sameModulePhase = false;
+        for (const auto& pair : m_subgraphArtifactCache) {
+            const SubgraphScheduleArtifactKey& cached = pair.first;
+            const bool moduleMatches = cached.m_modp == key.m_modp;
+            const bool phaseMatches = cached.m_phase == key.m_phase;
+            const bool domainShapeMatches = cached.m_domainShape == key.m_domainShape;
+            sameDomainShape |= domainShapeMatches;
+            sameModule |= moduleMatches;
+            sameModuleDomainShape |= moduleMatches && domainShapeMatches;
+            sameModulePhase |= moduleMatches && phaseMatches;
+        }
+        if (sameDomainShape) ++m_stats.m_artifactReuseMissNoEntrySameDomainShape;
+        if (sameModule) ++m_stats.m_artifactReuseMissNoEntrySameModule;
+        if (sameModuleDomainShape) ++m_stats.m_artifactReuseMissNoEntrySameModuleDomainShape;
+        if (sameModulePhase) ++m_stats.m_artifactReuseMissNoEntrySameModulePhase;
+    }
+
     SubgraphScheduleArtifact*
     makeSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key, AstScope* scopep,
                                  AstCFunc* callFuncp, SubgraphLogicSig&& logicSig, bool cloneable,
@@ -1513,6 +1604,21 @@ public:
         ++m_stats.m_artifactMisses;
         ++m_stats.m_artifacts;
         return resultp;
+    }
+
+    void updateArtifactKeyStats() {
+        std::unordered_set<AstNodeModule*> modules;
+        std::unordered_set<size_t> domainShapes;
+        uint64_t maxEntries = 0;
+        for (const auto& pair : m_subgraphArtifactCache) {
+            modules.insert(pair.first.m_modp);
+            domainShapes.insert(hashDomainShape(pair.first.m_domainShape));
+            maxEntries = std::max<uint64_t>(maxEntries, pair.second.size());
+        }
+        m_stats.m_artifactKeyMaxEntriesPerFullKey = maxEntries;
+        m_stats.m_artifactKeyUniqueDomainShapes = domainShapes.size();
+        m_stats.m_artifactKeyUniqueFull = m_subgraphArtifactCache.size();
+        m_stats.m_artifactKeyUniqueModules = modules.size();
     }
 
     SnapshotBucket& getSnapshotBucket(LogicByScope* ownerp, AstSenTree* senTreep) {
@@ -1929,8 +2035,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     const SubgraphSharedHelperContext sharedContext{&bundleContext, phase, tailFuncps != nullptr};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
+        const uint64_t lookupStartUsecs = statStartUsecs();
         SubgraphScheduleArtifactReuse reuse = state.findReusableSubgraphScheduleArtifact(
             artifactKey, subgraphLogic, sharedContext);
+        addElapsedUsecs(state.m_stats.m_timeLookupArtifactsUsecs, lookupStartUsecs);
         SubgraphScheduleArtifact* const artifactp = reuse.m_artifactp;
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
@@ -2013,9 +2121,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     if (!funcp) {
         if (canShare) ++state.m_stats.m_orderCacheMisses;
+        const uint64_t orderStartUsecs = statStartUsecs();
         funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
                                tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
                                externalDomains, group.m_scopep);
+        addElapsedUsecs(state.m_stats.m_timeInternalOrderUsecs, orderStartUsecs);
         if (funcp) {
             util::splitCheck(funcp);
             if (canShare
@@ -2077,9 +2187,11 @@ void appendSubgraphScheduleBundlePlan(
     SubgraphLoweringState& state, const V3Order::TrigToSenMap& trigToSen, const std::string& tag,
     bool slow, const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
     if (subgraphLogic.empty()) return;
+    const uint64_t buildPlanStartUsecs = statStartUsecs();
     SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
         netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group, bundleContext, state,
         trigToSen, tag, slow, externalDomains, subgraphIndex);
+    addElapsedUsecs(state.m_stats.m_timeBuildPlansUsecs, buildPlanStartUsecs);
     if (plan.m_artifactp) {
         bundle.m_plans.push_back(std::move(plan));
         ++state.m_stats.m_bundlePlans;
@@ -2115,6 +2227,7 @@ void materializeSubgraphScheduleBundle(
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches) {
     ++state.m_stats.m_bundleMaterialized;
     state.m_stats.m_bundleMaterializedPlans += bundle.m_plans.size();
+    const uint64_t materializeStartUsecs = statStartUsecs();
     std::unordered_map<AstSubgraphInstance*, SubgraphInstanceContract> contractBySubgraph;
     for (const SubgraphSchedulePlan& plan : bundle.m_plans) {
         AstSubgraphInstance* const subgraphp
@@ -2125,6 +2238,7 @@ void materializeSubgraphScheduleBundle(
     for (const auto& pair : contractBySubgraph) {
         populateSubgraphInstanceContract(pair.first, pair.second);
     }
+    addElapsedUsecs(state.m_stats.m_timeMaterializeUsecs, materializeStartUsecs);
 }
 
 AstVarScope* newSnapshotHelperArg(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& name,
@@ -2448,6 +2562,7 @@ class SubgraphLowerer final {
     const string& m_tag;
     const bool m_slow;
     const V3Order::ExternalDomainsProvider& m_externalDomains;
+    const uint64_t m_totalStartUsecs = statStartUsecs();
     SubgraphLoweringState m_state;
     std::vector<SubgraphGroup> m_groups;
 
@@ -2462,28 +2577,46 @@ public:
         , m_slow{slow}
         , m_externalDomains{externalDomains}
         , m_state{tag} {
+        uint64_t startUsecs = statStartUsecs();
         setSubgraphInputStatsBefore(m_state.m_stats, collectSubgraphLogicInputStats(m_logic));
+        addElapsedUsecs(m_state.m_stats.m_timeCollectInputStatsUsecs, startUsecs);
+        startUsecs = statStartUsecs();
         collectSubgraphGroups(m_logic, m_groups);
+        addElapsedUsecs(m_state.m_stats.m_timeCollectGroupsUsecs, startUsecs);
         m_state.m_stats.m_groups = m_groups.size();
     }
 
     void run() {
-        if (m_state.m_snapshotCrossBoundaryReads) collectRegionWrittenVars(m_logic, m_state);
         if (m_state.m_snapshotCrossBoundaryReads) {
+            const uint64_t startUsecs = statStartUsecs();
+            collectRegionWrittenVars(m_logic, m_state);
+            addElapsedUsecs(m_state.m_stats.m_timeCollectRegionWrittenVarsUsecs, startUsecs);
+        }
+        if (m_state.m_snapshotCrossBoundaryReads) {
+            const uint64_t startUsecs = statStartUsecs();
             prepareSubgraphSnapshots(m_groups, m_state, m_tag);
+            addElapsedUsecs(m_state.m_stats.m_timePrepareSnapshotsUsecs, startUsecs);
             m_state.m_stats.m_snapshotBuckets = m_state.m_snapshotBuckets.size();
             for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
                 m_state.m_stats.m_snapshotSources += bucket.m_sourceVars.size();
             }
         }
 
+        uint64_t startUsecs = statStartUsecs();
         lowerSubgraphGroups(m_netlistp, m_groups, m_state, m_trigToSen, m_tag, m_slow,
                             m_externalDomains);
+        addElapsedUsecs(m_state.m_stats.m_timeLowerGroupsUsecs, startUsecs);
 
+        startUsecs = statStartUsecs();
         for (const SnapshotBucket& bucket : m_state.m_snapshotBuckets) {
             emitSnapshotProcedureForBucket(bucket, m_state, m_slow);
         }
+        addElapsedUsecs(m_state.m_stats.m_timeEmitSnapshotsUsecs, startUsecs);
+        startUsecs = statStartUsecs();
         setSubgraphInputStatsAfter(m_state.m_stats, collectSubgraphLogicInputStats(m_logic));
+        addElapsedUsecs(m_state.m_stats.m_timeCollectInputStatsUsecs, startUsecs);
+        m_state.updateArtifactKeyStats();
+        addElapsedUsecs(m_state.m_stats.m_timeTotalUsecs, m_totalStartUsecs);
         m_state.m_stats.report(m_tag);
     }
 };

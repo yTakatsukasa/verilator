@@ -119,6 +119,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     // Map from Trigger reference AstSenItem to the original AstSenTree
     const V3Order::TrigToSenMap& m_trigToSen;
+    const std::string& m_tag;
 
     // Current AstScope being processed
     AstScope* m_scopep = nullptr;
@@ -539,7 +540,7 @@ class OrderGraphBuilder final : public VNVisitor {
               || !m_subgraphClockedPhaseVtxps.empty() || !m_subgraphPostPhaseVtxps.empty()
               || !m_subgraphSnapshotPhaseVtxps.empty();
         if (!sawSubgraphOrderGraph) return;
-        const string prefix = "Scheduling, Subgraph order graph, ";
+        const string prefix = "Scheduling, Subgraph order graph " + m_tag + ", ";
         V3Stats::addStat(prefix + "coarse nodes", m_subgraphStats.m_coarseNodes);
         V3Stats::addStat(prefix + "contract uses canonical",
                          m_subgraphStats.m_contractUsesCanonical);
@@ -732,8 +733,9 @@ class OrderGraphBuilder final : public VNVisitor {
 
     // CONSTRUCTOR
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
-                      const V3Order::TrigToSenMap& trigToSen)
-        : m_trigToSen{trigToSen} {
+                      const V3Order::TrigToSenMap& trigToSen, const std::string& tag)
+        : m_trigToSen{trigToSen}
+        , m_tag{tag} {
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
@@ -751,14 +753,16 @@ public:
     // this visitor does change the tree (removes some nodes related to DPI export trigger).
     static std::unique_ptr<OrderGraph> apply(AstNetlist* nodep,
                                              const std::vector<V3Sched::LogicByScope*>& coll,
-                                             const V3Order::TrigToSenMap& trigToSen) {
-        return std::unique_ptr<OrderGraph>{OrderGraphBuilder{nodep, coll, trigToSen}.m_graphp};
+                                             const V3Order::TrigToSenMap& trigToSen,
+                                             const std::string& tag) {
+        return std::unique_ptr<OrderGraph>{
+            OrderGraphBuilder{nodep, coll, trigToSen, tag}.m_graphp};
     }
 };
 
 std::unique_ptr<OrderGraph>
 V3Order::buildOrderGraph(AstNetlist* netlistp,  //
                          const std::vector<V3Sched::LogicByScope*>& coll,  //
-                         const V3Order::TrigToSenMap& trigToSen) {
-    return OrderGraphBuilder::apply(netlistp, coll, trigToSen);
+                         const V3Order::TrigToSenMap& trigToSen, const std::string& tag) {
+    return OrderGraphBuilder::apply(netlistp, coll, trigToSen, tag);
 }

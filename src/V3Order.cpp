@@ -74,7 +74,9 @@
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
 #include "V3OrderInternal.h"
+#include "V3Os.h"
 #include "V3Sched.h"
+#include "V3Stats.h"
 
 #include <memory>
 #include <vector>
@@ -98,6 +100,84 @@ string orderGraphSubgraphVarKind(const string& name) {
     if (0 == name.rfind("__VsubgraphSnapshot__", 0)) return "subgraph-snapshot";
     if (0 == name.rfind("__Vdly__", 0)) return "delayed-shadow";
     return "";
+}
+
+uint64_t statStartUsecs() {
+    if (!v3Global.opt.stats()) return 0;
+    return V3Os::timeUsecs();
+}
+
+void addElapsedStat(const string& prefix, const string& name, uint64_t startUsecs) {
+    if (!startUsecs) return;
+    const uint64_t elapsedUsecs = V3Os::timeUsecs() - startUsecs;
+    V3Stats::addStat(prefix + "time " + name + " sec", elapsedUsecs / 1.0e6, 6);
+}
+
+struct OrderGraphStats final {
+    uint64_t m_edges = 0;
+    uint64_t m_hardEdges = 0;
+    uint64_t m_logicVertices = 0;
+    uint64_t m_phaseVertices = 0;
+    uint64_t m_pordVertices = 0;
+    uint64_t m_postVertices = 0;
+    uint64_t m_preVertices = 0;
+    uint64_t m_softEdges = 0;
+    uint64_t m_stdVertices = 0;
+    uint64_t m_subgraphLogicVertices = 0;
+    uint64_t m_varVertices = 0;
+    uint64_t m_vertices = 0;
+};
+
+OrderGraphStats collectOrderGraphStats(const V3Graph& graph) {
+    OrderGraphStats stats;
+    for (const V3GraphVertex& vertex : graph.vertices()) {
+        ++stats.m_vertices;
+        for (const V3GraphEdge& edge : vertex.outEdges()) {
+            ++stats.m_edges;
+            if (edge.cutable()) {
+                ++stats.m_softEdges;
+            } else {
+                ++stats.m_hardEdges;
+            }
+        }
+        const auto* const logicp = dynamic_cast<const OrderLogicVertex*>(&vertex);
+        if (logicp) {
+            ++stats.m_logicVertices;
+            if (VN_IS(logicp->nodep(), SubgraphInstance)) ++stats.m_subgraphLogicVertices;
+            continue;
+        }
+        if (dynamic_cast<const OrderVarStdVertex*>(&vertex)) {
+            ++stats.m_stdVertices;
+        } else if (dynamic_cast<const OrderVarPreVertex*>(&vertex)) {
+            ++stats.m_preVertices;
+        } else if (dynamic_cast<const OrderVarPostVertex*>(&vertex)) {
+            ++stats.m_postVertices;
+        } else if (dynamic_cast<const OrderVarPordVertex*>(&vertex)) {
+            ++stats.m_pordVertices;
+        } else if (dynamic_cast<const OrderSubgraphPhaseVertex*>(&vertex)) {
+            ++stats.m_phaseVertices;
+        }
+        if (dynamic_cast<const OrderVarVertex*>(&vertex)) ++stats.m_varVertices;
+    }
+    return stats;
+}
+
+void reportOrderGraphStats(const string& tag, const string& stage, const V3Graph& graph) {
+    if (!v3Global.opt.stats()) return;
+    const OrderGraphStats stats = collectOrderGraphStats(graph);
+    const string prefix = "Scheduling, Order " + tag + " " + stage + ", ";
+    V3Stats::addStat(prefix + "edges", stats.m_edges);
+    V3Stats::addStat(prefix + "edges hard", stats.m_hardEdges);
+    V3Stats::addStat(prefix + "edges soft", stats.m_softEdges);
+    V3Stats::addStat(prefix + "vertices", stats.m_vertices);
+    V3Stats::addStat(prefix + "vertices logic", stats.m_logicVertices);
+    V3Stats::addStat(prefix + "vertices logic subgraph", stats.m_subgraphLogicVertices);
+    V3Stats::addStat(prefix + "vertices var", stats.m_varVertices);
+    V3Stats::addStat(prefix + "vertices var phase", stats.m_phaseVertices);
+    V3Stats::addStat(prefix + "vertices var pord", stats.m_pordVertices);
+    V3Stats::addStat(prefix + "vertices var post", stats.m_postVertices);
+    V3Stats::addStat(prefix + "vertices var pre", stats.m_preVertices);
+    V3Stats::addStat(prefix + "vertices var std", stats.m_stdVertices);
 }
 }  // namespace
 
@@ -197,24 +277,40 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
                          const ExternalDomainsProvider& externalDomains,  //
                          AstScope* resultScopep) {
     // Build the OrderGraph
-    const std::unique_ptr<OrderGraph> graph = buildOrderGraph(netlistp, logic, trigToSen);
+    const string statPrefix = "Scheduling, Order " + tag + ", ";
+    uint64_t startUsecs = statStartUsecs();
+    const std::unique_ptr<OrderGraph> graph = buildOrderGraph(netlistp, logic, trigToSen, tag);
+    addElapsedStat(statPrefix, "build graph", startUsecs);
+    reportOrderGraphStats(tag, "built", *graph);
     // Order it
+    startUsecs = statStartUsecs();
     orderOrderGraph(*graph, tag);
+    addElapsedStat(statPrefix, "order graph", startUsecs);
+    reportOrderGraphStats(tag, "ordered", *graph);
     // Assign sensitivity domains to combinational logic
+    startUsecs = statStartUsecs();
     processDomains(netlistp, *graph, tag, externalDomains);
+    addElapsedStat(statPrefix, "process domains", startUsecs);
+    reportOrderGraphStats(tag, "domains", *graph);
     // Build the move graph
     OrderMoveDomScope::clear();
+    startUsecs = statStartUsecs();
     const std::unique_ptr<OrderMoveGraph> moveGraphp = OrderMoveGraph::build(*graph, trigToSen);
+    addElapsedStat(statPrefix, "build move graph", startUsecs);
+    reportOrderGraphStats(tag, "move built", *moveGraphp);
     if (dumpGraphLevel() >= 9) moveGraphp->dumpDotFilePrefixed(tag + "_ordermv");
 
     // The ordered statements, if there are any
     AstNodeStmt* stmtsp = nullptr;
     if (!moveGraphp->empty()) {
         if (parallel) {
+            startUsecs = statStartUsecs();
             stmtsp = createParallel(*graph, *moveGraphp, tag, slow);
         } else {
+            startUsecs = statStartUsecs();
             stmtsp = createSerial(*moveGraphp, tag, slow);
         }
+        addElapsedStat(statPrefix, parallel ? "create parallel" : "create serial", startUsecs);
         // Should have consumed all vertices
         UASSERT(moveGraphp->empty(), "Unconsumed vertices remain in OrderMoveGraph");
     }
