@@ -261,6 +261,16 @@ struct SubgraphLogicNodeSig final {
 
 using SubgraphLogicSig = std::vector<SubgraphLogicNodeSig>;
 
+enum class SubgraphTemplateMapFailReason : uint8_t {
+    NONE,
+    NODE_COUNT,
+    NODE_SHAPE,
+    NODE_TYPE,
+    REF_ACCESS,
+    REF_CONFLICT,
+    REF_COUNT,
+};
+
 struct SubgraphOrderCacheEntry final {
     AstCFunc* m_funcp = nullptr;
     SubgraphLogicSig m_logicSig;
@@ -616,6 +626,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseMissNoEntrySameModule = 0;
     uint64_t m_artifactReuseMissNoEntrySameModuleDomainShape = 0;
     uint64_t m_artifactReuseMissNoEntrySameModulePhase = 0;
+    uint64_t m_artifactReuseFullKeyCandidates = 0;
+    uint64_t m_artifactReuseFullKeyHits = 0;
     uint64_t m_artifactReuseScopeCloneHits = 0;
     uint64_t m_artifactReuseScopeClones = 0;
     uint64_t m_artifactReuseSharedCalls = 0;
@@ -629,6 +641,13 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseSkipCloneFail = 0;
     uint64_t m_artifactReuseSkipOther = 0;
     uint64_t m_artifactReuseSkipTriggered = 0;
+    uint64_t m_artifactReuseTemplateMapFailNodeCount = 0;
+    uint64_t m_artifactReuseTemplateMapFailNodeShape = 0;
+    uint64_t m_artifactReuseTemplateMapFailNodeType = 0;
+    uint64_t m_artifactReuseTemplateMapFailRefAccess = 0;
+    uint64_t m_artifactReuseTemplateMapFailRefConflict = 0;
+    uint64_t m_artifactReuseTemplateMapFailRefCount = 0;
+    uint64_t m_artifactReuseTemplateMapFails = 0;
     uint64_t m_artifactReuses = 0;
     uint64_t m_artifactReuseCloneFails = 0;
     uint64_t m_artifactTailCloneFails = 0;
@@ -672,6 +691,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneFailShadow = 0;
     uint64_t m_orderCacheCloneFailTemp = 0;
     uint64_t m_orderCacheCloneFailVlem = 0;
+    uint64_t m_orderCacheCloneNull = 0;
     std::map<string, uint64_t> m_orderCacheCloneFailNames;
     uint64_t m_orderCacheCloneGeneratedVarRemapDelayed = 0;
     uint64_t m_orderCacheCloneGeneratedVarRemapTemp = 0;
@@ -679,9 +699,18 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneGeneratedVarRemapVlem = 0;
     uint64_t m_orderCacheCloneGeneratedVarRemaps = 0;
     uint64_t m_orderCacheEntries = 0;
+    uint64_t m_orderCacheEntryHits = 0;
     uint64_t m_orderCacheHits = 0;
+    uint64_t m_orderCacheLookups = 0;
     uint64_t m_orderCacheMisses = 0;
     uint64_t m_orderCacheSkipTriggered = 0;
+    uint64_t m_orderCacheTemplateMapFailNodeCount = 0;
+    uint64_t m_orderCacheTemplateMapFailNodeShape = 0;
+    uint64_t m_orderCacheTemplateMapFailNodeType = 0;
+    uint64_t m_orderCacheTemplateMapFailRefAccess = 0;
+    uint64_t m_orderCacheTemplateMapFailRefConflict = 0;
+    uint64_t m_orderCacheTemplateMapFailRefCount = 0;
+    uint64_t m_orderCacheTemplateMapFails = 0;
     uint64_t m_orderedFuncClones = 0;
     uint64_t m_schedulePlans = 0;
     uint64_t m_snapshotBuckets = 0;
@@ -719,6 +748,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_triggeredRefState = 0;
     uint64_t m_triggeredRefStateAcc = 0;
     uint64_t m_instances = 0;
+    std::vector<std::pair<std::string, uint64_t>> m_internalOrderTimes;
 
     static uint64_t ratioPermille(uint64_t numerator, uint64_t denominator) {
         if (!denominator) return 0;
@@ -726,6 +756,19 @@ struct SubgraphLoweringStats final {
     }
 
     static double seconds(uint64_t usecs) { return usecs / 1.0e6; }
+
+    static void addTemplateMapFailStats(const string& prefix, const string& path,
+                                        uint64_t nodeCount, uint64_t nodeShape, uint64_t nodeType,
+                                        uint64_t refAccess, uint64_t refConflict,
+                                        uint64_t refCount, uint64_t total) {
+        V3Stats::addStat(prefix + path + " template map fail node count", nodeCount);
+        V3Stats::addStat(prefix + path + " template map fail node shape", nodeShape);
+        V3Stats::addStat(prefix + path + " template map fail node type", nodeType);
+        V3Stats::addStat(prefix + path + " template map fail ref access", refAccess);
+        V3Stats::addStat(prefix + path + " template map fail ref conflict", refConflict);
+        V3Stats::addStat(prefix + path + " template map fail ref count", refCount);
+        V3Stats::addStat(prefix + path + " template map fails", total);
+    }
 
     void report(const string& tag) const {
         if (!v3Global.opt.stats()) return;
@@ -761,6 +804,9 @@ struct SubgraphLoweringStats final {
                          m_artifactReuseMissNoEntrySameModuleDomainShape);
         V3Stats::addStat(prefix + "artifact reuse miss no entry same module phase",
                          m_artifactReuseMissNoEntrySameModulePhase);
+        V3Stats::addStat(prefix + "artifact reuse full key candidates",
+                         m_artifactReuseFullKeyCandidates);
+        V3Stats::addStat(prefix + "artifact reuse full key hits", m_artifactReuseFullKeyHits);
         V3Stats::addStat(prefix + "artifact reuse scope clone hits",
                          m_artifactReuseScopeCloneHits);
         V3Stats::addStat(prefix + "artifact reuse scope clone calls",
@@ -788,6 +834,11 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact reuse skip clone fail", m_artifactReuseSkipCloneFail);
         V3Stats::addStat(prefix + "artifact reuse skip other", m_artifactReuseSkipOther);
         V3Stats::addStat(prefix + "artifact reuse skip triggered", m_artifactReuseSkipTriggered);
+        addTemplateMapFailStats(
+            prefix, "artifact reuse", m_artifactReuseTemplateMapFailNodeCount,
+            m_artifactReuseTemplateMapFailNodeShape, m_artifactReuseTemplateMapFailNodeType,
+            m_artifactReuseTemplateMapFailRefAccess, m_artifactReuseTemplateMapFailRefConflict,
+            m_artifactReuseTemplateMapFailRefCount, m_artifactReuseTemplateMapFails);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
         V3Stats::addStat(prefix + "artifact reuse permille",
                          ratioPermille(m_artifactReuses, artifactLookups));
@@ -861,6 +912,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache clone fail shadow", m_orderCacheCloneFailShadow);
         V3Stats::addStat(prefix + "order cache clone fail temp", m_orderCacheCloneFailTemp);
         V3Stats::addStat(prefix + "order cache clone fail vlem", m_orderCacheCloneFailVlem);
+        V3Stats::addStat(prefix + "order cache clone null", m_orderCacheCloneNull);
         for (const auto& itr : m_orderCacheCloneFailNames) {
             V3Stats::addStat(prefix + "order cache clone fail name " + itr.first, itr.second);
         }
@@ -875,11 +927,18 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache clone generated var remaps",
                          m_orderCacheCloneGeneratedVarRemaps);
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
+        V3Stats::addStat(prefix + "order cache entry hits", m_orderCacheEntryHits);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
+        V3Stats::addStat(prefix + "order cache lookups", m_orderCacheLookups);
         V3Stats::addStat(prefix + "order cache hit permille",
                          ratioPermille(m_orderCacheHits, orderCacheLookups));
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
         V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
+        addTemplateMapFailStats(
+            prefix, "order cache", m_orderCacheTemplateMapFailNodeCount,
+            m_orderCacheTemplateMapFailNodeShape, m_orderCacheTemplateMapFailNodeType,
+            m_orderCacheTemplateMapFailRefAccess, m_orderCacheTemplateMapFailRefConflict,
+            m_orderCacheTemplateMapFailRefCount, m_orderCacheTemplateMapFails);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
         V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
@@ -909,6 +968,15 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "time prepare snapshots sec",
                          seconds(m_timePrepareSnapshotsUsecs), 6);
         V3Stats::addStat(prefix + "time total sec", seconds(m_timeTotalUsecs), 6);
+        std::vector<std::pair<std::string, uint64_t>> orderedTimes = m_internalOrderTimes;
+        std::sort(orderedTimes.begin(), orderedTimes.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+        const size_t topCount = std::min<size_t>(orderedTimes.size(), 16);
+        for (size_t i = 0; i < topCount; ++i) {
+            V3Stats::addStat(prefix + "time internal order top " + cvtToStr(i) + " "
+                                 + orderedTimes[i].first + " sec",
+                             seconds(orderedTimes[i].second), 6);
+        }
         V3Stats::addStat(prefix + "triggered artifact candidates", m_triggeredArtifactCandidates);
         V3Stats::addStat(prefix + "triggered artifact input tail writes",
                          m_triggeredArtifactInputTailWrites);
@@ -930,6 +998,61 @@ struct SubgraphLoweringStats final {
         if (m_orderCacheCloneFailNames.size() >= 16 && !m_orderCacheCloneFailNames.count(name))
             return;
         ++m_orderCacheCloneFailNames[name];
+    }
+
+    void noteArtifactTemplateMapFail(SubgraphTemplateMapFailReason reason) {
+        ++m_artifactReuseTemplateMapFails;
+        switch (reason) {
+        case SubgraphTemplateMapFailReason::NODE_COUNT:
+            ++m_artifactReuseTemplateMapFailNodeCount;
+            return;
+        case SubgraphTemplateMapFailReason::NODE_SHAPE:
+            ++m_artifactReuseTemplateMapFailNodeShape;
+            return;
+        case SubgraphTemplateMapFailReason::NODE_TYPE:
+            ++m_artifactReuseTemplateMapFailNodeType;
+            return;
+        case SubgraphTemplateMapFailReason::REF_ACCESS:
+            ++m_artifactReuseTemplateMapFailRefAccess;
+            return;
+        case SubgraphTemplateMapFailReason::REF_CONFLICT:
+            ++m_artifactReuseTemplateMapFailRefConflict;
+            return;
+        case SubgraphTemplateMapFailReason::REF_COUNT:
+            ++m_artifactReuseTemplateMapFailRefCount;
+            return;
+        case SubgraphTemplateMapFailReason::NONE: return;
+        }
+    }
+
+    void noteInternalOrderTime(const std::string& name, uint64_t usecs) {
+        if (!usecs) return;
+        m_internalOrderTimes.emplace_back(name, usecs);
+    }
+
+    void noteOrderCacheTemplateMapFail(SubgraphTemplateMapFailReason reason) {
+        ++m_orderCacheTemplateMapFails;
+        switch (reason) {
+        case SubgraphTemplateMapFailReason::NODE_COUNT:
+            ++m_orderCacheTemplateMapFailNodeCount;
+            return;
+        case SubgraphTemplateMapFailReason::NODE_SHAPE:
+            ++m_orderCacheTemplateMapFailNodeShape;
+            return;
+        case SubgraphTemplateMapFailReason::NODE_TYPE:
+            ++m_orderCacheTemplateMapFailNodeType;
+            return;
+        case SubgraphTemplateMapFailReason::REF_ACCESS:
+            ++m_orderCacheTemplateMapFailRefAccess;
+            return;
+        case SubgraphTemplateMapFailReason::REF_CONFLICT:
+            ++m_orderCacheTemplateMapFailRefConflict;
+            return;
+        case SubgraphTemplateMapFailReason::REF_COUNT:
+            ++m_orderCacheTemplateMapFailRefCount;
+            return;
+        case SubgraphTemplateMapFailReason::NONE: return;
+        }
     }
 };
 
@@ -1010,18 +1133,20 @@ public:
         return result;
     }
 
-    static bool
+    static SubgraphTemplateMapFailReason
     buildTemplateVarScopeMap(const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
                              std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
         std::vector<AstNode*> currentNodes;
         currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
-        if (templateSig.size() != currentNodes.size()) return false;
+        if (templateSig.size() != currentNodes.size()) {
+            return SubgraphTemplateMapFailReason::NODE_COUNT;
+        }
 
         for (size_t i = 0; i < templateSig.size(); ++i) {
             const SubgraphLogicNodeSig& templateNode = templateSig[i];
             AstNode* const currentNodep = currentNodes[i];
             if (templateNode.m_type != static_cast<uintptr_t>(currentNodep->type())) {
-                return false;
+                return SubgraphTemplateMapFailReason::NODE_TYPE;
             }
             SubgraphLogicNodeSig currentNodeSig;
             currentNodeSig.m_type = static_cast<uintptr_t>(currentNodep->type());
@@ -1033,29 +1158,33 @@ public:
             });
             if (templateNode.m_nodeTypes != currentNodeSig.m_nodeTypes
                 || templateNode.m_constValues != currentNodeSig.m_constValues) {
-                return false;
+                return SubgraphTemplateMapFailReason::NODE_SHAPE;
             }
 
             std::vector<AstVarRef*> currentRefs;
             currentNodep->foreach([&](AstVarRef* refp) { currentRefs.push_back(refp); });
-            if (templateNode.m_refs.size() != currentRefs.size()) return false;
+            if (templateNode.m_refs.size() != currentRefs.size()) {
+                return SubgraphTemplateMapFailReason::REF_COUNT;
+            }
 
             for (size_t j = 0; j < templateNode.m_refs.size(); ++j) {
                 const SubgraphLogicRefSig& templateRef = templateNode.m_refs[j];
                 AstVarRef* const currentRefp = currentRefs[j];
                 if (templateRef.m_access != static_cast<uintptr_t>(currentRefp->access())) {
-                    return false;
+                    return SubgraphTemplateMapFailReason::REF_ACCESS;
                 }
                 AstVarScope* const currentVscp = currentRefp->varScopep();
                 const auto it = result.find(templateRef.m_vscp);
                 if (it != result.end()) {
-                    if (it->second != currentVscp) return false;
+                    if (it->second != currentVscp) {
+                        return SubgraphTemplateMapFailReason::REF_CONFLICT;
+                    }
                 } else {
                     result.emplace(templateRef.m_vscp, currentVscp);
                 }
             }
         }
-        return true;
+        return SubgraphTemplateMapFailReason::NONE;
     }
 
     static bool canShareSubgraphLogic(const LogicByScope& logic, AstScope* boundaryScopep) {
@@ -1530,14 +1659,18 @@ public:
             noteArtifactNoEntry(key);
             return reuse;
         }
+        ++m_stats.m_artifactReuseFullKeyHits;
+        m_stats.m_artifactReuseFullKeyCandidates += it->second.size();
         bool sawCloneFail = false;
         bool sawLogicMismatch = false;
         bool sawOther = false;
         bool sawTriggered = false;
         for (SubgraphScheduleArtifact* const artifactp : it->second) {
             reuse.m_remap.m_templateVarMap.clear();
-            if (!buildTemplateVarScopeMap(artifactp->m_logicSig, currentLogic,
-                                          reuse.m_remap.m_templateVarMap)) {
+            const SubgraphTemplateMapFailReason templateMapFail = buildTemplateVarScopeMap(
+                artifactp->m_logicSig, currentLogic, reuse.m_remap.m_templateVarMap);
+            if (templateMapFail != SubgraphTemplateMapFailReason::NONE) {
+                m_stats.noteArtifactTemplateMapFail(templateMapFail);
                 sawLogicMismatch = true;
                 continue;
             }
@@ -2100,32 +2233,42 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     AstCFunc* funcp = nullptr;
     if (canShare) {
+        ++state.m_stats.m_orderCacheLookups;
         const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
         if (cacheIt != state.m_subgraphOrderCache.end()) {
+            ++state.m_stats.m_orderCacheEntryHits;
             if (!cacheIt->second.m_cloneable) {
                 ++state.m_stats.m_orderCacheSkipTriggered;
             } else {
                 std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                if (SubgraphLoweringState::buildTemplateVarScopeMap(
-                        cacheIt->second.m_logicSig, subgraphLogic, templateVarMap)) {
+                const SubgraphTemplateMapFailReason templateMapFail
+                    = SubgraphLoweringState::buildTemplateVarScopeMap(
+                        cacheIt->second.m_logicSig, subgraphLogic, templateVarMap);
+                if (templateMapFail == SubgraphTemplateMapFailReason::NONE) {
                     funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheIt->second.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
                     if (funcp) {
                         ++state.m_stats.m_orderCacheHits;
                         ++state.m_stats.m_orderedFuncClones;
                         SubgraphLoweringState::discardLogic(subgraphLogic);
+                    } else {
+                        ++state.m_stats.m_orderCacheCloneNull;
                     }
+                } else {
+                    state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
                 }
             }
         }
     }
     if (!funcp) {
         if (canShare) ++state.m_stats.m_orderCacheMisses;
+        const std::string orderTag = tag + "_subgraph_" + cvtToStr(subgraphIndex++);
         const uint64_t orderStartUsecs = statStartUsecs();
-        funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen,
-                               tag + "_subgraph_" + cvtToStr(subgraphIndex++), false, slow,
+        funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen, orderTag, false, slow,
                                externalDomains, group.m_scopep);
-        addElapsedUsecs(state.m_stats.m_timeInternalOrderUsecs, orderStartUsecs);
+        const uint64_t orderUsecs = orderStartUsecs ? V3Os::timeUsecs() - orderStartUsecs : 0;
+        state.m_stats.m_timeInternalOrderUsecs += orderUsecs;
+        state.m_stats.noteInternalOrderTime(orderTag, orderUsecs);
         if (funcp) {
             util::splitCheck(funcp);
             if (canShare
