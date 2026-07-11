@@ -397,6 +397,7 @@ struct SubgraphScheduleArtifact final {
     std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     bool m_cloneable = true;
+    bool m_hasTriggered = false;
     bool m_scopeHasInputTailWrites = false;
     bool m_triggeredShareable = false;
     SubgraphArtifactUncloneableReason m_uncloneableReason
@@ -1370,6 +1371,10 @@ public:
         return !info.m_writesInstanceLocal;
     }
 
+    static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
+        return !info.m_hasTriggered;
+    }
+
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
         TailCloneSig result;
         if (funcp->stmtsp()) result.m_bodyHash = V3Hasher::uncachedHash(funcp->stmtsp());
@@ -1387,14 +1392,30 @@ public:
     static AstVarScope* findGeneratedCloneVarByName(AstScope* destScopep,
                                                     const AstVarScope* sourceVscp) {
         if (!canRemapGeneratedCloneVarByName(sourceVscp)) return nullptr;
+        return findScopeCloneVarByName(destScopep, sourceVscp);
+    }
+
+    static AstVarScope* findScopeCloneVarByName(AstScope* destScopep,
+                                                const AstVarScope* sourceVscp) {
         const string& name = sourceVscp->varp()->name();
         for (AstVarScope* scanp = destScopep->varsp(); scanp;
              scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->scopep() != destScopep) continue;
             if (scanp->varp()->name() != name) continue;
             if (!scanp->dtypep()->similarDType(sourceVscp->dtypep())) continue;
             return scanp;
         }
         return nullptr;
+    }
+
+    static bool mapsToOtherSubgraphBoundary(AstVarScope* mappedVscp,
+                                            AstScope* destBoundaryScopep) {
+        AstScope* const mappedBoundaryScopep = boundaryScopeFor(mappedVscp->scopep());
+        return mappedBoundaryScopep && mappedBoundaryScopep != destBoundaryScopep;
+    }
+
+    static bool mustBeDestScopedInClone(const AstVarScope* vscp) {
+        return isRemappableInstanceLocalVar(vscp) || vscp->varp()->name().rfind("__PVT__", 0) == 0;
     }
 
     static void noteGeneratedVarRemap(const AstVarScope* sourceVscp,
@@ -1466,7 +1487,12 @@ public:
             }
         };
 
-        std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap = templateVarMap;
+        std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap;
+        for (const auto& pair : templateVarMap) {
+            if (canRemapGeneratedCloneVarByName(pair.first)) continue;
+            if (mapsToOtherSubgraphBoundary(pair.second, destBoundaryScopep)) continue;
+            resolvedVarMap.emplace(pair);
+        }
         std::unordered_map<const AstCFunc*, std::unordered_set<const AstVar*>> argVarsByFunc;
         for (AstCFunc* const origFuncp : orderedFuncs) {
             std::unordered_set<const AstVar*>& argVars = argVarsByFunc[origFuncp];
@@ -1474,11 +1500,35 @@ public:
                 argVars.insert(argp);
             }
             bool failed = false;
-            origFuncp->foreach([&](AstVarRef* refp) {
+            origFuncp->foreach([&](AstVarXRef* refp) {
+                if (failed) return;
+                noteUnmappedVar(refp->varScopep());
+                failed = true;
+            });
+            origFuncp->foreach([&](AstNodeVarRef* refp) {
                 if (failed) return;
                 if (argVars.count(refp->varp())) return;
                 const AstVarScope* const sourceVscp = refp->varScopep();
                 if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) {
+                    AstScope* const sourceBoundaryScopep = boundaryScopeFor(sourceVscp->scopep());
+                    if (sourceBoundaryScopep && sourceBoundaryScopep != destBoundaryScopep) {
+                        if (AstVarScope* const mappedVscp
+                            = findScopeCloneVarByName(destBoundaryScopep, sourceVscp)) {
+                            resolvedVarMap.emplace(sourceVscp, mappedVscp);
+                            if (canRemapGeneratedCloneVarByName(sourceVscp)) {
+                                noteGeneratedVarRemap(sourceVscp, stats);
+                                ++stats.m_orderCacheCloneGeneratedVarRemaps;
+                            }
+                            return;
+                        }
+                        noteUnmappedVar(sourceVscp);
+                        failed = true;
+                        return;
+                    }
+                    if (isTriggeredStateVar(sourceVscp) && refp->access().isReadOnly()) {
+                        resolvedVarMap.emplace(sourceVscp, const_cast<AstVarScope*>(sourceVscp));
+                        return;
+                    }
                     if (AstVarScope* const mappedVscp
                         = findGeneratedCloneVarByName(destBoundaryScopep, sourceVscp)) {
                         resolvedVarMap.emplace(sourceVscp, mappedVscp);
@@ -1549,8 +1599,13 @@ public:
                 if (it == clonedFuncs.end()) return;
                 callp->funcp(it->second);
             });
-            bodyp->foreach([&](AstVarRef* refp) {
+            bodyp->foreach([&](AstNodeVarRef* refp) {
                 if (failed) return;
+                if (VN_IS(refp, VarXRef) && mustBeDestScopedInClone(refp->varScopep())) {
+                    noteUnmappedVar(refp->varScopep());
+                    failed = true;
+                    return;
+                }
                 const auto argIt = clonedArgVscps.find(refp->varp());
                 if (argIt != clonedArgVscps.end()) {
                     refp->varp(argIt->second->varp());
@@ -1565,6 +1620,11 @@ public:
                 }
                 refp->varp(varIt->second->varp());
                 refp->varScopep(varIt->second);
+                if (mustBeDestScopedInClone(varIt->second)
+                    && varIt->second->scopep() != destBoundaryScopep) {
+                    noteUnmappedVar(varIt->second);
+                    failed = true;
+                }
             });
             if (failed) {
                 VL_DO_DANGLING(bodyp->deleteTree(), bodyp);
@@ -1650,8 +1710,7 @@ public:
             || bundleContext.m_currentScopeHasDerivedBoundaryReads) {
             return SubgraphSharedHelperSkipReason::OTHER;
         }
-        if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
-        if (artifactp->m_uncloneableReason == SubgraphArtifactUncloneableReason::TRIGGERED) {
+        if (artifactp->m_hasTriggered) {
             if (!artifactp->m_triggeredShareable) {
                 return SubgraphSharedHelperSkipReason::TRIGGERED_NOT_SHAREABLE;
             }
@@ -1661,6 +1720,7 @@ public:
             }
             return SubgraphSharedHelperSkipReason::NONE;
         }
+        if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
         if (context.m_hasTailFuncps) return SubgraphSharedHelperSkipReason::TAIL;
         switch (artifactp->m_uncloneableReason) {
         case SubgraphArtifactUncloneableReason::TRIGGERED:
@@ -1814,14 +1874,15 @@ public:
     SubgraphScheduleArtifact*
     makeSubgraphScheduleArtifact(const SubgraphScheduleArtifactKey& key, AstScope* scopep,
                                  AstCFunc* callFuncp, SubgraphLogicSig&& logicSig, bool cloneable,
-                                 bool scopeHasInputTailWrites, bool triggeredShareable,
-                                 bool cacheable) {
+                                 bool hasTriggered, bool scopeHasInputTailWrites,
+                                 bool triggeredShareable, bool cacheable) {
         std::unique_ptr<SubgraphScheduleArtifact> artifactp{new SubgraphScheduleArtifact};
         artifactp->m_callFuncp = callFuncp;
         artifactp->m_key = key;
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
         artifactp->m_cloneable = cloneable;
+        artifactp->m_hasTriggered = hasTriggered;
         artifactp->m_scopeHasInputTailWrites = scopeHasInputTailWrites;
         artifactp->m_triggeredShareable = triggeredShareable;
         if (!cloneable)
@@ -2414,10 +2475,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                                                              state.m_stats);
                 const bool triggeredShareable
                     = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
+                const bool triggeredCloneable
+                    = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
                 const auto inserted = state.m_subgraphOrderCache.emplace(
-                    cacheKey,
-                    SubgraphOrderCacheEntry{nullptr, funcp, logicSig,
-                                            !triggeredInfo.m_hasTriggered, triggeredShareable});
+                    cacheKey, SubgraphOrderCacheEntry{nullptr, funcp, logicSig, triggeredCloneable,
+                                                      triggeredShareable});
                 if (inserted.second) {
                     insertedOrderCacheEntryp = &inserted.first->second;
                     ++state.m_stats.m_orderCacheEntries;
@@ -2460,7 +2522,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     plan.m_artifactp = state.makeSubgraphScheduleArtifact(
         artifactKey, group.m_scopep, callFuncp, std::move(logicSig), cloneableArtifact,
-        scopeHasInputTailWrites, triggeredShareableArtifact, cacheableArtifact);
+        triggeredInfo.m_hasTriggered, scopeHasInputTailWrites, triggeredShareableArtifact,
+        cacheableArtifact);
     if (insertedOrderCacheEntryp) insertedOrderCacheEntryp->m_artifactp = plan.m_artifactp;
     plan.m_instance.m_callFuncp = callFuncp;
     plan.m_instance.m_scopep = group.m_scopep;
