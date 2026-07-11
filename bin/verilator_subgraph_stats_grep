@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+######################################################################
+#
+# SPDX-FileCopyrightText: 2026 The Verilator Authors
+# SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+
+set -euo pipefail
+
+show_all_order_graphs=0
+files=()
+
+usage() {
+    cat <<'EOF'
+Usage: verilator_subgraph_stats_grep [--all-order-graphs] STATS_FILE_OR_DIR...
+
+Extract subgraph scheduling diagnostics from Verilator --stats output.
+
+If a directory is given, files matching *stats*.txt under that directory are used.
+By default, per-internal-subgraph order graph rows such as nba_subgraph_123 are
+suppressed because they are usually very noisy. Use --all-order-graphs to keep them.
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    --all-order-graphs)
+        show_all_order_graphs=1
+        ;;
+    --)
+        shift
+        break
+        ;;
+    -*)
+        echo "error: unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    *)
+        files+=("$1")
+        ;;
+    esac
+    shift
+done
+
+while (($#)); do
+    files+=("$1")
+    shift
+done
+
+if ((${#files[@]} == 0)); then
+    usage >&2
+    exit 2
+fi
+
+expanded_files=()
+for path in "${files[@]}"; do
+    if [[ -d "$path" ]]; then
+        while IFS= read -r found; do
+            expanded_files+=("$found")
+        done < <(find "$path" -type f -name '*stats*.txt' | sort)
+    elif [[ -f "$path" ]]; then
+        expanded_files+=("$path")
+    else
+        echo "warning: not found: $path" >&2
+    fi
+done
+
+if ((${#expanded_files[@]} == 0)); then
+    echo "error: no stats files found" >&2
+    exit 1
+fi
+
+grep_stats() {
+    local title=$1
+    local pattern=$2
+
+    echo
+    echo "### $title"
+    if ((show_all_order_graphs)); then
+        grep -Eh "$pattern" "${expanded_files[@]}" || true
+    else
+        grep -Eh "$pattern" "${expanded_files[@]}" \
+            | grep -Ev 'Scheduling, Order [^,]*_subgraph_[0-9]+,|Scheduling, Subgraph order graph [^,]*_subgraph_[0-9]+,' \
+            || true
+    fi
+}
+
+grep_stats "Scheduler stage and order timing" \
+    'Scheduling, Order [^,]+, time (build graph|process domains|order graph|build move graph|create serial) sec|sched-create-(act|nba|ico|stl|triggers|settle|partition|replicate)'
+
+grep_stats "Parent order graph size" \
+    'Scheduling, Order (act|nba|ico|stl)( built| ordered| domains| move built)?, (edges|edges hard|edges soft|vertices|vertices logic|vertices logic subgraph|vertices var|vertices var phase|vertices var pord|vertices var post|vertices var pre|vertices var std)'
+
+grep_stats "Subgraph lowering time" \
+    'Scheduling, Subgraph [^,]+, time (total|lower groups|build plans|internal order|lookup artifacts|prepare snapshots|materialize|emit snapshots|collect groups|collect input stats|collect region written vars|internal order top [0-9]+ .*) sec'
+
+grep_stats "Subgraph input hiding" \
+    'Scheduling, Subgraph [^,]+, input (nodes|parent visible nodes|parent visible reduction|hidden body nodes|direct statements|direct subgraph instances|direct snapshot instances|subgraph instances|subgraph instance body nodes|snapshot procedure body nodes|snapshot instance body nodes) (before|after|reduced|permille)'
+
+grep_stats "Subgraph grouping and artifacts" \
+    'Scheduling, Subgraph [^,]+, (groups|instances|schedule plans|artifacts|artifact key unique full|artifact key unique modules|artifact key unique domain shapes|artifact key max entries per full key|bundle builds|bundle plans|bundle materialized|snapshot helpers|snapshot helper reuses|tail clones|tail clone reuses)'
+
+grep_stats "Artifact reuse" \
+    'Scheduling, Subgraph [^,]+, artifact (reuse|reuses|misses|tail reuse|tail reuses|tail clone fails|reuse lookups|reuse permille|reuse full key|reuse miss|reuse skip|reuse shared|reuse scope|reuse clone fails)'
+
+grep_stats "Template mapping failures" \
+    'Scheduling, Subgraph [^,]+, (artifact reuse|order cache) template map fail'
+
+grep_stats "Order cache" \
+    'Scheduling, Subgraph [^,]+, order cache (lookups|entries|entry hits|hits|shared hits|misses|hit permille|skip triggered|shared skip|clone null|clone fail|clone generated var remap)'
+
+grep_stats "Triggered shareability" \
+    'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'
+
+grep_stats "Subgraph order graph contracts" \
+    'Scheduling, Subgraph order graph [^,]+, (coarse nodes|contract uses|nested contract uses|phase vertices)'
