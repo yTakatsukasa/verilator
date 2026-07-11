@@ -415,6 +415,7 @@ struct SubgraphScheduleArtifactReuse final {
 struct SubgraphTriggeredRefInfo final {
     bool m_hasTriggered = false;
     bool m_shareable = true;
+    bool m_writesInstanceLocal = false;
     bool m_writesNonLocal = false;
 };
 
@@ -761,6 +762,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_timeTotalUsecs = 0;
     uint64_t m_triggeredArtifactCandidates = 0;
     uint64_t m_triggeredArtifactInputTailWrites = 0;
+    uint64_t m_triggeredArtifactNoNonLocalInstanceLocalWrites = 0;
     uint64_t m_triggeredArtifactNoNonLocalWrites = 0;
     uint64_t m_triggeredArtifactShareable = 0;
     uint64_t m_triggeredArtifactUnshareable = 0;
@@ -1032,6 +1034,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "triggered artifact candidates", m_triggeredArtifactCandidates);
         V3Stats::addStat(prefix + "triggered artifact input tail writes",
                          m_triggeredArtifactInputTailWrites);
+        V3Stats::addStat(prefix + "triggered artifact no nonlocal instance local writes",
+                         m_triggeredArtifactNoNonLocalInstanceLocalWrites);
         V3Stats::addStat(prefix + "triggered artifact no nonlocal writes",
                          m_triggeredArtifactNoNonLocalWrites);
         V3Stats::addStat(prefix + "triggered artifact shareable", m_triggeredArtifactShareable);
@@ -1336,8 +1340,12 @@ public:
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
                 noteTriggeredRefKind(vscp, stats);
-                if (refp->access().isWriteOrRW() && !isRemappableInstanceLocalVar(vscp)) {
-                    result.m_writesNonLocal = true;
+                if (refp->access().isWriteOrRW()) {
+                    if (isRemappableInstanceLocalVar(vscp)) {
+                        result.m_writesInstanceLocal = true;
+                    } else {
+                        result.m_writesNonLocal = true;
+                    }
                 }
                 if (!isTriggeredStateVar(vscp)) return;
                 result.m_hasTriggered = true;
@@ -1354,6 +1362,12 @@ public:
         };
         gather(funcp);
         return result;
+    }
+
+    static bool canShareTriggeredArtifact(const SubgraphTriggeredRefInfo& info) {
+        if (!info.m_hasTriggered || !info.m_shareable) return false;
+        if (info.m_writesNonLocal) return true;
+        return !info.m_writesInstanceLocal;
     }
 
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
@@ -2398,9 +2412,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 const SubgraphTriggeredRefInfo triggeredInfo
                     = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(funcp, group.m_scopep,
                                                                              state.m_stats);
-                const bool triggeredShareable = triggeredInfo.m_hasTriggered
-                                                && triggeredInfo.m_shareable
-                                                && triggeredInfo.m_writesNonLocal;
+                const bool triggeredShareable
+                    = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
                 const auto inserted = state.m_subgraphOrderCache.emplace(
                     cacheKey,
                     SubgraphOrderCacheEntry{nullptr, funcp, logicSig,
@@ -2424,14 +2437,16 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(callFuncp, group.m_scopep,
                                                                  state.m_stats);
     const bool cloneableArtifact = !triggeredInfo.m_hasTriggered;
-    const bool triggeredShareableArtifact = triggeredInfo.m_hasTriggered
-                                            && triggeredInfo.m_shareable
-                                            && triggeredInfo.m_writesNonLocal;
+    const bool triggeredShareableArtifact
+        = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
     if (triggeredInfo.m_hasTriggered) {
         ++state.m_stats.m_triggeredArtifactCandidates;
         if (!triggeredInfo.m_shareable) ++state.m_stats.m_triggeredArtifactUnshareable;
         if (!triggeredInfo.m_writesNonLocal) {
             ++state.m_stats.m_triggeredArtifactNoNonLocalWrites;
+            if (triggeredInfo.m_writesInstanceLocal) {
+                ++state.m_stats.m_triggeredArtifactNoNonLocalInstanceLocalWrites;
+            }
         }
         if (scopeHasInputTailWrites) ++state.m_stats.m_triggeredArtifactInputTailWrites;
         if (triggeredShareableArtifact && !scopeHasInputTailWrites) {
