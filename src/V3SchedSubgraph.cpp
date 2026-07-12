@@ -1372,7 +1372,7 @@ public:
     }
 
     static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
-        return !info.m_hasTriggered;
+        return !info.m_hasTriggered || (info.m_shareable && !info.m_writesInstanceLocal);
     }
 
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
@@ -1408,6 +1408,19 @@ public:
         return nullptr;
     }
 
+    static AstVarScope* findScopeCloneVarByVar(AstScope* destScopep, const AstVar* sourceVarp) {
+        if (sourceVarp->isFuncLocal()) return nullptr;
+        const string& name = sourceVarp->name();
+        for (AstVarScope* scanp = destScopep->varsp(); scanp;
+             scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->scopep() != destScopep) continue;
+            if (scanp->varp()->name() != name) continue;
+            if (!scanp->dtypep()->similarDType(sourceVarp->dtypep())) continue;
+            return scanp;
+        }
+        return nullptr;
+    }
+
     static bool mapsToOtherSubgraphBoundary(AstVarScope* mappedVscp,
                                             AstScope* destBoundaryScopep) {
         AstScope* const mappedBoundaryScopep = boundaryScopeFor(mappedVscp->scopep());
@@ -1416,6 +1429,13 @@ public:
 
     static bool mustBeDestScopedInClone(const AstVarScope* vscp) {
         return isRemappableInstanceLocalVar(vscp) || vscp->varp()->name().rfind("__PVT__", 0) == 0;
+    }
+
+    static bool hasUnsafeCloneSelfPointer(const AstNodeVarRef* refp) {
+        if (refp->selfPointer().isEmpty()) return false;
+        const string& name = refp->varp()->name();
+        if (refp->access().isReadOnly() && name == "__VnbaTriggered") return false;
+        return true;
     }
 
     static void noteGeneratedVarRemap(const AstVarScope* sourceVscp,
@@ -1507,7 +1527,13 @@ public:
             });
             origFuncp->foreach([&](AstNodeVarRef* refp) {
                 if (failed) return;
+                if (hasUnsafeCloneSelfPointer(refp)) {
+                    noteUnmappedVar(refp->varScopep());
+                    failed = true;
+                    return;
+                }
                 if (argVars.count(refp->varp())) return;
+                if (findScopeCloneVarByVar(destBoundaryScopep, refp->varp())) return;
                 const AstVarScope* const sourceVscp = refp->varScopep();
                 if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) {
                     AstScope* const sourceBoundaryScopep = boundaryScopeFor(sourceVscp->scopep());
@@ -1598,6 +1624,7 @@ public:
                 const auto it = clonedFuncs.find(callp->funcp());
                 if (it == clonedFuncs.end()) return;
                 callp->funcp(it->second);
+                callp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
             });
             bodyp->foreach([&](AstNodeVarRef* refp) {
                 if (failed) return;
@@ -1606,10 +1633,23 @@ public:
                     failed = true;
                     return;
                 }
+                if (hasUnsafeCloneSelfPointer(refp)) {
+                    noteUnmappedVar(refp->varScopep());
+                    failed = true;
+                    return;
+                }
                 const auto argIt = clonedArgVscps.find(refp->varp());
                 if (argIt != clonedArgVscps.end()) {
                     refp->varp(argIt->second->varp());
                     refp->varScopep(argIt->second);
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                    return;
+                }
+                if (AstVarScope* const mappedVscp
+                    = findScopeCloneVarByVar(destBoundaryScopep, refp->varp())) {
+                    refp->varp(mappedVscp->varp());
+                    refp->varScopep(mappedVscp);
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
                     return;
                 }
                 const auto varIt = resolvedVarMap.find(refp->varScopep());
@@ -1620,6 +1660,9 @@ public:
                 }
                 refp->varp(varIt->second->varp());
                 refp->varScopep(varIt->second);
+                if (varIt->second->scopep() == destBoundaryScopep) {
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                }
                 if (mustBeDestScopedInClone(varIt->second)
                     && varIt->second->scopep() != destBoundaryScopep) {
                     noteUnmappedVar(varIt->second);
