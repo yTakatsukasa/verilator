@@ -279,6 +279,8 @@ struct SubgraphOrderCacheEntry final {
     SubgraphLogicSig m_logicSig;
     bool m_cloneable = true;
     bool m_triggeredShareable = false;
+    bool m_triggeredWritesInstanceLocal = false;
+    bool m_triggeredWritesNonLocal = false;
 };
 
 struct SubgraphOrderCacheKey final {
@@ -726,6 +728,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheSharedSkipTriggeredNotShareable = 0;
     uint64_t m_orderCacheSharedSkipTriggeredOther = 0;
     uint64_t m_orderCacheSkipTriggered = 0;
+    uint64_t m_orderCacheSkipTriggeredInstanceLocal = 0;
     uint64_t m_orderCacheSkipTriggeredNoArtifact = 0;
     uint64_t m_orderCacheSkipTriggeredNotShareable = 0;
     uint64_t m_orderCacheSkipTriggeredStl = 0;
@@ -767,6 +770,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_triggeredArtifactNoNonLocalWrites = 0;
     uint64_t m_triggeredArtifactShareable = 0;
     uint64_t m_triggeredArtifactUnshareable = 0;
+    uint64_t m_triggeredArtifactWritesInstanceLocal = 0;
+    uint64_t m_triggeredArtifactWritesNonLocal = 0;
     uint64_t m_triggeredRefCurr = 0;
     uint64_t m_triggeredRefOther = 0;
     uint64_t m_triggeredRefPrev = 0;
@@ -984,6 +989,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache shared skip triggered other",
                          m_orderCacheSharedSkipTriggeredOther);
         V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
+        V3Stats::addStat(prefix + "order cache skip triggered instance local",
+                         m_orderCacheSkipTriggeredInstanceLocal);
         V3Stats::addStat(prefix + "order cache skip triggered no artifact",
                          m_orderCacheSkipTriggeredNoArtifact);
         V3Stats::addStat(prefix + "order cache skip triggered not shareable",
@@ -1042,6 +1049,10 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "triggered artifact shareable", m_triggeredArtifactShareable);
         V3Stats::addStat(prefix + "triggered artifact unshareable",
                          m_triggeredArtifactUnshareable);
+        V3Stats::addStat(prefix + "triggered artifact writes instance local",
+                         m_triggeredArtifactWritesInstanceLocal);
+        V3Stats::addStat(prefix + "triggered artifact writes nonlocal",
+                         m_triggeredArtifactWritesNonLocal);
         V3Stats::addStat(prefix + "triggered ref curr", m_triggeredRefCurr);
         V3Stats::addStat(prefix + "triggered ref other", m_triggeredRefOther);
         V3Stats::addStat(prefix + "triggered ref prev", m_triggeredRefPrev);
@@ -2440,6 +2451,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             if (!cacheEntry.m_cloneable && !cacheEntry.m_triggeredShareable) {
                 ++state.m_stats.m_orderCacheSkipTriggered;
                 ++state.m_stats.m_orderCacheSkipTriggeredNotShareable;
+                if (cacheEntry.m_triggeredWritesInstanceLocal) {
+                    ++state.m_stats.m_orderCacheSkipTriggeredInstanceLocal;
+                }
             } else {
                 std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
                 const SubgraphTemplateMapFailReason templateMapFail
@@ -2522,7 +2536,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
                 const auto inserted = state.m_subgraphOrderCache.emplace(
                     cacheKey, SubgraphOrderCacheEntry{nullptr, funcp, logicSig, triggeredCloneable,
-                                                      triggeredShareable});
+                                                      triggeredShareable,
+                                                      triggeredInfo.m_writesInstanceLocal,
+                                                      triggeredInfo.m_writesNonLocal});
                 if (inserted.second) {
                     insertedOrderCacheEntryp = &inserted.first->second;
                     ++state.m_stats.m_orderCacheEntries;
@@ -2547,6 +2563,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     if (triggeredInfo.m_hasTriggered) {
         ++state.m_stats.m_triggeredArtifactCandidates;
         if (!triggeredInfo.m_shareable) ++state.m_stats.m_triggeredArtifactUnshareable;
+        if (triggeredInfo.m_writesInstanceLocal) {
+            ++state.m_stats.m_triggeredArtifactWritesInstanceLocal;
+        }
+        if (triggeredInfo.m_writesNonLocal) ++state.m_stats.m_triggeredArtifactWritesNonLocal;
         if (!triggeredInfo.m_writesNonLocal) {
             ++state.m_stats.m_triggeredArtifactNoNonLocalWrites;
             if (triggeredInfo.m_writesInstanceLocal) {
