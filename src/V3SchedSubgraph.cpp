@@ -286,10 +286,11 @@ struct SubgraphOrderCacheEntry final {
 struct SubgraphOrderCacheKey final {
     std::vector<uintptr_t> m_domainShape;
     AstNodeModule* m_modp = nullptr;
-    bool m_isEarly = false;
+    AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    SubgraphWrapper m_wrapper;
 
     bool operator==(const SubgraphOrderCacheKey& other) const {
-        return m_modp == other.m_modp && m_isEarly == other.m_isEarly
+        return m_modp == other.m_modp && m_phase == other.m_phase && m_wrapper == other.m_wrapper
                && m_domainShape == other.m_domainShape;
     }
 };
@@ -297,8 +298,12 @@ struct SubgraphOrderCacheKey final {
 struct SubgraphOrderCacheKeyHash final {
     size_t operator()(const SubgraphOrderCacheKey& key) const {
         size_t hash = std::hash<const void*>{}(key.m_modp);
-        hash ^= std::hash<bool>{}(key.m_isEarly) + 0x9e3779b97f4a7c15ULL + (hash << 6)
-                + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_phase)) + 0x9e3779b97f4a7c15ULL
+                + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_kind))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_keyword))
+                + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         for (const uintptr_t value : key.m_domainShape) {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
@@ -2364,11 +2369,12 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
         subgraphLogic, group.m_scopep, externalDomains);
     cacheKey.m_modp = group.m_scopep->modp();
-    cacheKey.m_isEarly = isEarly;
     SubgraphOrderCacheEntry* insertedOrderCacheEntryp = nullptr;
     SubgraphLogicSig logicSig;
     if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
     const AstSubgraphInstance::Phase phase = subgraphPhaseFor(wrapper, isEarly);
+    cacheKey.m_phase = phase;
+    cacheKey.m_wrapper = wrapper;
     SubgraphScheduleArtifactKey artifactKey;
     artifactKey.m_domainShape = cacheKey.m_domainShape;
     artifactKey.m_modp = cacheKey.m_modp;
