@@ -279,8 +279,12 @@ struct SubgraphOrderCacheEntry final {
     SubgraphLogicSig m_logicSig;
     bool m_cloneable = true;
     bool m_triggeredShareable = false;
+    bool m_triggeredWritesDelayedShadow = false;
     bool m_triggeredWritesInstanceLocal = false;
+    bool m_triggeredWritesLocalTemp = false;
     bool m_triggeredWritesNonLocal = false;
+    bool m_triggeredWritesTriggerTemp = false;
+    bool m_triggeredWritesVlemTemp = false;
 };
 
 struct SubgraphOrderCacheKey final {
@@ -423,8 +427,12 @@ struct SubgraphScheduleArtifactReuse final {
 struct SubgraphTriggeredRefInfo final {
     bool m_hasTriggered = false;
     bool m_shareable = true;
+    bool m_writesDelayedShadow = false;
     bool m_writesInstanceLocal = false;
+    bool m_writesLocalTemp = false;
     bool m_writesNonLocal = false;
+    bool m_writesTriggerTemp = false;
+    bool m_writesVlemTemp = false;
 };
 
 struct SubgraphScheduleInstance final {
@@ -775,8 +783,12 @@ struct SubgraphLoweringStats final {
     uint64_t m_triggeredArtifactNoNonLocalWrites = 0;
     uint64_t m_triggeredArtifactShareable = 0;
     uint64_t m_triggeredArtifactUnshareable = 0;
+    uint64_t m_triggeredArtifactWritesDelayedShadow = 0;
     uint64_t m_triggeredArtifactWritesInstanceLocal = 0;
+    uint64_t m_triggeredArtifactWritesLocalTemp = 0;
     uint64_t m_triggeredArtifactWritesNonLocal = 0;
+    uint64_t m_triggeredArtifactWritesTriggerTemp = 0;
+    uint64_t m_triggeredArtifactWritesVlemTemp = 0;
     uint64_t m_triggeredRefCurr = 0;
     uint64_t m_triggeredRefOther = 0;
     uint64_t m_triggeredRefPrev = 0;
@@ -1054,10 +1066,18 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "triggered artifact shareable", m_triggeredArtifactShareable);
         V3Stats::addStat(prefix + "triggered artifact unshareable",
                          m_triggeredArtifactUnshareable);
+        V3Stats::addStat(prefix + "triggered artifact writes delayed shadow",
+                         m_triggeredArtifactWritesDelayedShadow);
         V3Stats::addStat(prefix + "triggered artifact writes instance local",
                          m_triggeredArtifactWritesInstanceLocal);
+        V3Stats::addStat(prefix + "triggered artifact writes local temp",
+                         m_triggeredArtifactWritesLocalTemp);
         V3Stats::addStat(prefix + "triggered artifact writes nonlocal",
                          m_triggeredArtifactWritesNonLocal);
+        V3Stats::addStat(prefix + "triggered artifact writes trigger temp",
+                         m_triggeredArtifactWritesTriggerTemp);
+        V3Stats::addStat(prefix + "triggered artifact writes vlem temp",
+                         m_triggeredArtifactWritesVlemTemp);
         V3Stats::addStat(prefix + "triggered ref curr", m_triggeredRefCurr);
         V3Stats::addStat(prefix + "triggered ref other", m_triggeredRefOther);
         V3Stats::addStat(prefix + "triggered ref prev", m_triggeredRefPrev);
@@ -1347,6 +1367,24 @@ public:
         }
     }
 
+    static void noteTriggeredLocalWriteKind(SubgraphTriggeredRefInfo& info,
+                                            SubgraphInstanceLocalVarKind kind) {
+        info.m_writesInstanceLocal = true;
+        switch (kind) {
+        case SubgraphInstanceLocalVarKind::DELAYED_SHADOW:
+            info.m_writesDelayedShadow = true;
+            return;
+        case SubgraphInstanceLocalVarKind::LOCAL_TEMP: info.m_writesLocalTemp = true; return;
+        case SubgraphInstanceLocalVarKind::TRIGGER_CURR:
+        case SubgraphInstanceLocalVarKind::TRIGGER_PREV:
+        case SubgraphInstanceLocalVarKind::TRIGGER_SCHED: info.m_writesTriggerTemp = true; return;
+        case SubgraphInstanceLocalVarKind::VLEM_TEMP: info.m_writesVlemTemp = true; return;
+        case SubgraphInstanceLocalVarKind::NONE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE:
+        case SubgraphInstanceLocalVarKind::TRIGGER_STATE_ACC: return;
+        }
+    }
+
     static SubgraphTriggeredRefInfo analyzeOrderedFuncTriggeredRefs(AstCFunc* funcp,
                                                                     AstScope* boundaryScopep,
                                                                     SubgraphLoweringStats& stats) {
@@ -1358,8 +1396,9 @@ public:
                 AstVarScope* const vscp = refp->varScopep();
                 noteTriggeredRefKind(vscp, stats);
                 if (refp->access().isWriteOrRW()) {
+                    const SubgraphInstanceLocalVarKind kind = instanceLocalVarKind(vscp);
                     if (isRemappableInstanceLocalVar(vscp)) {
-                        result.m_writesInstanceLocal = true;
+                        noteTriggeredLocalWriteKind(result, kind);
                     } else {
                         result.m_writesNonLocal = true;
                     }
@@ -2541,10 +2580,12 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 const bool triggeredCloneable
                     = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
                 const auto inserted = state.m_subgraphOrderCache.emplace(
-                    cacheKey, SubgraphOrderCacheEntry{nullptr, funcp, logicSig, triggeredCloneable,
-                                                      triggeredShareable,
-                                                      triggeredInfo.m_writesInstanceLocal,
-                                                      triggeredInfo.m_writesNonLocal});
+                    cacheKey,
+                    SubgraphOrderCacheEntry{
+                        nullptr, funcp, logicSig, triggeredCloneable, triggeredShareable,
+                        triggeredInfo.m_writesDelayedShadow, triggeredInfo.m_writesInstanceLocal,
+                        triggeredInfo.m_writesLocalTemp, triggeredInfo.m_writesNonLocal,
+                        triggeredInfo.m_writesTriggerTemp, triggeredInfo.m_writesVlemTemp});
                 if (inserted.second) {
                     insertedOrderCacheEntryp = &inserted.first->second;
                     ++state.m_stats.m_orderCacheEntries;
@@ -2572,7 +2613,15 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         if (triggeredInfo.m_writesInstanceLocal) {
             ++state.m_stats.m_triggeredArtifactWritesInstanceLocal;
         }
+        if (triggeredInfo.m_writesDelayedShadow) {
+            ++state.m_stats.m_triggeredArtifactWritesDelayedShadow;
+        }
+        if (triggeredInfo.m_writesLocalTemp) ++state.m_stats.m_triggeredArtifactWritesLocalTemp;
         if (triggeredInfo.m_writesNonLocal) ++state.m_stats.m_triggeredArtifactWritesNonLocal;
+        if (triggeredInfo.m_writesTriggerTemp) {
+            ++state.m_stats.m_triggeredArtifactWritesTriggerTemp;
+        }
+        if (triggeredInfo.m_writesVlemTemp) ++state.m_stats.m_triggeredArtifactWritesVlemTemp;
         if (!triggeredInfo.m_writesNonLocal) {
             ++state.m_stats.m_triggeredArtifactNoNonLocalWrites;
             if (triggeredInfo.m_writesInstanceLocal) {
