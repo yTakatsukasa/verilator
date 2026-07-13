@@ -113,6 +113,9 @@ grep_stats "Template mapping failures" \
 grep_stats "Order cache" \
     'Scheduling, Subgraph [^,]+, order cache (lookups|entries|entry hits|hits|shared hits|misses|hit permille|skip triggered|shared skip|clone null|clone fail|clone generated var remap)'
 
+grep_stats "Order cache clone diagnostics" \
+    'Scheduling, Subgraph [^,]+, (ordered function clones|order cache clone (null|fail name|fail (other|state|shadow|temp|vlem)|generated var remap))'
+
 grep_stats "Triggered shareability" \
     'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'
 
