@@ -433,6 +433,11 @@ struct SubgraphTriggeredRefInfo final {
     bool m_writesNonLocal = false;
     bool m_writesTriggerTemp = false;
     bool m_writesVlemTemp = false;
+
+    bool writesOnlySharedHelperSafeInstanceLocal() const {
+        return m_writesInstanceLocal && m_writesDelayedShadow && !m_writesLocalTemp
+               && !m_writesTriggerTemp && !m_writesVlemTemp;
+    }
 };
 
 struct SubgraphScheduleInstance final {
@@ -1427,7 +1432,10 @@ public:
     }
 
     static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
-        return !info.m_hasTriggered || (info.m_shareable && !info.m_writesInstanceLocal);
+        return !info.m_hasTriggered
+               || (info.m_shareable
+                   && (!info.m_writesInstanceLocal
+                       || info.writesOnlySharedHelperSafeInstanceLocal()));
     }
 
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
@@ -1453,11 +1461,34 @@ public:
     static AstVarScope* findScopeCloneVarByName(AstScope* destScopep,
                                                 const AstVarScope* sourceVscp) {
         const string& name = sourceVscp->varp()->name();
+        AstNodeDType* const dtypep = sourceVscp->dtypep();
         for (AstVarScope* scanp = destScopep->varsp(); scanp;
              scanp = VN_AS(scanp->nextp(), VarScope)) {
             if (scanp->scopep() != destScopep) continue;
             if (scanp->varp()->name() != name) continue;
-            if (!scanp->dtypep()->similarDType(sourceVscp->dtypep())) continue;
+            if (!scanp->dtypep()->similarDType(dtypep)) continue;
+            return scanp;
+        }
+        return nullptr;
+    }
+
+    static AstVarScope* findScopeCloneVarByName(AstScope* destScopep, const string& name,
+                                                AstNodeDType* dtypep) {
+        for (AstVarScope* scanp = destScopep->varsp(); scanp;
+             scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->scopep() != destScopep) continue;
+            if (scanp->varp()->name() != name) continue;
+            if (!scanp->dtypep()->similarDType(dtypep)) continue;
+            return scanp;
+        }
+        return nullptr;
+    }
+
+    static AstVarScope* findScopeCloneVarByName(AstScope* destScopep, const string& name) {
+        for (AstVarScope* scanp = destScopep->varsp(); scanp;
+             scanp = VN_AS(scanp->nextp(), VarScope)) {
+            if (scanp->scopep() != destScopep) continue;
+            if (scanp->varp()->name() != name) continue;
             return scanp;
         }
         return nullptr;
@@ -1484,6 +1515,40 @@ public:
 
     static bool mustBeDestScopedInClone(const AstVarScope* vscp) {
         return isRemappableInstanceLocalVar(vscp) || vscp->varp()->name().rfind("__PVT__", 0) == 0;
+    }
+
+    static AstVarScope* findDestScopedCloneVar(AstScope* destBoundaryScopep,
+                                               const AstVarScope* sourceVscp) {
+        AstVarScope* const mappedVscp = findScopeCloneVarByName(destBoundaryScopep, sourceVscp);
+        if (mappedVscp == sourceVscp) return nullptr;
+        return mappedVscp;
+    }
+
+    static AstVarScope* findDestScopedCloneVar(AstScope* destBoundaryScopep,
+                                               const AstVarXRef* sourceRefp) {
+        if (AstVarScope* const mappedVscp = findScopeCloneVarByName(
+                destBoundaryScopep, sourceRefp->name(), sourceRefp->dtypep())) {
+            return mappedVscp;
+        }
+        return findScopeCloneVarByName(destBoundaryScopep, sourceRefp->name());
+    }
+
+    static AstVarScope* findDestScopedCloneVar(AstScope* destBoundaryScopep,
+                                               const AstNodeVarRef* sourceRefp) {
+        if (AstVarScope* const mappedVscp = findScopeCloneVarByName(
+                destBoundaryScopep, sourceRefp->name(), sourceRefp->dtypep())) {
+            if (mappedVscp != sourceRefp->varScopep()) return mappedVscp;
+        }
+        AstVarScope* const mappedVscp
+            = findScopeCloneVarByName(destBoundaryScopep, sourceRefp->name());
+        if (mappedVscp == sourceRefp->varScopep()) return nullptr;
+        return mappedVscp;
+    }
+
+    static void remapCloneRefTo(AstNodeVarRef* refp, AstVarScope* mappedVscp) {
+        AstVarRef* const newp = new AstVarRef{refp->fileline(), mappedVscp, refp->access()};
+        refp->replaceWith(newp);
+        VL_DO_DANGLING(refp->deleteTree(), refp);
     }
 
     static bool hasUnsafeCloneSelfPointer(const AstNodeVarRef* refp) {
@@ -1590,6 +1655,24 @@ public:
                 if (argVars.count(refp->varp())) return;
                 if (findScopeCloneVarByVar(destBoundaryScopep, refp->varp())) return;
                 const AstVarScope* const sourceVscp = refp->varScopep();
+                if (AstVarScope* const mappedVscp
+                    = findDestScopedCloneVar(destBoundaryScopep, refp)) {
+                    resolvedVarMap.emplace(sourceVscp, mappedVscp);
+                    if (canRemapGeneratedCloneVarByName(sourceVscp)) {
+                        noteGeneratedVarRemap(sourceVscp, stats);
+                        ++stats.m_orderCacheCloneGeneratedVarRemaps;
+                    }
+                    return;
+                }
+                if (AstVarScope* const mappedVscp
+                    = findDestScopedCloneVar(destBoundaryScopep, sourceVscp)) {
+                    resolvedVarMap.emplace(sourceVscp, mappedVscp);
+                    if (canRemapGeneratedCloneVarByName(sourceVscp)) {
+                        noteGeneratedVarRemap(sourceVscp, stats);
+                        ++stats.m_orderCacheCloneGeneratedVarRemaps;
+                    }
+                    return;
+                }
                 if (resolvedVarMap.find(sourceVscp) == resolvedVarMap.end()) {
                     AstScope* const sourceBoundaryScopep = boundaryScopeFor(sourceVscp->scopep());
                     if (sourceBoundaryScopep && sourceBoundaryScopep != destBoundaryScopep) {
@@ -1631,7 +1714,7 @@ public:
                 origFuncp->fileline(), origFuncp->name() + "__sgclone_" + cvtToStr(s_cloneIndex++),
                 destBoundaryScopep, origFuncp->rtnTypeVoid()};
             clonep->argTypes(origFuncp->argTypes());
-            clonep->cname(origFuncp->cname());
+            clonep->cname(clonep->name());
             clonep->declPrivate(origFuncp->declPrivate());
             clonep->dontCombine(origFuncp->dontCombine());
             clonep->dpiContext(origFuncp->dpiContext());
@@ -1674,15 +1757,22 @@ public:
             if (!origFuncp->stmtsp()) continue;
             AstNode* const bodyp = origFuncp->stmtsp()->cloneTree(true);
             bool failed = false;
-            bodyp->foreach([&](AstCCall* callp) {
+            bodyp->foreachAndNext([&](AstCCall* callp) {
                 if (failed) return;
                 const auto it = clonedFuncs.find(callp->funcp());
                 if (it == clonedFuncs.end()) return;
                 callp->funcp(it->second);
                 callp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
             });
-            bodyp->foreach([&](AstNodeVarRef* refp) {
+            bodyp->foreachAndNext([&](AstNodeVarRef* refp) {
                 if (failed) return;
+                if (AstVarXRef* const xrefp = VN_CAST(refp, VarXRef)) {
+                    if (AstVarScope* const mappedVscp
+                        = findDestScopedCloneVar(destBoundaryScopep, xrefp)) {
+                        remapCloneRefTo(refp, mappedVscp);
+                        return;
+                    }
+                }
                 if (VN_IS(refp, VarXRef) && mustBeDestScopedInClone(refp->varScopep())) {
                     noteUnmappedVar(refp->varScopep());
                     failed = true;
@@ -1697,6 +1787,20 @@ public:
                 if (argIt != clonedArgVscps.end()) {
                     refp->varp(argIt->second->varp());
                     refp->varScopep(argIt->second);
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                    return;
+                }
+                if (AstVarScope* const mappedVscp
+                    = findDestScopedCloneVar(destBoundaryScopep, refp)) {
+                    refp->varp(mappedVscp->varp());
+                    refp->varScopep(mappedVscp);
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                    return;
+                }
+                if (AstVarScope* const mappedVscp
+                    = findDestScopedCloneVar(destBoundaryScopep, refp->varScopep())) {
+                    refp->varp(mappedVscp->varp());
+                    refp->varScopep(mappedVscp);
                     refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
                     return;
                 }
@@ -1813,7 +1917,7 @@ public:
                 return SubgraphSharedHelperSkipReason::TRIGGERED_NOT_SHAREABLE;
             }
             if (artifactp->m_scopeHasInputTailWrites
-                || bundleContext.m_currentScopeHasInputTailWrites) {
+                || bundleContext.m_currentScopeHasInputTailWrites || context.m_hasTailFuncps) {
                 return SubgraphSharedHelperSkipReason::TRIGGERED_INPUT_TAIL;
             }
             return SubgraphSharedHelperSkipReason::NONE;
@@ -2604,7 +2708,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     const SubgraphTriggeredRefInfo triggeredInfo
         = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(callFuncp, group.m_scopep,
                                                                  state.m_stats);
-    const bool cloneableArtifact = !triggeredInfo.m_hasTriggered;
+    const bool cloneableArtifact
+        = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
     const bool triggeredShareableArtifact
         = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
     if (triggeredInfo.m_hasTriggered) {
