@@ -405,7 +405,6 @@ struct SubgraphScheduleArtifact final {
     AstCFunc* m_callFuncp = nullptr;
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
-    std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     bool m_cloneable = true;
     bool m_hasTriggered = false;
@@ -2031,7 +2030,7 @@ public:
                 sawLogicMismatch = true;
                 continue;
             }
-            if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep
+            if (artifactp->m_scopep != currentScopep
                 && !canUseSharedHelper(artifactp, sharedContext)) {
                 noteSharedReuseSkip(classifySharedHelperUse(artifactp, sharedContext));
                 switch (artifactp->m_uncloneableReason) {
@@ -2541,23 +2540,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 callFuncp = artifactp->m_callFuncp;
                 sharedCall = true;
                 ++state.m_stats.m_artifactReuseSharedCalls;
-            } else {
-                state.noteSharedReuseSkip(
-                    SubgraphLoweringState::classifySharedHelperUse(artifactp, sharedContext));
-                const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
-                if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
-                    callFuncp = cloneIt->second;
-                    ++state.m_stats.m_artifactReuseScopeCloneHits;
-                } else {
-                    callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap,
-                        state.m_stats);
-                    if (callFuncp) {
-                        artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
-                        ++state.m_stats.m_artifactReuseScopeClones;
-                        ++state.m_stats.m_orderedFuncClones;
-                    }
-                }
             }
             if (callFuncp) {
                 if (tag == "stl") state.m_stlSubgraphFuncs[group.m_scopep].push_back(callFuncp);
@@ -2646,16 +2628,29 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                 return plan;
                             }
                         }
-                    } else {
-                        funcp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                            cacheEntry.m_funcp, group.m_scopep, templateVarMap, state.m_stats);
-                        if (funcp) {
-                            ++state.m_stats.m_orderCacheHits;
-                            ++state.m_stats.m_orderedFuncClones;
-                            SubgraphLoweringState::discardLogic(subgraphLogic);
-                        } else {
-                            ++state.m_stats.m_orderCacheCloneNull;
+                    } else if (cacheEntry.m_artifactp
+                               && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
+                                                                            sharedContext)) {
+                        if (tailFuncps) {
+                            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                            }
                         }
+                        plan.m_artifactp = cacheEntry.m_artifactp;
+                        plan.m_instance.m_callFuncp = cacheEntry.m_funcp;
+                        plan.m_instance.m_scopep = group.m_scopep;
+                        plan.m_instance.m_sharedCall
+                            = cacheEntry.m_funcp->scopep() != group.m_scopep;
+                        populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                 subgraphLogic);
+                        SubgraphLoweringState::discardLogic(subgraphLogic);
+                        plan.m_phase = phase;
+                        plan.m_wrapper = wrapper;
+                        ++state.m_stats.m_orderCacheHits;
+                        ++state.m_stats.m_orderCacheSharedHits;
+                        ++state.m_stats.m_schedulePlans;
+                        if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                        return plan;
                     }
                 } else {
                     state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
