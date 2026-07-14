@@ -125,6 +125,8 @@ class OrderGraphBuilder final : public VNVisitor {
     AstScope* m_scopep = nullptr;
     // Sensitivity list for clocked logic, nullptr for combinational and hybrid logic
     AstSenTree* m_domainp = nullptr;
+    // Original sensitivity domain used to coalesce subgraph phase barriers
+    const AstSenTree* m_subgraphBarrierp = nullptr;
     // Sensitivity list for hybrid logic, nullptr for everything else
     AstSenTree* m_hybridp = nullptr;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphClockedPhaseVtxps;
@@ -153,7 +155,7 @@ class OrderGraphBuilder final : public VNVisitor {
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
         // Gather variable dependencies based on usage
         iterateChildren(nodep);
-        const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
+        const AstSenTree* const barrierKeyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
         // Finished with this logic
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
             if (m_inClocked && !m_inPost && !m_isSubgraphSnapshotLogic
@@ -179,7 +181,7 @@ class OrderGraphBuilder final : public VNVisitor {
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
         ++m_subgraphStats.m_coarseNodes;
         addSubgraphInstancePortUsage(nodep);
-        const AstSenTree* const barrierKeyp = m_domainp ? m_domainp : m_hybridp;
+        const AstSenTree* const barrierKeyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
             if (nodep->phase() == AstSubgraphInstance::Phase::SNAPSHOT) {
                 addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), false, true, nodep);
@@ -588,6 +590,7 @@ class OrderGraphBuilder final : public VNVisitor {
         VL_RESTORER(m_domainp);
         VL_RESTORER(m_hybridp);
         VL_RESTORER(m_inClocked);
+        VL_RESTORER(m_subgraphBarrierp);
 
         // This is the original sensitivity of the block (i.e.: not the ref into the trigger vec)
 
@@ -603,11 +606,15 @@ class OrderGraphBuilder final : public VNVisitor {
 
         // Combinational and hybrid logic will have it's domain assigned based on the driver
         // domains. For clocked logic, we already know its domain.
-        if (!senTreep->hasCombo() && !senTreep->hasHybrid()) m_domainp = nodep->sentreep();
+        if (!senTreep->hasCombo() && !senTreep->hasHybrid()) {
+            m_domainp = nodep->sentreep();
+            m_subgraphBarrierp = senTreep;
+        }
 
         // Hybrid logic also includes additional sensitivities
         if (senTreep->hasHybrid()) {
             m_hybridp = nodep->sentreep();
+            m_subgraphBarrierp = senTreep;
             // Mark AstVarScopes that are explicit sensitivities
             AstNode::user3ClearTree();
             senTreep->foreach([](const AstVarRef* refp) {  //
