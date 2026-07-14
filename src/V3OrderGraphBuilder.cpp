@@ -90,6 +90,8 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_contractUsesNormal = 0;
         uint64_t m_contractUsesRaw = 0;
         uint64_t m_nestedContractUses = 0;
+        uint64_t m_phaseBarrierCanonicalizedUses = 0;
+        uint64_t m_phaseBarrierUses = 0;
     };
     enum class SubgraphContractUseMode : uint8_t {
         COARSE,
@@ -132,6 +134,8 @@ class OrderGraphBuilder final : public VNVisitor {
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphClockedPhaseVtxps;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphPostPhaseVtxps;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphSnapshotPhaseVtxps;
+    std::unordered_set<const AstSenTree*> m_subgraphPhaseCanonicalKeyps;
+    std::unordered_set<const AstSenTree*> m_subgraphPhaseRawKeyps;
 
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
@@ -155,7 +159,7 @@ class OrderGraphBuilder final : public VNVisitor {
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
         // Gather variable dependencies based on usage
         iterateChildren(nodep);
-        const AstSenTree* const barrierKeyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
+        const AstSenTree* const barrierKeyp = subgraphBarrierKeyp();
         // Finished with this logic
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
             if (m_inClocked && !m_inPost && !m_isSubgraphSnapshotLogic
@@ -181,7 +185,7 @@ class OrderGraphBuilder final : public VNVisitor {
         m_logicVxp = new OrderLogicVertex{m_graphp, m_scopep, m_domainp, m_hybridp, nodep};
         ++m_subgraphStats.m_coarseNodes;
         addSubgraphInstancePortUsage(nodep);
-        const AstSenTree* const barrierKeyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
+        const AstSenTree* const barrierKeyp = subgraphBarrierKeyp();
         if (v3Global.opt.subgraphSchedule() && barrierKeyp) {
             if (nodep->phase() == AstSubgraphInstance::Phase::SNAPSHOT) {
                 addPhaseUsage(getSubgraphSnapshotPhaseVtxp(barrierKeyp), false, true, nodep);
@@ -229,6 +233,20 @@ class OrderGraphBuilder final : public VNVisitor {
             = new OrderSubgraphPhaseVertex{m_graphp, OrderSubgraphPhaseVertex::Kind::SNAPSHOT};
         m_subgraphSnapshotPhaseVtxps.emplace(barrierKeyp, vtxp);
         return vtxp;
+    }
+
+    const AstSenTree* subgraphBarrierKeyp() {
+        const AstSenTree* const keyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
+        if (v3Global.opt.stats() && keyp) {
+            ++m_subgraphStats.m_phaseBarrierUses;
+            m_subgraphPhaseCanonicalKeyps.insert(keyp);
+            const AstSenTree* const rawp = m_domainp ? m_domainp : m_hybridp;
+            if (rawp) {
+                m_subgraphPhaseRawKeyps.insert(rawp);
+                if (rawp != keyp) ++m_subgraphStats.m_phaseBarrierCanonicalizedUses;
+            }
+        }
+        return keyp;
     }
 
     AstScope* subgraphBoundaryScope(AstScope* scopep) const {
@@ -554,6 +572,12 @@ class OrderGraphBuilder final : public VNVisitor {
         V3Stats::addStat(prefix + "contract uses normal", m_subgraphStats.m_contractUsesNormal);
         V3Stats::addStat(prefix + "contract uses raw", m_subgraphStats.m_contractUsesRaw);
         V3Stats::addStat(prefix + "nested contract uses", m_subgraphStats.m_nestedContractUses);
+        V3Stats::addStat(prefix + "phase barrier canonical keys",
+                         m_subgraphPhaseCanonicalKeyps.size());
+        V3Stats::addStat(prefix + "phase barrier canonicalized uses",
+                         m_subgraphStats.m_phaseBarrierCanonicalizedUses);
+        V3Stats::addStat(prefix + "phase barrier raw keys", m_subgraphPhaseRawKeyps.size());
+        V3Stats::addStat(prefix + "phase barrier uses", m_subgraphStats.m_phaseBarrierUses);
         V3Stats::addStat(prefix + "phase vertices clocked", m_subgraphClockedPhaseVtxps.size());
         V3Stats::addStat(prefix + "phase vertices post", m_subgraphPostPhaseVtxps.size());
         V3Stats::addStat(prefix + "phase vertices snapshot", m_subgraphSnapshotPhaseVtxps.size());
