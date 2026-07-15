@@ -14,10 +14,8 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse shared calls\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, shared helper external args\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+([1-9]\d*)")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact writes local temp\s+([1-9]\d*)")
 test.file_grep(test.stats,
