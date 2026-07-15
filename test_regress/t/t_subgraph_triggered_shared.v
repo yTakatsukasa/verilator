@@ -23,6 +23,8 @@ module t (
   logic rst_n;
   logic [7:0] a;
   logic [7:0] b;
+  logic aux_clk = 1'b0;
+  logic [7:0] aux_q = 8'h6d;
   logic [15:0] y0;
   logic [15:0] y1;
   logic [15:0] y2;
@@ -138,12 +140,15 @@ module t (
     .y_o(ref5)
   );
 
-  sg_node_tail_safe i_sg6 (clk, y6);
-  sg_node_tail_safe i_sg7 (clk, y7);
-  sg_node_tail_safe i_sg8 (clk, y8);
+  sg_node_tail_safe i_sg6 (.clk(clk), .y_o(y6), .unused_o());
+  sg_node_tail_safe i_sg7 (.clk(clk), .y_o(y7), .unused_o());
+  sg_node_tail_safe i_sg8 (.clk(clk), .y_o(y8), .unused_o());
   sg_node_tail_safe_ref i_ref6 (clk, ref6);
   sg_node_tail_safe_ref i_ref7 (clk, ref7);
   sg_node_tail_safe_ref i_ref8 (clk, ref8);
+
+  always_ff @(posedge clk) aux_clk <= ~aux_clk;
+  always_ff @(posedge aux_clk) aux_q <= {aux_q[6:0], aux_q[7] ^ aux_q[5]};
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
@@ -169,7 +174,7 @@ module t (
     end
 
     if (cyc == 40) begin
-      $write("*-* All Finished *-*\n");
+      $write("*-* All Finished *-* aux=%x\n", aux_q);
       $finish;
     end
   end
@@ -178,13 +183,15 @@ endmodule
 
 module sg_node_tail_safe (
   input  logic        clk,
-  output logic [15:0] y_o
+  output logic [15:0] y_o,
+  output logic [15:0] unused_o
 ); `SUBGRAPH_BOUNDARY
 
   logic [15:0] q = 16'h1357;
   logic [15:0] q_next;
 
   assign y_o = q ^ {q[4:0], q[15:5]};
+  assign unused_o = q + 16'h55aa;
   always_comb q_next = {q[13:0], q[15:14]} + 16'h1021;
 
   always_ff @(posedge clk) begin

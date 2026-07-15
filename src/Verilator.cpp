@@ -361,6 +361,7 @@ static void process() {
             // No more AstAlias after linkDotScope
             V3Scope::scopeAll(v3Global.rootp());
             V3LinkDot::linkDotScope(v3Global.rootp());
+            V3SubgraphSummary::captureExternalConsumers(v3Global.rootp());
             // FSM coverage needs scopes, but should otherwise run as early as
             // possible before later lowering rewrites user-visible clocked
             // case structure. This entry point runs two adjacent phases:

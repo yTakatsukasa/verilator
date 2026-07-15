@@ -18,6 +18,8 @@
 
 #include "V3SubgraphSummary.h"
 
+#include "V3Stats.h"
+
 #include <unordered_map>
 #include <unordered_set>
 
@@ -30,8 +32,54 @@ using ScopeSummaryMap = std::unordered_map<const AstScope*, V3SubgraphSummary::S
 ModuleSummaryMap s_moduleSummaries;
 ScopeSummaryMap s_scopeSummaries;
 std::unordered_set<const AstVarScope*> s_derivedBoundaryInputs;
+std::unordered_set<std::string> s_externallyConsumedBoundaryVars;
+uint64_t s_boundaryWriteCandidates = 0;
+uint64_t s_boundaryWritesPruned = 0;
+bool s_externalConsumersCaptured = false;
 
 bool isCompileTimeConstant(const AstVar* varp) { return varp->isParam() || varp->isGenVar(); }
+
+std::string boundaryVarKey(const AstVarScope* vscp) {
+    const std::string scopeName = vscp->scopep()->name();
+    return cvtToStr(scopeName.size()) + ":" + scopeName + vscp->varp()->name();
+}
+
+const AstScope* subgraphBoundaryScope(const AstScope* scopep) {
+    for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp->modp()->subgraphBoundary()) return scanp;
+    }
+    return nullptr;
+}
+
+bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
+    for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp == basep) return true;
+    }
+    return false;
+}
+
+class SubgraphExternalConsumptionVisitor final : public VNVisitorConst {
+    const AstScope* m_scopep = nullptr;
+
+    void visit(AstScope* nodep) override {
+        VL_RESTORER(m_scopep);
+        m_scopep = nodep;
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstNodeVarRef* nodep) override {
+        if (!nodep->access().isReadOrRW()) return;
+        AstVarScope* const vscp = nodep->varScopep();
+        const AstScope* const boundaryp = subgraphBoundaryScope(vscp->scopep());
+        if (boundaryp && !isUnderScope(m_scopep, boundaryp)) {
+            s_externallyConsumedBoundaryVars.insert(boundaryVarKey(vscp));
+        }
+    }
+    void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+
+public:
+    explicit SubgraphExternalConsumptionVisitor(AstNetlist* nodep) { iterateConst(nodep); }
+    ~SubgraphExternalConsumptionVisitor() override = default;
+};
 
 class SubgraphModuleSummaryVisitor final : public VNVisitorConst {
     const AstNodeModule* m_modp = nullptr;
@@ -105,13 +153,6 @@ public:
 class SubgraphScopeSummaryBinder final : public VNVisitorConst {
     AstScope* m_boundaryScopep = nullptr;
 
-    static bool isUnderBoundaryScope(const AstScope* scopep, const AstScope* boundaryScopep) {
-        for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
-            if (scanp == boundaryScopep) return true;
-        }
-        return false;
-    }
-
     void visit(AstScope* nodep) override {
         if (!nodep->modp()->subgraphBoundary() || m_boundaryScopep) {
             iterateChildrenConst(nodep);
@@ -146,7 +187,15 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
         for (const std::string& name : modSummary.m_writablePortNames) {
             const auto varsIt = varsByName.find(name);
             if (varsIt == varsByName.end()) continue;
-            scopeSummary.m_parentStub.m_boundaryWrites.push_back(varsIt->second);
+            AstVarScope* const vscp = varsIt->second;
+            ++s_boundaryWriteCandidates;
+            AstVar* const varp = vscp->varp();
+            if (s_externallyConsumedBoundaryVars.count(boundaryVarKey(vscp)) || varp->isPrimaryIO()
+                || varp->isSigPublic() || varp->isTrace()) {
+                scopeSummary.m_parentStub.m_boundaryWrites.push_back(vscp);
+            } else {
+                ++s_boundaryWritesPruned;
+            }
         }
 
         iterateChildrenConst(nodep);
@@ -155,7 +204,7 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
     void visit(AstNodeVarRef* nodep) override {
         if (m_boundaryScopep && (nodep->access().isReadOrRW() || nodep->access().isWriteOrRW())
             && !isCompileTimeConstant(nodep->varp())
-            && !isUnderBoundaryScope(nodep->varScopep()->scopep(), m_boundaryScopep)) {
+            && !isUnderScope(nodep->varScopep()->scopep(), m_boundaryScopep)) {
             s_scopeSummaries[m_boundaryScopep].m_parentStub.m_readsExternalVars = true;
         }
         iterateChildrenConst(nodep);
@@ -171,23 +220,47 @@ public:
 }  // namespace
 
 void V3SubgraphSummary::buildModules(AstNetlist* nodep) {
-    clear();
+    s_moduleSummaries.clear();
+    s_scopeSummaries.clear();
+    s_derivedBoundaryInputs.clear();
+    s_boundaryWriteCandidates = 0;
+    s_boundaryWritesPruned = 0;
     if (!v3Global.opt.subgraphSchedule()) return;
     SubgraphModuleSummaryVisitor{nodep};
+    if (!s_externalConsumersCaptured) SubgraphExternalConsumptionVisitor{nodep};
+}
+
+void V3SubgraphSummary::captureExternalConsumers(AstNetlist* nodep) {
+    s_externallyConsumedBoundaryVars.clear();
+    s_externalConsumersCaptured = false;
+    if (!v3Global.opt.subgraphSchedule()) return;
+    SubgraphExternalConsumptionVisitor{nodep};
+    s_externalConsumersCaptured = true;
 }
 
 void V3SubgraphSummary::bindScopes(AstNetlist* nodep) {
     s_scopeSummaries.clear();
     s_derivedBoundaryInputs.clear();
+    s_boundaryWriteCandidates = 0;
+    s_boundaryWritesPruned = 0;
     if (!v3Global.opt.subgraphSchedule()) return;
     if (s_moduleSummaries.empty()) buildModules(nodep);
     SubgraphScopeSummaryBinder{nodep};
+    if (v3Global.opt.stats()) {
+        const string prefix = "Scheduling, Subgraph parent contracts, ";
+        V3Stats::addStat(prefix + "boundary write candidates", s_boundaryWriteCandidates);
+        V3Stats::addStat(prefix + "boundary writes pruned", s_boundaryWritesPruned);
+    }
 }
 
 void V3SubgraphSummary::clear() {
     s_moduleSummaries.clear();
     s_scopeSummaries.clear();
     s_derivedBoundaryInputs.clear();
+    s_externallyConsumedBoundaryVars.clear();
+    s_boundaryWriteCandidates = 0;
+    s_boundaryWritesPruned = 0;
+    s_externalConsumersCaptured = false;
 }
 
 const V3SubgraphSummary::ScopeSummary* V3SubgraphSummary::getScopeSummary(const AstScope* scopep) {

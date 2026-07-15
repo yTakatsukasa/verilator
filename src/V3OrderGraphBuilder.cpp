@@ -91,6 +91,7 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_contractUsesRaw = 0;
         uint64_t m_nestedContractUses = 0;
         uint64_t m_phaseBarrierCanonicalizedUses = 0;
+        uint64_t m_phaseBarrierIrrelevantUsesSkipped = 0;
         uint64_t m_phaseBarrierUses = 0;
     };
     enum class SubgraphContractUseMode : uint8_t {
@@ -136,6 +137,7 @@ class OrderGraphBuilder final : public VNVisitor {
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphSnapshotPhaseVtxps;
     std::unordered_set<const AstSenTree*> m_subgraphPhaseCanonicalKeyps;
     std::unordered_set<const AstSenTree*> m_subgraphPhaseRawKeyps;
+    std::unordered_set<const AstSenTree*> m_subgraphRelevantBarrierps;
 
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
@@ -235,8 +237,27 @@ class OrderGraphBuilder final : public VNVisitor {
         return vtxp;
     }
 
+    void collectSubgraphRelevantBarriers(const std::vector<V3Sched::LogicByScope*>& coll) {
+        for (const V3Sched::LogicByScope* const lbsp : coll) {
+            for (const auto& pair : *lbsp) {
+                pair.second->foreach([&](AstActive* activep) {
+                    bool hasSubgraphInstance = false;
+                    activep->foreach([&](AstSubgraphInstance*) { hasSubgraphInstance = true; });
+                    if (!hasSubgraphInstance) return;
+                    AstSenTree* const activeSenTreep = activep->sentreep();
+                    if (activeSenTreep->hasCombo()) return;
+                    m_subgraphRelevantBarrierps.insert(m_trigToSen.at(activeSenTreep));
+                });
+            }
+        }
+    }
+
     const AstSenTree* subgraphBarrierKeyp() {
         const AstSenTree* const keyp = m_subgraphBarrierp ? m_subgraphBarrierp : m_hybridp;
+        if (keyp && !m_subgraphRelevantBarrierps.count(keyp)) {
+            if (v3Global.opt.stats()) ++m_subgraphStats.m_phaseBarrierIrrelevantUsesSkipped;
+            return nullptr;
+        }
         if (v3Global.opt.stats() && keyp) {
             ++m_subgraphStats.m_phaseBarrierUses;
             m_subgraphPhaseCanonicalKeyps.insert(keyp);
@@ -576,6 +597,8 @@ class OrderGraphBuilder final : public VNVisitor {
                          m_subgraphPhaseCanonicalKeyps.size());
         V3Stats::addStat(prefix + "phase barrier canonicalized uses",
                          m_subgraphStats.m_phaseBarrierCanonicalizedUses);
+        V3Stats::addStat(prefix + "phase barrier irrelevant uses skipped",
+                         m_subgraphStats.m_phaseBarrierIrrelevantUsesSkipped);
         V3Stats::addStat(prefix + "phase barrier raw keys", m_subgraphPhaseRawKeyps.size());
         V3Stats::addStat(prefix + "phase barrier uses", m_subgraphStats.m_phaseBarrierUses);
         V3Stats::addStat(prefix + "phase vertices clocked", m_subgraphClockedPhaseVtxps.size());
@@ -767,6 +790,7 @@ class OrderGraphBuilder final : public VNVisitor {
                       const V3Order::TrigToSenMap& trigToSen, const std::string& tag)
         : m_trigToSen{trigToSen}
         , m_tag{tag} {
+        collectSubgraphRelevantBarriers(coll);
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {

@@ -39,5 +39,9 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact input tail writes\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph parent contracts, boundary writes pruned\s+(\d+)", 3)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph order graph nba, phase barrier irrelevant uses skipped\s+(\d+)",
+               3)
 
 test.passes()
