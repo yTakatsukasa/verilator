@@ -386,6 +386,7 @@ class InlineCFuncsVisitor final : public VNVisitor {
         // Check if the call site is not inlineable
         if (!VN_IS(nodep->backp(), StmtExpr)) vtxp->setNoInline("Not in statement position");
         if (m_inExecGraph) vtxp->setNoInline("In ExecGraph");
+        if (nodep->selfPointer().isVlSym()) vtxp->setNoInline("Absolute self pointer");
         if (calleep->isVirtual()) vtxp->setNoInline("Virtual method");
 
         // Add caller/callee edges

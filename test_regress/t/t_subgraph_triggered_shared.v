@@ -29,12 +29,18 @@ module t (
   logic [15:0] y3;
   logic [15:0] y4;
   logic [15:0] y5;
+  logic [15:0] y6;
+  logic [15:0] y7;
+  logic [15:0] y8;
   logic [15:0] ref0;
   logic [15:0] ref1;
   logic [15:0] ref2;
   logic [15:0] ref3;
   logic [15:0] ref4;
   logic [15:0] ref5;
+  logic [15:0] ref6;
+  logic [15:0] ref7;
+  logic [15:0] ref8;
 
   sg_node i_sg0 (
     .clk(clk),
@@ -132,6 +138,13 @@ module t (
     .y_o(ref5)
   );
 
+  sg_node_tail_safe i_sg6 (clk, y6);
+  sg_node_tail_safe i_sg7 (clk, y7);
+  sg_node_tail_safe i_sg8 (clk, y8);
+  sg_node_tail_safe_ref i_ref6 (clk, ref6);
+  sg_node_tail_safe_ref i_ref7 (clk, ref7);
+  sg_node_tail_safe_ref i_ref8 (clk, ref8);
+
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
     rst_n <= cyc > 1;
@@ -150,12 +163,49 @@ module t (
       `checkh(y3, ref3);
       `checkh(y4, ref4);
       `checkh(y5, ref5);
+      `checkh(y6, ref6);
+      `checkh(y7, ref7);
+      `checkh(y8, ref8);
     end
 
     if (cyc == 40) begin
       $write("*-* All Finished *-*\n");
       $finish;
     end
+  end
+
+endmodule
+
+module sg_node_tail_safe (
+  input  logic        clk,
+  output logic [15:0] y_o
+); `SUBGRAPH_BOUNDARY
+
+  logic [15:0] q = 16'h1357;
+  logic [15:0] q_next;
+
+  assign y_o = q ^ {q[4:0], q[15:5]};
+  always_comb q_next = {q[13:0], q[15:14]} + 16'h1021;
+
+  always_ff @(posedge clk) begin
+    q <= q_next;
+  end
+
+endmodule
+
+module sg_node_tail_safe_ref (
+  input  logic        clk,
+  output logic [15:0] y_o
+);
+
+  logic [15:0] q = 16'h1357;
+  logic [15:0] q_next;
+
+  assign y_o = q ^ {q[4:0], q[15:5]};
+  always_comb q_next = {q[13:0], q[15:14]} + 16'h1021;
+
+  always_ff @(posedge clk) begin
+    q <= q_next;
   end
 
 endmodule

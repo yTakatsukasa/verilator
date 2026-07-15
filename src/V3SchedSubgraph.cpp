@@ -371,10 +371,18 @@ enum class SubgraphSharedHelperSkipReason : uint8_t {
     NON_LOOSE,
     OTHER,
     PHASE,
-    TAIL,
     TRIGGERED,
     TRIGGERED_INPUT_TAIL,
     TRIGGERED_NOT_SHAREABLE,
+};
+
+struct SubgraphTailContract final {
+    bool m_readsBoundaryInput = false;
+    bool m_readsBoundaryState = false;
+    bool m_readsExternal = false;
+    bool m_writesBoundaryInput = false;
+    bool m_writesBoundaryState = false;
+    bool m_writesExternal = false;
 };
 
 enum class SubgraphInstanceLocalVarKind : uint8_t {
@@ -391,14 +399,13 @@ enum class SubgraphInstanceLocalVarKind : uint8_t {
 
 struct SubgraphScheduleBundleContext final {
     AstScope* m_currentScopep = nullptr;
+    SubgraphTailContract m_currentScopeTailContract;
     bool m_currentScopeHasDerivedBoundaryReads = false;
-    bool m_currentScopeHasInputTailWrites = false;
 };
 
 struct SubgraphSharedHelperContext final {
     const SubgraphScheduleBundleContext* m_bundlep = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
-    bool m_hasTailFuncps = false;
 };
 
 struct SubgraphSharedHelperArg final {
@@ -413,9 +420,9 @@ struct SubgraphScheduleArtifact final {
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
     AstScope* m_scopep = nullptr;
+    SubgraphTailContract m_tailContract;
     bool m_cloneable = true;
     bool m_hasTriggered = false;
-    bool m_scopeHasInputTailWrites = false;
     bool m_triggeredShareable = false;
     SubgraphArtifactUncloneableReason m_uncloneableReason
         = SubgraphArtifactUncloneableReason::NONE;
@@ -671,7 +678,6 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseSharedSkipNonLoose = 0;
     uint64_t m_artifactReuseSharedSkipOther = 0;
     uint64_t m_artifactReuseSharedSkipPhase = 0;
-    uint64_t m_artifactReuseSharedSkipTail = 0;
     uint64_t m_artifactReuseSharedSkipTriggered = 0;
     uint64_t m_artifactReuseSharedSkipTriggeredInputTail = 0;
     uint64_t m_artifactReuseSharedSkipTriggeredNotShareable = 0;
@@ -747,7 +753,6 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheSharedSkipNonLoose = 0;
     uint64_t m_orderCacheSharedSkipOther = 0;
     uint64_t m_orderCacheSharedSkipPhase = 0;
-    uint64_t m_orderCacheSharedSkipTail = 0;
     uint64_t m_orderCacheSharedSkipTriggered = 0;
     uint64_t m_orderCacheSharedSkipTriggeredInputTail = 0;
     uint64_t m_orderCacheSharedSkipTriggeredNotShareable = 0;
@@ -891,8 +896,6 @@ struct SubgraphLoweringStats final {
                          m_artifactReuseSharedSkipOther);
         V3Stats::addStat(prefix + "artifact reuse shared skip phase",
                          m_artifactReuseSharedSkipPhase);
-        V3Stats::addStat(prefix + "artifact reuse shared skip tail",
-                         m_artifactReuseSharedSkipTail);
         V3Stats::addStat(prefix + "artifact reuse shared skip triggered",
                          m_artifactReuseSharedSkipTriggered);
         V3Stats::addStat(prefix + "artifact reuse shared skip triggered input tail",
@@ -1012,7 +1015,6 @@ struct SubgraphLoweringStats final {
                          m_orderCacheSharedSkipNonLoose);
         V3Stats::addStat(prefix + "order cache shared skip other", m_orderCacheSharedSkipOther);
         V3Stats::addStat(prefix + "order cache shared skip phase", m_orderCacheSharedSkipPhase);
-        V3Stats::addStat(prefix + "order cache shared skip tail", m_orderCacheSharedSkipTail);
         V3Stats::addStat(prefix + "order cache shared skip triggered",
                          m_orderCacheSharedSkipTriggered);
         V3Stats::addStat(prefix + "order cache shared skip triggered input tail",
@@ -2066,14 +2068,13 @@ public:
             if (!artifactp->m_triggeredShareable) {
                 return SubgraphSharedHelperSkipReason::TRIGGERED_NOT_SHAREABLE;
             }
-            if (artifactp->m_scopeHasInputTailWrites
-                || bundleContext.m_currentScopeHasInputTailWrites || context.m_hasTailFuncps) {
+            if (artifactp->m_tailContract.m_writesBoundaryInput
+                || bundleContext.m_currentScopeTailContract.m_writesBoundaryInput) {
                 return SubgraphSharedHelperSkipReason::TRIGGERED_INPUT_TAIL;
             }
             return SubgraphSharedHelperSkipReason::NONE;
         }
         if (artifactp->m_cloneable) return SubgraphSharedHelperSkipReason::NONE;
-        if (context.m_hasTailFuncps) return SubgraphSharedHelperSkipReason::TAIL;
         switch (artifactp->m_uncloneableReason) {
         case SubgraphArtifactUncloneableReason::TRIGGERED:
             return SubgraphSharedHelperSkipReason::TRIGGERED;
@@ -2107,7 +2108,6 @@ public:
         case SubgraphSharedHelperSkipReason::PHASE:
             ++m_stats.m_artifactReuseSharedSkipPhase;
             return;
-        case SubgraphSharedHelperSkipReason::TAIL: ++m_stats.m_artifactReuseSharedSkipTail; return;
         case SubgraphSharedHelperSkipReason::TRIGGERED:
             ++m_stats.m_artifactReuseSharedSkipTriggered;
             ++m_stats.m_artifactReuseSharedSkipTriggeredOther;
@@ -2137,7 +2137,6 @@ public:
             return;
         case SubgraphSharedHelperSkipReason::OTHER: ++m_stats.m_orderCacheSharedSkipOther; return;
         case SubgraphSharedHelperSkipReason::PHASE: ++m_stats.m_orderCacheSharedSkipPhase; return;
-        case SubgraphSharedHelperSkipReason::TAIL: ++m_stats.m_orderCacheSharedSkipTail; return;
         case SubgraphSharedHelperSkipReason::TRIGGERED:
             ++m_stats.m_orderCacheSharedSkipTriggered;
             ++m_stats.m_orderCacheSharedSkipTriggeredOther;
@@ -2226,17 +2225,17 @@ public:
     SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, AstScope* scopep, AstCFunc* callFuncp,
         std::vector<SubgraphSharedHelperArg>&& helperArgs, SubgraphLogicSig&& logicSig,
-        bool cloneable, bool hasTriggered, bool scopeHasInputTailWrites, bool triggeredShareable,
-        bool cacheable) {
+        const SubgraphTailContract& tailContract, bool cloneable, bool hasTriggered,
+        bool triggeredShareable, bool cacheable) {
         std::unique_ptr<SubgraphScheduleArtifact> artifactp{new SubgraphScheduleArtifact};
         artifactp->m_callFuncp = callFuncp;
         artifactp->m_helperArgs = std::move(helperArgs);
         artifactp->m_key = key;
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
+        artifactp->m_tailContract = tailContract;
         artifactp->m_cloneable = cloneable;
         artifactp->m_hasTriggered = hasTriggered;
-        artifactp->m_scopeHasInputTailWrites = scopeHasInputTailWrites;
         artifactp->m_triggeredShareable = triggeredShareable;
         if (!cloneable)
             artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::TRIGGERED;
@@ -2594,28 +2593,44 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     }
 }
 
-bool tailFuncsWriteBoundaryInputs(const std::vector<AstCFunc*>& tailFuncps, AstScope* scopep) {
-    for (AstCFunc* const tailFuncp : tailFuncps) {
-        bool found = false;
-        tailFuncp->foreach([&](AstNodeVarRef* refp) {
-            if (found || !refp->access().isWriteOrRW()) return;
+SubgraphTailContract buildSubgraphTailContract(const std::vector<AstCFunc*>& tailFuncps,
+                                               AstScope* scopep) {
+    SubgraphTailContract contract;
+    std::unordered_set<AstCFunc*> seenFuncps;
+    std::function<void(AstCFunc*)> gather = [&](AstCFunc* funcp) {
+        if (!seenFuncps.insert(funcp).second) return;
+        funcp->foreach([&](AstNodeVarRef* refp) {
             AstVarScope* const vscp = refp->varScopep();
-            if (vscp->scopep() != scopep) return;
-            AstVar* const varp = vscp->varp();
-            if (varp->isIO() && varp->direction().isNonOutput()) found = true;
+            bool* readp = nullptr;
+            bool* writep = nullptr;
+            if (vscp->scopep() != scopep) {
+                readp = &contract.m_readsExternal;
+                writep = &contract.m_writesExternal;
+            } else if (vscp->varp()->isIO() && vscp->varp()->direction().isNonOutput()) {
+                readp = &contract.m_readsBoundaryInput;
+                writep = &contract.m_writesBoundaryInput;
+            } else {
+                readp = &contract.m_readsBoundaryState;
+                writep = &contract.m_writesBoundaryState;
+            }
+            if (refp->access().isReadOrRW()) *readp = true;
+            if (refp->access().isWriteOrRW()) *writep = true;
         });
-        if (found) return true;
-    }
-    return false;
+        funcp->foreach([&](AstCCall* callp) {
+            if (!callp->funcp()->entryPoint()) gather(callp->funcp());
+        });
+    };
+    for (AstCFunc* const tailFuncp : tailFuncps) gather(tailFuncp);
+    return contract;
 }
 
 void refreshSubgraphScheduleBundleContext(SubgraphScheduleBundleContext& context,
                                           const SubgraphLoweringState& state) {
-    context.m_currentScopeHasInputTailWrites = false;
+    context.m_currentScopeTailContract = SubgraphTailContract{};
     const auto stlFuncsIt = state.m_stlSubgraphFuncs.find(context.m_currentScopep);
     if (stlFuncsIt == state.m_stlSubgraphFuncs.end()) return;
-    context.m_currentScopeHasInputTailWrites
-        = tailFuncsWriteBoundaryInputs(stlFuncsIt->second, context.m_currentScopep);
+    context.m_currentScopeTailContract
+        = buildSubgraphTailContract(stlFuncsIt->second, context.m_currentScopep);
 }
 
 AstActive* getOrCreateSubgraphActive(const SubgraphGroup& group,
@@ -2674,8 +2689,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     bool cacheableArtifact = canShare && tag != "stl";
-    const bool scopeHasInputTailWrites = bundleContext.m_currentScopeHasInputTailWrites;
-    const SubgraphSharedHelperContext sharedContext{&bundleContext, phase, tailFuncps != nullptr};
+    const SubgraphSharedHelperContext sharedContext{&bundleContext, phase};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
         const uint64_t lookupStartUsecs = statStartUsecs();
@@ -2902,8 +2916,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 ++state.m_stats.m_triggeredArtifactNoNonLocalInstanceLocalWrites;
             }
         }
-        if (scopeHasInputTailWrites) ++state.m_stats.m_triggeredArtifactInputTailWrites;
-        if (triggeredShareableArtifact && !scopeHasInputTailWrites) {
+        if (bundleContext.m_currentScopeTailContract.m_writesBoundaryInput) {
+            ++state.m_stats.m_triggeredArtifactInputTailWrites;
+        }
+        if (triggeredShareableArtifact
+            && !bundleContext.m_currentScopeTailContract.m_writesBoundaryInput) {
             ++state.m_stats.m_triggeredArtifactShareable;
         }
     }
@@ -2914,7 +2931,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     plan.m_artifactp = state.makeSubgraphScheduleArtifact(
         artifactKey, group.m_scopep, callFuncp, std::move(helperArgs), std::move(logicSig),
-        cloneableArtifact, triggeredInfo.m_hasTriggered, scopeHasInputTailWrites,
+        bundleContext.m_currentScopeTailContract, cloneableArtifact, triggeredInfo.m_hasTriggered,
         triggeredShareableArtifact, cacheableArtifact);
     if (insertedOrderCacheEntryp) insertedOrderCacheEntryp->m_artifactp = plan.m_artifactp;
     plan.m_instance.m_callFuncp = callFuncp;
