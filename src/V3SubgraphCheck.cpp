@@ -847,11 +847,11 @@ class SubgraphConstraintVisitor final {
         }
     }
 
-    void checkDpiUsage(AstNodeModule* modp) {
+    void checkDpiImportUsage(AstNodeModule* modp) {
         bool reported = false;
         modp->foreach([&](AstNodeFTask* nodep) {
             if (reported) return;
-            if (!nodep->dpiImport() && !nodep->dpiExport()) return;
+            if (!nodep->dpiImport()) return;
             nodep->v3error("Subgraph boundary module '" << modp->prettyName()
                                                         << "' uses DPI-C function/task '"
                                                         << nodep->prettyName() << "'");
@@ -860,7 +860,7 @@ class SubgraphConstraintVisitor final {
         modp->foreach([&](AstNodeFTaskRef* nodep) {
             if (reported) return;
             AstNodeFTask* const taskp = nodep->taskp();
-            if (!taskp || (!taskp->dpiImport() && !taskp->dpiExport())) return;
+            if (!taskp || !taskp->dpiImport()) return;
             nodep->v3error("Subgraph boundary module '" << modp->prettyName()
                                                         << "' uses DPI-C function/task '"
                                                         << taskp->prettyName() << "'");
@@ -936,7 +936,7 @@ class SubgraphConstraintVisitor final {
     void validate(AstNodeModule* modp) {
         if (!modp->subgraphBoundary()) return;
 
-        checkDpiUsage(modp);
+        checkDpiImportUsage(modp);
         checkExternalHierarchicalAccess(modp);
         std::unordered_set<AstNodeModule*> seen;
         checkNested(modp, modp, seen);

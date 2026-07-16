@@ -11,6 +11,6 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.lint(fails=True, verilator_flags2=["--subgraph-schedule"])
+test.compile(verilator_flags2=["--subgraph-schedule"])
 
 test.passes()
