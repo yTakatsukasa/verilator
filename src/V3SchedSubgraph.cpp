@@ -261,12 +261,24 @@ struct SubgraphLogicNodeSig final {
 
 using SubgraphLogicSig = std::vector<SubgraphLogicNodeSig>;
 
+struct SubgraphLogicShape final {
+    size_t m_constValues = 0;
+    size_t m_nodeTypes = 0;
+    size_t m_refAccesses = 0;
+
+    bool operator==(const SubgraphLogicShape& other) const {
+        return m_constValues == other.m_constValues && m_nodeTypes == other.m_nodeTypes
+               && m_refAccesses == other.m_refAccesses;
+    }
+};
+
 struct SubgraphScheduleArtifact;
 
 enum class SubgraphTemplateMapFailReason : uint8_t {
     NONE,
+    CONST_VALUE,
     NODE_COUNT,
-    NODE_SHAPE,
+    NODE_TOPOLOGY,
     NODE_TYPE,
     REF_ACCESS,
     REF_CONFLICT,
@@ -289,13 +301,14 @@ struct SubgraphOrderCacheEntry final {
 
 struct SubgraphOrderCacheKey final {
     std::vector<uintptr_t> m_domainShape;
+    SubgraphLogicShape m_logicShape;
     AstNodeModule* m_modp = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
     SubgraphWrapper m_wrapper;
 
     bool operator==(const SubgraphOrderCacheKey& other) const {
         return m_modp == other.m_modp && m_phase == other.m_phase && m_wrapper == other.m_wrapper
-               && m_domainShape == other.m_domainShape;
+               && m_domainShape == other.m_domainShape && m_logicShape == other.m_logicShape;
     }
 };
 
@@ -312,18 +325,22 @@ struct SubgraphOrderCacheKeyHash final {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
         }
+        hash ^= key.m_logicShape.m_constValues + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= key.m_logicShape.m_nodeTypes + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= key.m_logicShape.m_refAccesses + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         return hash;
     }
 };
 
 struct SubgraphScheduleArtifactKey final {
     std::vector<uintptr_t> m_domainShape;
+    SubgraphLogicShape m_logicShape;
     AstNodeModule* m_modp = nullptr;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
 
     bool operator==(const SubgraphScheduleArtifactKey& other) const {
         return m_modp == other.m_modp && m_phase == other.m_phase
-               && m_domainShape == other.m_domainShape;
+               && m_domainShape == other.m_domainShape && m_logicShape == other.m_logicShape;
     }
 };
 
@@ -336,6 +353,9 @@ struct SubgraphScheduleArtifactKeyHash final {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
         }
+        hash ^= key.m_logicShape.m_constValues + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= key.m_logicShape.m_nodeTypes + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash ^= key.m_logicShape.m_refAccesses + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         return hash;
     }
 };
@@ -665,6 +685,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseLookups = 0;
     uint64_t m_artifactReuseMissLogicMismatch = 0;
     uint64_t m_artifactReuseMissNoEntry = 0;
+    uint64_t m_artifactReuseMissNoEntryConstValue = 0;
+    uint64_t m_artifactReuseMissNoEntryNodeTopology = 0;
+    uint64_t m_artifactReuseMissNoEntryRefAccess = 0;
     uint64_t m_artifactReuseMissNoEntrySameDomainShape = 0;
     uint64_t m_artifactReuseMissNoEntrySameModule = 0;
     uint64_t m_artifactReuseMissNoEntrySameModuleDomainShape = 0;
@@ -686,8 +709,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseSkipCloneFail = 0;
     uint64_t m_artifactReuseSkipOther = 0;
     uint64_t m_artifactReuseSkipTriggered = 0;
+    uint64_t m_artifactReuseTemplateMapFailConstValue = 0;
     uint64_t m_artifactReuseTemplateMapFailNodeCount = 0;
-    uint64_t m_artifactReuseTemplateMapFailNodeShape = 0;
+    uint64_t m_artifactReuseTemplateMapFailNodeTopology = 0;
     uint64_t m_artifactReuseTemplateMapFailNodeType = 0;
     uint64_t m_artifactReuseTemplateMapFailRefAccess = 0;
     uint64_t m_artifactReuseTemplateMapFailRefConflict = 0;
@@ -748,6 +772,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheHits = 0;
     uint64_t m_orderCacheLookups = 0;
     uint64_t m_orderCacheMisses = 0;
+    uint64_t m_orderCacheMissNoEntryConstValue = 0;
+    uint64_t m_orderCacheMissNoEntryNodeTopology = 0;
+    uint64_t m_orderCacheMissNoEntryRefAccess = 0;
     uint64_t m_orderCacheSharedHits = 0;
     uint64_t m_orderCacheSharedSkipCloneFail = 0;
     uint64_t m_orderCacheSharedSkipModuleMismatch = 0;
@@ -763,8 +790,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheSkipTriggeredNoArtifact = 0;
     uint64_t m_orderCacheSkipTriggeredNotShareable = 0;
     uint64_t m_orderCacheSkipTriggeredStl = 0;
+    uint64_t m_orderCacheTemplateMapFailConstValue = 0;
     uint64_t m_orderCacheTemplateMapFailNodeCount = 0;
-    uint64_t m_orderCacheTemplateMapFailNodeShape = 0;
+    uint64_t m_orderCacheTemplateMapFailNodeTopology = 0;
     uint64_t m_orderCacheTemplateMapFailNodeType = 0;
     uint64_t m_orderCacheTemplateMapFailRefAccess = 0;
     uint64_t m_orderCacheTemplateMapFailRefConflict = 0;
@@ -831,11 +859,13 @@ struct SubgraphLoweringStats final {
     static double seconds(uint64_t usecs) { return usecs / 1.0e6; }
 
     static void addTemplateMapFailStats(const string& prefix, const string& path,
-                                        uint64_t nodeCount, uint64_t nodeShape, uint64_t nodeType,
+                                        uint64_t constValue, uint64_t nodeCount,
+                                        uint64_t nodeTopology, uint64_t nodeType,
                                         uint64_t refAccess, uint64_t refConflict,
                                         uint64_t refCount, uint64_t total) {
+        V3Stats::addStat(prefix + path + " template map fail constant value", constValue);
         V3Stats::addStat(prefix + path + " template map fail node count", nodeCount);
-        V3Stats::addStat(prefix + path + " template map fail node shape", nodeShape);
+        V3Stats::addStat(prefix + path + " template map fail node topology", nodeTopology);
         V3Stats::addStat(prefix + path + " template map fail node type", nodeType);
         V3Stats::addStat(prefix + path + " template map fail ref access", refAccess);
         V3Stats::addStat(prefix + path + " template map fail ref conflict", refConflict);
@@ -869,6 +899,12 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact reuse miss logic mismatch",
                          m_artifactReuseMissLogicMismatch);
         V3Stats::addStat(prefix + "artifact reuse miss no entry", m_artifactReuseMissNoEntry);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry constant value",
+                         m_artifactReuseMissNoEntryConstValue);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry node topology",
+                         m_artifactReuseMissNoEntryNodeTopology);
+        V3Stats::addStat(prefix + "artifact reuse miss no entry ref access",
+                         m_artifactReuseMissNoEntryRefAccess);
         V3Stats::addStat(prefix + "artifact reuse miss no entry same domain shape",
                          m_artifactReuseMissNoEntrySameDomainShape);
         V3Stats::addStat(prefix + "artifact reuse miss no entry same module",
@@ -912,10 +948,11 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "artifact reuse skip other", m_artifactReuseSkipOther);
         V3Stats::addStat(prefix + "artifact reuse skip triggered", m_artifactReuseSkipTriggered);
         addTemplateMapFailStats(
-            prefix, "artifact reuse", m_artifactReuseTemplateMapFailNodeCount,
-            m_artifactReuseTemplateMapFailNodeShape, m_artifactReuseTemplateMapFailNodeType,
-            m_artifactReuseTemplateMapFailRefAccess, m_artifactReuseTemplateMapFailRefConflict,
-            m_artifactReuseTemplateMapFailRefCount, m_artifactReuseTemplateMapFails);
+            prefix, "artifact reuse", m_artifactReuseTemplateMapFailConstValue,
+            m_artifactReuseTemplateMapFailNodeCount, m_artifactReuseTemplateMapFailNodeTopology,
+            m_artifactReuseTemplateMapFailNodeType, m_artifactReuseTemplateMapFailRefAccess,
+            m_artifactReuseTemplateMapFailRefConflict, m_artifactReuseTemplateMapFailRefCount,
+            m_artifactReuseTemplateMapFails);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
         V3Stats::addStat(prefix + "artifact reuse permille",
                          ratioPermille(m_artifactReuses, artifactLookups));
@@ -1010,6 +1047,12 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache hit permille",
                          ratioPermille(m_orderCacheHits, orderCacheLookups));
         V3Stats::addStat(prefix + "order cache misses", m_orderCacheMisses);
+        V3Stats::addStat(prefix + "order cache miss no entry constant value",
+                         m_orderCacheMissNoEntryConstValue);
+        V3Stats::addStat(prefix + "order cache miss no entry node topology",
+                         m_orderCacheMissNoEntryNodeTopology);
+        V3Stats::addStat(prefix + "order cache miss no entry ref access",
+                         m_orderCacheMissNoEntryRefAccess);
         V3Stats::addStat(prefix + "order cache shared hits", m_orderCacheSharedHits);
         V3Stats::addStat(prefix + "order cache shared skip clone fail",
                          m_orderCacheSharedSkipCloneFail);
@@ -1036,10 +1079,11 @@ struct SubgraphLoweringStats final {
                          m_orderCacheSkipTriggeredNotShareable);
         V3Stats::addStat(prefix + "order cache skip triggered stl", m_orderCacheSkipTriggeredStl);
         addTemplateMapFailStats(
-            prefix, "order cache", m_orderCacheTemplateMapFailNodeCount,
-            m_orderCacheTemplateMapFailNodeShape, m_orderCacheTemplateMapFailNodeType,
-            m_orderCacheTemplateMapFailRefAccess, m_orderCacheTemplateMapFailRefConflict,
-            m_orderCacheTemplateMapFailRefCount, m_orderCacheTemplateMapFails);
+            prefix, "order cache", m_orderCacheTemplateMapFailConstValue,
+            m_orderCacheTemplateMapFailNodeCount, m_orderCacheTemplateMapFailNodeTopology,
+            m_orderCacheTemplateMapFailNodeType, m_orderCacheTemplateMapFailRefAccess,
+            m_orderCacheTemplateMapFailRefConflict, m_orderCacheTemplateMapFailRefCount,
+            m_orderCacheTemplateMapFails);
         V3Stats::addStat(prefix + "order cache variant buckets", m_orderCacheVariantBuckets);
         V3Stats::addStat(prefix + "order cache variant candidates", m_orderCacheVariantCandidates);
         V3Stats::addStat(prefix + "order cache variant max", m_orderCacheVariantMax);
@@ -1128,11 +1172,14 @@ struct SubgraphLoweringStats final {
     void noteArtifactTemplateMapFail(SubgraphTemplateMapFailReason reason) {
         ++m_artifactReuseTemplateMapFails;
         switch (reason) {
+        case SubgraphTemplateMapFailReason::CONST_VALUE:
+            ++m_artifactReuseTemplateMapFailConstValue;
+            return;
         case SubgraphTemplateMapFailReason::NODE_COUNT:
             ++m_artifactReuseTemplateMapFailNodeCount;
             return;
-        case SubgraphTemplateMapFailReason::NODE_SHAPE:
-            ++m_artifactReuseTemplateMapFailNodeShape;
+        case SubgraphTemplateMapFailReason::NODE_TOPOLOGY:
+            ++m_artifactReuseTemplateMapFailNodeTopology;
             return;
         case SubgraphTemplateMapFailReason::NODE_TYPE:
             ++m_artifactReuseTemplateMapFailNodeType;
@@ -1158,11 +1205,14 @@ struct SubgraphLoweringStats final {
     void noteOrderCacheTemplateMapFail(SubgraphTemplateMapFailReason reason) {
         ++m_orderCacheTemplateMapFails;
         switch (reason) {
+        case SubgraphTemplateMapFailReason::CONST_VALUE:
+            ++m_orderCacheTemplateMapFailConstValue;
+            return;
         case SubgraphTemplateMapFailReason::NODE_COUNT:
             ++m_orderCacheTemplateMapFailNodeCount;
             return;
-        case SubgraphTemplateMapFailReason::NODE_SHAPE:
-            ++m_orderCacheTemplateMapFailNodeShape;
+        case SubgraphTemplateMapFailReason::NODE_TOPOLOGY:
+            ++m_orderCacheTemplateMapFailNodeTopology;
             return;
         case SubgraphTemplateMapFailReason::NODE_TYPE:
             ++m_orderCacheTemplateMapFailNodeType;
@@ -1258,6 +1308,29 @@ public:
         return result;
     }
 
+    static SubgraphLogicShape buildLogicShape(const SubgraphLogicSig& logicSig) {
+        SubgraphLogicShape result;
+        for (const SubgraphLogicNodeSig& node : logicSig) {
+            result.m_nodeTypes ^= std::hash<uintptr_t>{}(node.m_type) + 0x9e3779b97f4a7c15ULL
+                                  + (result.m_nodeTypes << 6) + (result.m_nodeTypes >> 2);
+            for (const uintptr_t type : node.m_nodeTypes) {
+                result.m_nodeTypes ^= std::hash<uintptr_t>{}(type) + 0x9e3779b97f4a7c15ULL
+                                      + (result.m_nodeTypes << 6) + (result.m_nodeTypes >> 2);
+            }
+            for (const string& value : node.m_constValues) {
+                result.m_constValues ^= std::hash<string>{}(value) + 0x9e3779b97f4a7c15ULL
+                                        + (result.m_constValues << 6)
+                                        + (result.m_constValues >> 2);
+            }
+            for (const SubgraphLogicRefSig& ref : node.m_refs) {
+                result.m_refAccesses ^= std::hash<uintptr_t>{}(ref.m_access)
+                                        + 0x9e3779b97f4a7c15ULL + (result.m_refAccesses << 6)
+                                        + (result.m_refAccesses >> 2);
+            }
+        }
+        return result;
+    }
+
     static SubgraphTemplateMapFailReason
     buildTemplateVarScopeMap(const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
                              std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
@@ -1281,9 +1354,11 @@ public:
                     currentNodeSig.m_constValues.push_back(constp->num().toString());
                 }
             });
-            if (templateNode.m_nodeTypes != currentNodeSig.m_nodeTypes
-                || templateNode.m_constValues != currentNodeSig.m_constValues) {
-                return SubgraphTemplateMapFailReason::NODE_SHAPE;
+            if (templateNode.m_nodeTypes != currentNodeSig.m_nodeTypes) {
+                return SubgraphTemplateMapFailReason::NODE_TOPOLOGY;
+            }
+            if (templateNode.m_constValues != currentNodeSig.m_constValues) {
+                return SubgraphTemplateMapFailReason::CONST_VALUE;
             }
 
             std::vector<AstVarRef*> currentRefs;
@@ -2215,6 +2290,10 @@ public:
     }
 
     void noteArtifactNoEntry(const SubgraphScheduleArtifactKey& key) {
+        if (!v3Global.opt.stats()) return;
+        bool constValueDiffers = false;
+        bool nodeTopologyDiffers = false;
+        bool refAccessDiffers = false;
         bool sameDomainShape = false;
         bool sameModule = false;
         bool sameModuleDomainShape = false;
@@ -2228,11 +2307,49 @@ public:
             sameModule |= moduleMatches;
             sameModuleDomainShape |= moduleMatches && domainShapeMatches;
             sameModulePhase |= moduleMatches && phaseMatches;
+            if (!moduleMatches || !phaseMatches || !domainShapeMatches) continue;
+            const SubgraphLogicShape& cachedShape = cached.m_logicShape;
+            if (cachedShape.m_nodeTypes != key.m_logicShape.m_nodeTypes) {
+                nodeTopologyDiffers = true;
+            } else if (cachedShape.m_constValues != key.m_logicShape.m_constValues) {
+                constValueDiffers = true;
+            } else if (cachedShape.m_refAccesses != key.m_logicShape.m_refAccesses) {
+                refAccessDiffers = true;
+            }
         }
+        if (constValueDiffers) ++m_stats.m_artifactReuseMissNoEntryConstValue;
+        if (nodeTopologyDiffers) ++m_stats.m_artifactReuseMissNoEntryNodeTopology;
+        if (refAccessDiffers) ++m_stats.m_artifactReuseMissNoEntryRefAccess;
         if (sameDomainShape) ++m_stats.m_artifactReuseMissNoEntrySameDomainShape;
         if (sameModule) ++m_stats.m_artifactReuseMissNoEntrySameModule;
         if (sameModuleDomainShape) ++m_stats.m_artifactReuseMissNoEntrySameModuleDomainShape;
         if (sameModulePhase) ++m_stats.m_artifactReuseMissNoEntrySameModulePhase;
+    }
+
+    void noteOrderCacheNoEntry(const SubgraphOrderCacheKey& key) {
+        if (!v3Global.opt.stats()) return;
+        bool constValueDiffers = false;
+        bool nodeTopologyDiffers = false;
+        bool refAccessDiffers = false;
+        for (const auto& pair : m_subgraphOrderCache) {
+            const SubgraphOrderCacheKey& cached = pair.first;
+            if (cached.m_modp != key.m_modp || cached.m_phase != key.m_phase
+                || !(cached.m_wrapper == key.m_wrapper)
+                || cached.m_domainShape != key.m_domainShape) {
+                continue;
+            }
+            const SubgraphLogicShape& cachedShape = cached.m_logicShape;
+            if (cachedShape.m_nodeTypes != key.m_logicShape.m_nodeTypes) {
+                nodeTopologyDiffers = true;
+            } else if (cachedShape.m_constValues != key.m_logicShape.m_constValues) {
+                constValueDiffers = true;
+            } else if (cachedShape.m_refAccesses != key.m_logicShape.m_refAccesses) {
+                refAccessDiffers = true;
+            }
+        }
+        if (constValueDiffers) ++m_stats.m_orderCacheMissNoEntryConstValue;
+        if (nodeTopologyDiffers) ++m_stats.m_orderCacheMissNoEntryNodeTopology;
+        if (refAccessDiffers) ++m_stats.m_orderCacheMissNoEntryRefAccess;
     }
 
     SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(
@@ -2695,11 +2812,13 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     SubgraphOrderCacheEntry* insertedOrderCacheEntryp = nullptr;
     SubgraphLogicSig logicSig;
     if (canShare) logicSig = SubgraphLoweringState::buildLogicSig(subgraphLogic);
+    if (canShare) cacheKey.m_logicShape = SubgraphLoweringState::buildLogicShape(logicSig);
     const AstSubgraphInstance::Phase phase = subgraphPhaseFor(wrapper, isEarly);
     cacheKey.m_phase = phase;
     cacheKey.m_wrapper = wrapper;
     SubgraphScheduleArtifactKey artifactKey;
     artifactKey.m_domainShape = cacheKey.m_domainShape;
+    artifactKey.m_logicShape = cacheKey.m_logicShape;
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     bool cacheableArtifact = canShare && tag != "stl";
@@ -2792,6 +2911,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 }
                 state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
             }
+        } else {
+            state.noteOrderCacheNoEntry(cacheKey);
         }
         if (matchedOrderCacheEntryp) {
             SubgraphOrderCacheEntry& cacheEntry = *matchedOrderCacheEntryp;
