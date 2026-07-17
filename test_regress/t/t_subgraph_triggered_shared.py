@@ -14,13 +14,11 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+0")
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(?:[5-9]|\d{2,})")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse scope clone calls\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+([1-9]\d*)")
+               r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(?:[7-9]|\d{2,})")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clone calls\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+0")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared clone avoids\s+\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared call permille\s+\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle builds\s+([1-9]\d*)")
@@ -48,11 +46,17 @@ test.file_grep(
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph nba, order cache miss no entry node topology\s+\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+0")
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+([1-9]\d*)")
+               r"Scheduling, Subgraph nba, shared helper instance local args\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+([1-9]\d*)")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+0")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact input tail writes\s+([1-9]\d*)")
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph nba, triggered artifact input tail shareable\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
 test.file_grep(test.stats,

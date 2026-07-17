@@ -3164,6 +3164,7 @@ void AstStreamDType::dumpSmall(std::ostream& str) const {
 }
 void AstVarScope::dump(std::ostream& str) const {
     this->AstNode::dump(str);
+    if (subgraphSharedUse()) str << " [SUBGRAPH_SHARED_USE]";
     if (isTrace()) str << " [T]";
     if (scopep()) str << " [scopep=" << nodeAddr(scopep()) << "]";
     if (varp()) {
@@ -3175,11 +3176,13 @@ void AstVarScope::dump(std::ostream& str) const {
 }
 void AstVarScope::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isTrace);
+    dumpJsonBoolFuncIf(str, subgraphSharedUse);
     dumpJsonGen(str);
 }
 bool AstVarScope::sameNode(const AstNode* samep) const {
     const AstVarScope* const asamep = VN_DBG_AS(samep, VarScope);
-    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep());
+    return subgraphSharedUse() == asamep->subgraphSharedUse() && varp()->sameNode(asamep->varp())
+           && scopep()->sameNode(asamep->scopep());
 }
 void AstNodeVarRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);

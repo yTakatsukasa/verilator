@@ -2579,8 +2579,9 @@ class AstVarScope final : public AstNode {
     //
     // @astgen ptr := m_scopep : Optional[AstScope]  // Scope variable is underneath
     // @astgen ptr := m_varp : Optional[AstVar]  // [AfterLink] Pointer to variable itself
-    bool m_trace : 1;  // Tracing is turned on for this scope
     bool m_optimizeLifePost : 1;  // One half of an NBA pair using ShadowVariable scheme. Optimize.
+    bool m_subgraphSharedUse : 1;  // Shared subgraph helper implicitly references this scope.
+    bool m_trace : 1;  // Tracing is turned on for this scope
 public:
     AstVarScope(FileLine* fl, AstScope* scopep, AstVar* varp)
         : ASTGEN_SUPER_VarScope(fl)
@@ -2588,8 +2589,9 @@ public:
         , m_varp{varp} {
         UASSERT_OBJ(scopep, fl, "Scope must be non-null");
         UASSERT_OBJ(varp, fl, "Var must be non-null");
-        m_trace = true;
         m_optimizeLifePost = false;
+        m_subgraphSharedUse = false;
+        m_trace = true;
         dtypeFrom(varp);
     }
     ASTGEN_MEMBERS_AstVarScope;
@@ -2612,6 +2614,8 @@ public:
     void trace(bool flag) { m_trace = flag; }
     bool optimizeLifePost() const { return m_optimizeLifePost; }
     void optimizeLifePost(bool flag) { m_optimizeLifePost = flag; }
+    bool subgraphSharedUse() const { return m_subgraphSharedUse; }
+    void subgraphSharedUse(bool flag) { m_subgraphSharedUse = flag; }
 };
 
 // === AstNodeCoverDecl ===

@@ -192,6 +192,7 @@ class LocalizeVisitor final : public VNVisitor {
             && !nodep->varp()->sensIfacep()  // Not sensitive to an interface
             && !nodep->varp()->isVirtIface()  // Not interface pointer
             && !nodep->varp()->valuep()  // Does not have an initializer
+            && !nodep->subgraphSharedUse()  // Shared helper reads it via a different scope
         ) {
             UINFO(4, "Consider for localization: " << nodep);
             m_varScopeps.push_back(nodep);
