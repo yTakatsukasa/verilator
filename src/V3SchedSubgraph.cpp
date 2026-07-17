@@ -419,6 +419,7 @@ struct SubgraphScheduleArtifact final {
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
+    std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     SubgraphTailContract m_tailContract;
     bool m_cloneable = true;
@@ -1755,7 +1756,10 @@ public:
             orderedFuncs.push_back(scanFuncp);
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
-                if (calledFuncp->entryPoint()) return;
+                if (calledFuncp->entryPoint() || calledFuncp->dpiImportPrototype()
+                    || calledFuncp->scopep() != funcp->scopep()) {
+                    return;
+                }
                 gatherFuncs(calledFuncp);
             });
         };
@@ -2189,7 +2193,7 @@ public:
                 sawLogicMismatch = true;
                 continue;
             }
-            if (artifactp->m_scopep != currentScopep
+            if (!artifactp->m_cloneable && artifactp->m_scopep != currentScopep
                 && !canUseSharedHelper(artifactp, sharedContext)) {
                 noteSharedReuseSkip(classifySharedHelperUse(artifactp, sharedContext));
                 switch (artifactp->m_uncloneableReason) {
@@ -2716,6 +2720,23 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 callFuncp = artifactp->m_callFuncp;
                 sharedCall = true;
                 ++state.m_stats.m_artifactReuseSharedCalls;
+            } else {
+                state.noteSharedReuseSkip(
+                    SubgraphLoweringState::classifySharedHelperUse(artifactp, sharedContext));
+                const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
+                if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
+                    callFuncp = cloneIt->second;
+                    ++state.m_stats.m_artifactReuseScopeCloneHits;
+                } else {
+                    callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap,
+                        state.m_stats);
+                    if (callFuncp) {
+                        artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
+                        ++state.m_stats.m_artifactReuseScopeClones;
+                        ++state.m_stats.m_orderedFuncClones;
+                    }
+                }
             }
             if (callFuncp
                 && SubgraphLoweringState::populateSharedHelperArgs(
@@ -2853,6 +2874,37 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     } else {
                         ++state.m_stats.m_orderCacheSharedSkipOther;
                         plan = SubgraphSchedulePlan{};
+                    }
+                } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
+                    AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                        cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
+                        state.m_stats);
+                    if (clonedFuncp) {
+                        if (tailFuncps) {
+                            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                            }
+                        }
+                        plan.m_artifactp = cacheEntry.m_artifactp;
+                        plan.m_instance.m_callFuncp = clonedFuncp;
+                        plan.m_instance.m_scopep = group.m_scopep;
+                        if (SubgraphLoweringState::populateSharedHelperArgs(
+                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                                orderCacheTemplateVarMap)) {
+                            populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            plan.m_phase = phase;
+                            plan.m_wrapper = wrapper;
+                            ++state.m_stats.m_orderCacheHits;
+                            ++state.m_stats.m_orderedFuncClones;
+                            ++state.m_stats.m_schedulePlans;
+                            if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                            return plan;
+                        }
+                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        plan = SubgraphSchedulePlan{};
+                    } else {
+                        ++state.m_stats.m_orderCacheCloneNull;
                     }
                 }
             }
