@@ -769,6 +769,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheTemplateMapFailRefConflict = 0;
     uint64_t m_orderCacheTemplateMapFailRefCount = 0;
     uint64_t m_orderCacheTemplateMapFails = 0;
+    uint64_t m_orderCacheVariantBuckets = 0;
+    uint64_t m_orderCacheVariantCandidates = 0;
+    uint64_t m_orderCacheVariantMax = 0;
     uint64_t m_orderedFuncClones = 0;
     uint64_t m_schedulePlans = 0;
     uint64_t m_sharedHelperExternalArgs = 0;
@@ -1036,6 +1039,9 @@ struct SubgraphLoweringStats final {
             m_orderCacheTemplateMapFailNodeShape, m_orderCacheTemplateMapFailNodeType,
             m_orderCacheTemplateMapFailRefAccess, m_orderCacheTemplateMapFailRefConflict,
             m_orderCacheTemplateMapFailRefCount, m_orderCacheTemplateMapFails);
+        V3Stats::addStat(prefix + "order cache variant buckets", m_orderCacheVariantBuckets);
+        V3Stats::addStat(prefix + "order cache variant candidates", m_orderCacheVariantCandidates);
+        V3Stats::addStat(prefix + "order cache variant max", m_orderCacheVariantMax);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
         V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
         V3Stats::addStat(prefix + "shared helper external args", m_sharedHelperExternalArgs);
@@ -2405,7 +2411,8 @@ public:
                        SubgraphScheduleArtifactKeyHash>
         m_subgraphArtifactCache;
     std::vector<std::unique_ptr<SubgraphScheduleArtifact>> m_subgraphArtifacts;
-    std::unordered_map<SubgraphOrderCacheKey, SubgraphOrderCacheEntry, SubgraphOrderCacheKeyHash>
+    std::unordered_map<SubgraphOrderCacheKey, std::vector<SubgraphOrderCacheEntry>,
+                       SubgraphOrderCacheKeyHash>
         m_subgraphOrderCache;
     std::unordered_map<SnapshotBucketKey, size_t, SnapshotBucketKeyHash> m_snapshotBucketIndex;
     std::vector<SnapshotBucket> m_snapshotBuckets;
@@ -2745,12 +2752,28 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     AstCFunc* funcp = nullptr;
     std::vector<SubgraphSharedHelperArg> helperArgs;
+    SubgraphOrderCacheEntry* matchedOrderCacheEntryp = nullptr;
+    std::unordered_map<const AstVarScope*, AstVarScope*> orderCacheTemplateVarMap;
     if (canShare) {
         ++state.m_stats.m_orderCacheLookups;
         const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
         if (cacheIt != state.m_subgraphOrderCache.end()) {
             ++state.m_stats.m_orderCacheEntryHits;
-            SubgraphOrderCacheEntry& cacheEntry = cacheIt->second;
+            state.m_stats.m_orderCacheVariantCandidates += cacheIt->second.size();
+            for (SubgraphOrderCacheEntry& cacheEntry : cacheIt->second) {
+                orderCacheTemplateVarMap.clear();
+                const SubgraphTemplateMapFailReason templateMapFail
+                    = SubgraphLoweringState::buildTemplateVarScopeMap(
+                        cacheEntry.m_logicSig, subgraphLogic, orderCacheTemplateVarMap);
+                if (templateMapFail == SubgraphTemplateMapFailReason::NONE) {
+                    matchedOrderCacheEntryp = &cacheEntry;
+                    break;
+                }
+                state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
+            }
+        }
+        if (matchedOrderCacheEntryp) {
+            SubgraphOrderCacheEntry& cacheEntry = *matchedOrderCacheEntryp;
             if (!cacheEntry.m_cloneable && !cacheEntry.m_triggeredShareable) {
                 ++state.m_stats.m_orderCacheSkipTriggered;
                 ++state.m_stats.m_orderCacheSkipTriggeredNotShareable;
@@ -2758,88 +2781,79 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     ++state.m_stats.m_orderCacheSkipTriggeredInstanceLocal;
                 }
             } else {
-                std::unordered_map<const AstVarScope*, AstVarScope*> templateVarMap;
-                const SubgraphTemplateMapFailReason templateMapFail
-                    = SubgraphLoweringState::buildTemplateVarScopeMap(
-                        cacheEntry.m_logicSig, subgraphLogic, templateVarMap);
-                if (templateMapFail == SubgraphTemplateMapFailReason::NONE) {
-                    if (!cacheEntry.m_cloneable && cacheEntry.m_triggeredShareable) {
-                        if (tag == "stl") {
+                if (!cacheEntry.m_cloneable && cacheEntry.m_triggeredShareable) {
+                    if (tag == "stl") {
+                        ++state.m_stats.m_orderCacheSkipTriggered;
+                        ++state.m_stats.m_orderCacheSkipTriggeredStl;
+                    } else if (!cacheEntry.m_artifactp) {
+                        ++state.m_stats.m_orderCacheSkipTriggered;
+                        ++state.m_stats.m_orderCacheSkipTriggeredNoArtifact;
+                    } else {
+                        const SubgraphSharedHelperSkipReason sharedSkipReason
+                            = SubgraphLoweringState::classifySharedHelperUse(
+                                cacheEntry.m_artifactp, sharedContext);
+                        if (sharedSkipReason != SubgraphSharedHelperSkipReason::NONE) {
                             ++state.m_stats.m_orderCacheSkipTriggered;
-                            ++state.m_stats.m_orderCacheSkipTriggeredStl;
-                        } else if (!cacheEntry.m_artifactp) {
-                            ++state.m_stats.m_orderCacheSkipTriggered;
-                            ++state.m_stats.m_orderCacheSkipTriggeredNoArtifact;
+                            state.noteOrderCacheSharedSkip(sharedSkipReason);
                         } else {
-                            const SubgraphSharedHelperSkipReason sharedSkipReason
-                                = SubgraphLoweringState::classifySharedHelperUse(
-                                    cacheEntry.m_artifactp, sharedContext);
-                            if (sharedSkipReason != SubgraphSharedHelperSkipReason::NONE) {
-                                ++state.m_stats.m_orderCacheSkipTriggered;
-                                state.noteOrderCacheSharedSkip(sharedSkipReason);
+                            if (tailFuncps) {
+                                for (AstCFunc* const tailFuncp : *tailFuncps) {
+                                    plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                                }
+                            }
+                            plan.m_artifactp = cacheEntry.m_artifactp;
+                            plan.m_instance.m_callFuncp = cacheEntry.m_funcp;
+                            plan.m_instance.m_scopep = group.m_scopep;
+                            plan.m_instance.m_sharedCall
+                                = cacheEntry.m_funcp->scopep() != group.m_scopep;
+                            if (SubgraphLoweringState::populateSharedHelperArgs(
+                                    plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                                    orderCacheTemplateVarMap)) {
+                                populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                         subgraphLogic);
+                                SubgraphLoweringState::discardLogic(subgraphLogic);
+                                plan.m_phase = phase;
+                                plan.m_wrapper = wrapper;
+                                ++state.m_stats.m_orderCacheHits;
+                                ++state.m_stats.m_orderCacheSharedHits;
+                                ++state.m_stats.m_schedulePlans;
+                                if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                                return plan;
                             } else {
-                                if (tailFuncps) {
-                                    for (AstCFunc* const tailFuncp : *tailFuncps) {
-                                        plan.m_instance.m_tailFuncps.push_back(tailFuncp);
-                                    }
-                                }
-                                plan.m_artifactp = cacheEntry.m_artifactp;
-                                plan.m_instance.m_callFuncp = cacheEntry.m_funcp;
-                                plan.m_instance.m_scopep = group.m_scopep;
-                                plan.m_instance.m_sharedCall
-                                    = cacheEntry.m_funcp->scopep() != group.m_scopep;
-                                if (SubgraphLoweringState::populateSharedHelperArgs(
-                                        plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                        templateVarMap)) {
-                                    populateSubgraphScheduleInstanceContract(plan.m_instance,
-                                                                             state, subgraphLogic);
-                                    SubgraphLoweringState::discardLogic(subgraphLogic);
-                                    plan.m_phase = phase;
-                                    plan.m_wrapper = wrapper;
-                                    ++state.m_stats.m_orderCacheHits;
-                                    ++state.m_stats.m_orderCacheSharedHits;
-                                    ++state.m_stats.m_schedulePlans;
-                                    if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
-                                    return plan;
-                                } else {
-                                    ++state.m_stats.m_orderCacheSharedSkipOther;
-                                    plan = SubgraphSchedulePlan{};
-                                }
+                                ++state.m_stats.m_orderCacheSharedSkipOther;
+                                plan = SubgraphSchedulePlan{};
                             }
-                        }
-                    } else if (cacheEntry.m_artifactp
-                               && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
-                                                                            sharedContext)) {
-                        if (tailFuncps) {
-                            for (AstCFunc* const tailFuncp : *tailFuncps) {
-                                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
-                            }
-                        }
-                        plan.m_artifactp = cacheEntry.m_artifactp;
-                        plan.m_instance.m_callFuncp = cacheEntry.m_funcp;
-                        plan.m_instance.m_scopep = group.m_scopep;
-                        plan.m_instance.m_sharedCall
-                            = cacheEntry.m_funcp->scopep() != group.m_scopep;
-                        if (SubgraphLoweringState::populateSharedHelperArgs(
-                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                templateVarMap)) {
-                            populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                                     subgraphLogic);
-                            SubgraphLoweringState::discardLogic(subgraphLogic);
-                            plan.m_phase = phase;
-                            plan.m_wrapper = wrapper;
-                            ++state.m_stats.m_orderCacheHits;
-                            ++state.m_stats.m_orderCacheSharedHits;
-                            ++state.m_stats.m_schedulePlans;
-                            if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
-                            return plan;
-                        } else {
-                            ++state.m_stats.m_orderCacheSharedSkipOther;
-                            plan = SubgraphSchedulePlan{};
                         }
                     }
-                } else {
-                    state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
+                } else if (cacheEntry.m_artifactp
+                           && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
+                                                                        sharedContext)) {
+                    if (tailFuncps) {
+                        for (AstCFunc* const tailFuncp : *tailFuncps) {
+                            plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                        }
+                    }
+                    plan.m_artifactp = cacheEntry.m_artifactp;
+                    plan.m_instance.m_callFuncp = cacheEntry.m_funcp;
+                    plan.m_instance.m_scopep = group.m_scopep;
+                    plan.m_instance.m_sharedCall = cacheEntry.m_funcp->scopep() != group.m_scopep;
+                    if (SubgraphLoweringState::populateSharedHelperArgs(
+                            plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                            orderCacheTemplateVarMap)) {
+                        populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                 subgraphLogic);
+                        SubgraphLoweringState::discardLogic(subgraphLogic);
+                        plan.m_phase = phase;
+                        plan.m_wrapper = wrapper;
+                        ++state.m_stats.m_orderCacheHits;
+                        ++state.m_stats.m_orderCacheSharedHits;
+                        ++state.m_stats.m_schedulePlans;
+                        if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                        return plan;
+                    } else {
+                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        plan = SubgraphSchedulePlan{};
+                    }
                 }
             }
         }
@@ -2860,8 +2874,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     funcp, group.m_scopep, logicSig, helperArgs, state.m_stats)) {
                 cacheableArtifact = false;
             }
-            if (cacheableArtifact
-                && state.m_subgraphOrderCache.find(cacheKey) == state.m_subgraphOrderCache.end()) {
+            if (cacheableArtifact && !matchedOrderCacheEntryp) {
                 const SubgraphTriggeredRefInfo triggeredInfo
                     = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(funcp, group.m_scopep,
                                                                              state.m_stats);
@@ -2869,17 +2882,18 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
                 const bool triggeredCloneable
                     = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
-                const auto inserted = state.m_subgraphOrderCache.emplace(
-                    cacheKey,
-                    SubgraphOrderCacheEntry{
-                        nullptr, funcp, logicSig, triggeredCloneable, triggeredShareable,
-                        triggeredInfo.m_writesDelayedShadow, triggeredInfo.m_writesInstanceLocal,
-                        triggeredInfo.m_writesLocalTemp, triggeredInfo.m_writesNonLocal,
-                        triggeredInfo.m_writesTriggerTemp, triggeredInfo.m_writesVlemTemp});
-                if (inserted.second) {
-                    insertedOrderCacheEntryp = &inserted.first->second;
-                    ++state.m_stats.m_orderCacheEntries;
-                }
+                std::vector<SubgraphOrderCacheEntry>& entries
+                    = state.m_subgraphOrderCache[cacheKey];
+                if (entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
+                entries.push_back(SubgraphOrderCacheEntry{
+                    nullptr, funcp, logicSig, triggeredCloneable, triggeredShareable,
+                    triggeredInfo.m_writesDelayedShadow, triggeredInfo.m_writesInstanceLocal,
+                    triggeredInfo.m_writesLocalTemp, triggeredInfo.m_writesNonLocal,
+                    triggeredInfo.m_writesTriggerTemp, triggeredInfo.m_writesVlemTemp});
+                insertedOrderCacheEntryp = &entries.back();
+                ++state.m_stats.m_orderCacheEntries;
+                state.m_stats.m_orderCacheVariantMax
+                    = std::max<uint64_t>(state.m_stats.m_orderCacheVariantMax, entries.size());
             }
         }
     }
