@@ -12,7 +12,7 @@ import vltest_bootstrap
 test.scenarios("vlt")
 
 test.compile(
-    v_flags2=["t/t_subgraph_dpi_import_wide_bad.cpp"],
+    v_flags2=["t/t_subgraph_dpi_import_wide.cpp"],
     verilator_flags2=["--subgraph-schedule"],
 )
 

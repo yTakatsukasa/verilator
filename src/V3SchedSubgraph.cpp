@@ -1495,7 +1495,10 @@ public:
             funcs.push_back(scanFuncp);
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
-                if (calledFuncp->entryPoint() || calledFuncp->scopep() != funcp->scopep()) return;
+                if (calledFuncp->entryPoint() || calledFuncp->dpiImportPrototype()
+                    || calledFuncp->scopep() != funcp->scopep()) {
+                    return;
+                }
                 gatherFuncs(calledFuncp);
             });
         };
