@@ -34,29 +34,23 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, schedule plans\s+([1-9]\d
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant buckets\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant candidates\s+\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant max\s+([1-9]\d*)")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, artifact reuse template map fail constant value\s+\d+")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, artifact reuse template map fail node topology\s+\d+")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, artifact reuse miss no entry constant value\s+\d+")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, order cache miss no entry node topology\s+\d+")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, artifact reuse template map fail constant value\s+\d+")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, artifact reuse template map fail node topology\s+\d+")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, artifact reuse miss no entry constant value\s+\d+")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, order cache miss no entry node topology\s+\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+0")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper instance local args\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+0")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact input tail writes\s+([1-9]\d*)")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, triggered artifact input tail shareable\s+([1-9]\d*)")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, triggered artifact input tail shareable\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
 test.file_grep(test.stats,
