@@ -15,6 +15,9 @@ test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse coarse hits\s+(\d+)", 11)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse coarse lookups\s+(\d+)",
+               19)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(?:[7-9]|\d{2,})")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clone calls\s+0")
@@ -43,6 +46,10 @@ test.file_grep(test.stats,
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, order cache miss no entry node topology\s+\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic shape builds\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds avoided\s+(\d+)",
+               11)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper instance local args\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+([1-9]\d*)")
