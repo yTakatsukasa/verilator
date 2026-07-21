@@ -253,6 +253,7 @@ struct SubgraphLogicRefSig final {
 };
 
 struct SubgraphLogicNodeSig final {
+    std::vector<const AstConst*> m_consts;
     std::vector<std::string> m_constValues;
     std::vector<uintptr_t> m_nodeTypes;
     uintptr_t m_type = 0;
@@ -260,6 +261,11 @@ struct SubgraphLogicNodeSig final {
 };
 
 using SubgraphLogicSig = std::vector<SubgraphLogicNodeSig>;
+
+struct SubgraphDomainShapes final {
+    std::vector<uintptr_t> m_canonical;
+    std::vector<uintptr_t> m_exact;
+};
 
 struct SubgraphLogicShape final {
     size_t m_constValues = 0;
@@ -287,6 +293,7 @@ enum class SubgraphTemplateMapFailReason : uint8_t {
 
 struct SubgraphOrderCacheEntry final {
     SubgraphScheduleArtifact* m_artifactp = nullptr;
+    std::vector<uintptr_t> m_exactDomainShape;
     AstCFunc* m_funcp = nullptr;
     SubgraphLogicSig m_logicSig;
     bool m_cloneable = true;
@@ -308,7 +315,9 @@ struct SubgraphOrderCacheKey final {
 
     bool operator==(const SubgraphOrderCacheKey& other) const {
         return m_modp == other.m_modp && m_phase == other.m_phase && m_wrapper == other.m_wrapper
-               && m_domainShape == other.m_domainShape && m_logicShape == other.m_logicShape;
+               && m_domainShape == other.m_domainShape
+               && m_logicShape.m_nodeTypes == other.m_logicShape.m_nodeTypes
+               && m_logicShape.m_refAccesses == other.m_logicShape.m_refAccesses;
     }
 };
 
@@ -325,7 +334,6 @@ struct SubgraphOrderCacheKeyHash final {
             hash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                     + (hash >> 2);
         }
-        hash ^= key.m_logicShape.m_constValues + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         hash ^= key.m_logicShape.m_nodeTypes + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         hash ^= key.m_logicShape.m_refAccesses + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
         return hash;
@@ -805,6 +813,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheMissNoEntryConstValue = 0;
     uint64_t m_orderCacheMissNoEntryNodeTopology = 0;
     uint64_t m_orderCacheMissNoEntryRefAccess = 0;
+    uint64_t m_orderCacheRecipeClones = 0;
+    uint64_t m_orderCacheRecipeConstantRemaps = 0;
+    uint64_t m_orderCacheRecipeHits = 0;
     uint64_t m_orderCacheSharedHits = 0;
     uint64_t m_orderCacheSharedSkipCloneFail = 0;
     uint64_t m_orderCacheSharedSkipModuleMismatch = 0;
@@ -1093,6 +1104,10 @@ struct SubgraphLoweringStats final {
                          m_orderCacheMissNoEntryNodeTopology);
         V3Stats::addStat(prefix + "order cache miss no entry ref access",
                          m_orderCacheMissNoEntryRefAccess);
+        V3Stats::addStat(prefix + "order cache recipe clones", m_orderCacheRecipeClones);
+        V3Stats::addStat(prefix + "order cache recipe constant remaps",
+                         m_orderCacheRecipeConstantRemaps);
+        V3Stats::addStat(prefix + "order cache recipe hits", m_orderCacheRecipeHits);
         V3Stats::addStat(prefix + "order cache shared hits", m_orderCacheSharedHits);
         V3Stats::addStat(prefix + "order cache shared skip clone fail",
                          m_orderCacheSharedSkipCloneFail);
@@ -1322,21 +1337,31 @@ public:
         logic.clear();
     }
 
-    static std::vector<uintptr_t>
-    computeDomainShape(const LogicByScope& logic, AstScope* boundaryScopep,
-                       const V3Order::ExternalDomainsProvider& externalDomains) {
-        std::vector<uintptr_t> result;
+    static SubgraphDomainShapes
+    computeDomainShapes(const LogicByScope& logic, AstScope* boundaryScopep,
+                        const V3Order::ExternalDomainsProvider& externalDomains) {
+        SubgraphDomainShapes result;
+        std::unordered_map<const AstSenTree*, uintptr_t> canonicalDomains;
         logic.foreachLogic([&](AstNode* logicp) {
-            result.push_back(static_cast<uintptr_t>(logicp->type()));
+            result.m_canonical.push_back(static_cast<uintptr_t>(logicp->type()));
+            result.m_exact.push_back(static_cast<uintptr_t>(logicp->type()));
             logicp->foreach([&](AstVarRef* refp) {
-                result.push_back(static_cast<uintptr_t>(refp->access()));
+                result.m_canonical.push_back(static_cast<uintptr_t>(refp->access()));
+                result.m_exact.push_back(static_cast<uintptr_t>(refp->access()));
                 const AstVarScope* const vscp = refp->varScopep();
-                result.push_back(isUnderBoundaryScope(vscp->scopep(), boundaryScopep));
+                const uintptr_t underBoundary
+                    = isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
+                result.m_canonical.push_back(underBoundary);
+                result.m_exact.push_back(underBoundary);
                 std::vector<AstSenTree*> domains;
                 externalDomains(vscp, domains);
-                result.push_back(domains.size());
+                result.m_canonical.push_back(domains.size());
+                result.m_exact.push_back(domains.size());
                 for (AstSenTree* const domainp : domains) {
-                    result.push_back(reinterpret_cast<uintptr_t>(domainp));
+                    const auto emplaced
+                        = canonicalDomains.emplace(domainp, canonicalDomains.size() + 1);
+                    result.m_canonical.push_back(emplaced.first->second);
+                    result.m_exact.push_back(reinterpret_cast<uintptr_t>(domainp));
                 }
             });
         });
@@ -1352,6 +1377,7 @@ public:
             logicp->foreach([&](AstNode* nodep) {
                 nodeSig.m_nodeTypes.push_back(static_cast<uintptr_t>(nodep->type()));
                 if (AstConst* const constp = VN_CAST(nodep, Const)) {
+                    nodeSig.m_consts.push_back(constp);
                     nodeSig.m_constValues.push_back(constp->num().toString());
                 }
             });
@@ -1414,7 +1440,10 @@ public:
 
     static SubgraphTemplateMapFailReason
     buildTemplateVarScopeMap(const SubgraphLogicSig& templateSig, const LogicByScope& currentLogic,
-                             std::unordered_map<const AstVarScope*, AstVarScope*>& result) {
+                             std::unordered_map<const AstVarScope*, AstVarScope*>& result,
+                             std::unordered_map<const AstConst*, const AstConst*>* constRemapp
+                             = nullptr,
+                             bool* constantsDifferp = nullptr) {
         std::vector<AstNode*> currentNodes;
         currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
         if (templateSig.size() != currentNodes.size()) {
@@ -1432,14 +1461,26 @@ public:
             currentNodep->foreach([&](AstNode* nodep) {
                 currentNodeSig.m_nodeTypes.push_back(static_cast<uintptr_t>(nodep->type()));
                 if (AstConst* const constp = VN_CAST(nodep, Const)) {
+                    currentNodeSig.m_consts.push_back(constp);
                     currentNodeSig.m_constValues.push_back(constp->num().toString());
                 }
             });
             if (templateNode.m_nodeTypes != currentNodeSig.m_nodeTypes) {
                 return SubgraphTemplateMapFailReason::NODE_TOPOLOGY;
             }
-            if (templateNode.m_constValues != currentNodeSig.m_constValues) {
+            if (!constRemapp && templateNode.m_constValues != currentNodeSig.m_constValues) {
                 return SubgraphTemplateMapFailReason::CONST_VALUE;
+            }
+            if (constRemapp) {
+                UASSERT_OBJ(templateNode.m_consts.size() == currentNodeSig.m_consts.size(),
+                            currentNodep, "Mismatched constant signature sizes");
+                for (size_t j = 0; j < templateNode.m_consts.size(); ++j) {
+                    constRemapp->emplace(templateNode.m_consts[j], currentNodeSig.m_consts[j]);
+                }
+                if (constantsDifferp
+                    && templateNode.m_constValues != currentNodeSig.m_constValues) {
+                    *constantsDifferp = true;
+                }
             }
 
             std::vector<AstVarRef*> currentRefs;
@@ -1824,32 +1865,42 @@ public:
         }
         for (const SubgraphSharedHelperArg& arg : artifact.m_helperArgs) {
             AstVarScope* currentVscp = arg.m_vscp;
-            if (artifact.m_scopep != currentScopep) {
-                const auto it = templateVarMap.find(arg.m_vscp);
-                if (it == templateVarMap.end()) {
-                    if (!isRemappableInstanceLocalVar(arg.m_vscp)) {
-                        instance.m_helperArgs.clear();
-                        return false;
+            const auto directIt = templateVarMap.find(arg.m_vscp);
+            if (directIt != templateVarMap.end()) {
+                currentVscp = directIt->second;
+            } else if (isRemappableInstanceLocalVar(arg.m_vscp)) {
+                string targetLeafName = instanceLocalLeafName(arg.m_vscp->varp()->name());
+                for (const auto& pair : templateVarMap) {
+                    if (instanceLocalLeafName(pair.first->varp()->name()) != targetLeafName) {
+                        continue;
                     }
+                    targetLeafName = instanceLocalLeafName(pair.second->varp()->name());
+                    break;
+                }
+                if (artifact.m_scopep != currentScopep
+                    || targetLeafName != instanceLocalLeafName(arg.m_vscp->varp()->name())) {
                     currentVscp = nullptr;
                     for (AstVarScope* scanp = currentScopep->varsp(); scanp;
                          scanp = VN_AS(scanp->nextp(), VarScope)) {
                         if (scanp->scopep() != currentScopep) continue;
-                        if (instanceLocalLeafName(scanp->varp()->name())
-                            != instanceLocalLeafName(arg.m_vscp->varp()->name())) {
+                        if (instanceLocalLeafName(scanp->varp()->name()) != targetLeafName) {
+                            continue;
+                        }
+                        if (instanceLocalVarKind(scanp) != instanceLocalVarKind(arg.m_vscp)) {
                             continue;
                         }
                         if (!scanp->dtypep()->similarDType(arg.m_vscp->dtypep())) continue;
                         currentVscp = scanp;
                         break;
                     }
-                    if (!currentVscp) {
-                        instance.m_helperArgs.clear();
-                        return false;
-                    }
-                } else {
-                    currentVscp = it->second;
                 }
+                if (!currentVscp) {
+                    instance.m_helperArgs.clear();
+                    return false;
+                }
+            } else if (artifact.m_scopep != currentScopep) {
+                instance.m_helperArgs.clear();
+                return false;
             }
             if (arg.m_writes) currentVscp->optimizeLifePost(false);
             instance.m_helperArgs.push_back(
@@ -2008,8 +2059,19 @@ public:
     static AstCFunc* cloneOrderedFuncGraph(
         AstCFunc* funcp, AstScope* destBoundaryScopep,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
-        SubgraphLoweringStats& stats) {
+        const std::unordered_map<const AstConst*, const AstConst*>& templateConstMap,
+        SubgraphLoweringStats& stats, AstSenTree* triggerDomainp = nullptr) {
         static unsigned s_cloneIndex = 0;
+
+        if (triggerDomainp) {
+            AstIf* triggerIfp = nullptr;
+            for (AstNode* stmtp = funcp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                AstIf* const ifp = VN_CAST(stmtp, If);
+                if (!ifp || triggerIfp) return nullptr;
+                triggerIfp = ifp;
+            }
+            if (!triggerIfp) return nullptr;
+        }
 
         std::vector<AstCFunc*> orderedFuncs;
         std::unordered_set<AstCFunc*> seenFuncs;
@@ -2183,6 +2245,34 @@ public:
             AstCFunc* const clonedFuncp = clonedFuncs.at(origFuncp);
             if (!origFuncp->stmtsp()) continue;
             AstNode* const bodyp = origFuncp->stmtsp()->cloneTree(true);
+            if (origFuncp == funcp && triggerDomainp) {
+                AstIf* triggerIfp = nullptr;
+                for (AstNode* stmtp = bodyp; stmtp; stmtp = stmtp->nextp()) {
+                    triggerIfp = VN_AS(stmtp, If);
+                }
+                AstIf* const currentIfp = util::createIfFromSenTree(triggerDomainp);
+                AstNodeExpr* const currentCondp = currentIfp->condp()->unlinkFrBack();
+                AstNodeExpr* const oldCondp = triggerIfp->condp()->unlinkFrBack();
+                triggerIfp->condp(currentCondp);
+                VL_DO_DANGLING(oldCondp->deleteTree(), oldCondp);
+                VL_DO_DANGLING(currentIfp->deleteTree(), currentIfp);
+            }
+            std::vector<const AstConst*> originalConstps;
+            std::vector<AstConst*> clonedConstps;
+            origFuncp->stmtsp()->foreachAndNext(
+                [&](AstConst* constp) { originalConstps.push_back(constp); });
+            bodyp->foreachAndNext([&](AstConst* constp) { clonedConstps.push_back(constp); });
+            UASSERT_OBJ(originalConstps.size() == clonedConstps.size(), origFuncp,
+                        "Mismatched constants in ordered function clone");
+            for (size_t i = 0; i < originalConstps.size(); ++i) {
+                const auto it = templateConstMap.find(originalConstps[i]);
+                if (it == templateConstMap.end()) continue;
+                if (originalConstps[i]->num().toString() == it->second->num().toString()) continue;
+                AstConst* const replacementp = const_cast<AstConst*>(it->second)->cloneTree(false);
+                clonedConstps[i]->replaceWith(replacementp);
+                VL_DO_DANGLING(clonedConstps[i]->deleteTree(), clonedConstps[i]);
+                ++stats.m_orderCacheRecipeConstantRemaps;
+            }
             bool failed = false;
             bodyp->foreachAndNext([&](AstCCall* callp) {
                 if (failed) return;
@@ -2217,6 +2307,20 @@ public:
                     refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
                     return;
                 }
+                const auto varIt = resolvedVarMap.find(refp->varScopep());
+                if (varIt != resolvedVarMap.end()) {
+                    refp->varp(varIt->second->varp());
+                    refp->varScopep(varIt->second);
+                    if (varIt->second->scopep() == destBoundaryScopep) {
+                        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                    }
+                    if (mustBeDestScopedInClone(varIt->second)
+                        && varIt->second->scopep() != destBoundaryScopep) {
+                        noteUnmappedVar(varIt->second);
+                        failed = true;
+                    }
+                    return;
+                }
                 if (AstVarScope* const mappedVscp
                     = findDestScopedCloneVar(destBoundaryScopep, refp)) {
                     refp->varp(mappedVscp->varp());
@@ -2238,22 +2342,8 @@ public:
                     refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
                     return;
                 }
-                const auto varIt = resolvedVarMap.find(refp->varScopep());
-                if (varIt == resolvedVarMap.end()) {
-                    noteUnmappedVar(refp->varScopep());
-                    failed = true;
-                    return;
-                }
-                refp->varp(varIt->second->varp());
-                refp->varScopep(varIt->second);
-                if (varIt->second->scopep() == destBoundaryScopep) {
-                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
-                }
-                if (mustBeDestScopedInClone(varIt->second)
-                    && varIt->second->scopep() != destBoundaryScopep) {
-                    noteUnmappedVar(varIt->second);
-                    failed = true;
-                }
+                noteUnmappedVar(refp->varScopep());
+                failed = true;
             });
             if (failed) {
                 VL_DO_DANGLING(bodyp->deleteTree(), bodyp);
@@ -3043,8 +3133,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
     SubgraphOrderCacheKey cacheKey;
     const uint64_t domainShapeStartUsecs = statStartUsecs();
-    cacheKey.m_domainShape = SubgraphLoweringState::computeDomainShape(
+    const SubgraphDomainShapes domainShapes = SubgraphLoweringState::computeDomainShapes(
         subgraphLogic, group.m_scopep, externalDomains);
+    cacheKey.m_domainShape = domainShapes.m_canonical;
     addElapsedUsecs(state.m_stats.m_timeComputeDomainShapeUsecs, domainShapeStartUsecs);
     cacheKey.m_modp = group.m_scopep->modp();
     SubgraphOrderCacheEntry* insertedOrderCacheEntryp = nullptr;
@@ -3054,7 +3145,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     cacheKey.m_phase = phase;
     cacheKey.m_wrapper = wrapper;
     SubgraphScheduleArtifactKey artifactKey;
-    artifactKey.m_domainShape = cacheKey.m_domainShape;
+    artifactKey.m_domainShape = domainShapes.m_exact;
     artifactKey.m_modp = cacheKey.m_modp;
     artifactKey.m_phase = phase;
     const auto ensureLogicShape = [&]() {
@@ -3087,8 +3178,22 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
             bool sharedCall = false;
-            if (artifactp->m_scopep == group.m_scopep) {
+            bool identityVarMap = true;
+            for (const auto& pair : reuse.m_remap.m_templateVarMap) {
+                if (pair.first == pair.second) continue;
+                identityVarMap = false;
+                break;
+            }
+            if (artifactp->m_scopep == group.m_scopep && identityVarMap) {
                 callFuncp = artifactp->m_callFuncp;
+            } else if (artifactp->m_scopep == group.m_scopep) {
+                callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                    artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap, {},
+                    state.m_stats, group.m_senTreep);
+                if (callFuncp) {
+                    ++state.m_stats.m_artifactReuseScopeClones;
+                    ++state.m_stats.m_orderedFuncClones;
+                }
             } else if (SubgraphLoweringState::canUseSharedHelper(artifactp, sharedContext)) {
                 callFuncp = artifactp->m_callFuncp;
                 sharedCall = true;
@@ -3102,7 +3207,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     ++state.m_stats.m_artifactReuseScopeCloneHits;
                 } else {
                     callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap,
+                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap, {},
                         state.m_stats);
                     if (callFuncp) {
                         artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
@@ -3150,7 +3255,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     SubgraphTriggeredRefInfo originalTriggeredInfo;
     std::vector<SubgraphSharedHelperArg> helperArgs;
     SubgraphOrderCacheEntry* matchedOrderCacheEntryp = nullptr;
+    std::unordered_map<const AstConst*, const AstConst*> orderCacheTemplateConstMap;
     std::unordered_map<const AstVarScope*, AstVarScope*> orderCacheTemplateVarMap;
+    bool orderCacheConstantsDiffer = false;
+    bool orderCacheDomainsDiffer = false;
     if (canShare) {
         ensureLogicShape();
         ++state.m_stats.m_orderCacheLookups;
@@ -3159,13 +3267,19 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             ++state.m_stats.m_orderCacheEntryHits;
             state.m_stats.m_orderCacheVariantCandidates += cacheIt->second.size();
             for (SubgraphOrderCacheEntry& cacheEntry : cacheIt->second) {
+                orderCacheConstantsDiffer = false;
+                orderCacheDomainsDiffer = false;
+                orderCacheTemplateConstMap.clear();
                 orderCacheTemplateVarMap.clear();
                 const uint64_t templateMapStartUsecs = statStartUsecs();
                 const SubgraphTemplateMapFailReason templateMapFail
                     = SubgraphLoweringState::buildTemplateVarScopeMap(
-                        cacheEntry.m_logicSig, subgraphLogic, orderCacheTemplateVarMap);
+                        cacheEntry.m_logicSig, subgraphLogic, orderCacheTemplateVarMap,
+                        &orderCacheTemplateConstMap, &orderCacheConstantsDiffer);
                 addElapsedUsecs(state.m_stats.m_timeTemplateMapUsecs, templateMapStartUsecs);
                 if (templateMapFail == SubgraphTemplateMapFailReason::NONE) {
+                    orderCacheDomainsDiffer
+                        = cacheEntry.m_exactDomainShape != domainShapes.m_exact;
                     matchedOrderCacheEntryp = &cacheEntry;
                     break;
                 }
@@ -3176,7 +3290,44 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         }
         if (matchedOrderCacheEntryp) {
             SubgraphOrderCacheEntry& cacheEntry = *matchedOrderCacheEntryp;
-            if (!cacheEntry.m_cloneable && !cacheEntry.m_triggeredShareable) {
+            if (orderCacheConstantsDiffer || orderCacheDomainsDiffer) {
+                if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
+                    AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                        cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
+                        orderCacheTemplateConstMap, state.m_stats, group.m_senTreep);
+                    if (clonedFuncp) {
+                        if (tailFuncps) {
+                            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                            }
+                        }
+                        plan.m_artifactp = cacheEntry.m_artifactp;
+                        plan.m_instance.m_callFuncp = clonedFuncp;
+                        plan.m_instance.m_scopep = group.m_scopep;
+                        if (SubgraphLoweringState::populateSharedHelperArgs(
+                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                                orderCacheTemplateVarMap, state.m_stats)) {
+                            populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            plan.m_phase = phase;
+                            plan.m_wrapper = wrapper;
+                            ++state.m_stats.m_logicSigBuildsAvoided;
+                            ++state.m_stats.m_orderCacheHits;
+                            ++state.m_stats.m_orderCacheRecipeClones;
+                            ++state.m_stats.m_orderCacheRecipeHits;
+                            ++state.m_stats.m_orderedFuncClones;
+                            ++state.m_stats.m_schedulePlans;
+                            if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                            return plan;
+                        }
+                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        plan = SubgraphSchedulePlan{};
+                    } else {
+                        ++state.m_stats.m_orderCacheCloneNull;
+                    }
+                }
+                matchedOrderCacheEntryp = nullptr;
+            } else if (!cacheEntry.m_cloneable && !cacheEntry.m_triggeredShareable) {
                 ++state.m_stats.m_orderCacheSkipTriggered;
                 ++state.m_stats.m_orderCacheSkipTriggeredNotShareable;
                 if (cacheEntry.m_triggeredWritesInstanceLocal) {
@@ -3260,7 +3411,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     }
                 } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                        cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
+                        cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap, {},
                         state.m_stats);
                     if (clonedFuncp) {
                         if (tailFuncps) {
@@ -3336,10 +3487,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     = state.m_subgraphOrderCache[cacheKey];
                 if (entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
                 entries.push_back(SubgraphOrderCacheEntry{
-                    nullptr, funcp, logicSig, triggeredCloneable, triggeredShareable,
-                    triggeredInfo.m_writesDelayedShadow, triggeredInfo.m_writesInstanceLocal,
-                    triggeredInfo.m_writesLocalTemp, triggeredInfo.m_writesNonLocal,
-                    triggeredInfo.m_writesTriggerTemp, triggeredInfo.m_writesVlemTemp});
+                    nullptr, domainShapes.m_exact, funcp, logicSig, triggeredCloneable,
+                    triggeredShareable, triggeredInfo.m_writesDelayedShadow,
+                    triggeredInfo.m_writesInstanceLocal, triggeredInfo.m_writesLocalTemp,
+                    triggeredInfo.m_writesNonLocal, triggeredInfo.m_writesTriggerTemp,
+                    triggeredInfo.m_writesVlemTemp});
                 insertedOrderCacheEntryp = &entries.back();
                 ++state.m_stats.m_orderCacheEntries;
                 state.m_stats.m_orderCacheVariantMax
