@@ -267,6 +267,7 @@ class SubgraphParameterizableConstVisitor final : public VNVisitorConst {
     }
     void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
     void visit(AstNodeDType*) override {}
+    void visit(AstNodeStream* nodep) override { iterateConstNull(nodep->lhsp()); }
     void visit(AstReplicate* nodep) override { iterateConstNull(nodep->srcp()); }
     void visit(AstSenItem*) override {}
     void visit(AstSel* nodep) override { iterateConstNull(nodep->fromp()); }
