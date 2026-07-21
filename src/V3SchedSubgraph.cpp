@@ -708,6 +708,15 @@ public:
     }
 };
 
+struct SubgraphInternalOrderAggregate final {
+    uint64_t m_calls = 0;
+    uint64_t m_constants = 0;
+    uint64_t m_maxNodes = 0;
+    uint64_t m_nodes = 0;
+    uint64_t m_refs = 0;
+    uint64_t m_usecs = 0;
+};
+
 struct SubgraphLoweringStats final {
     uint64_t m_artifactKeyMaxEntriesPerFullKey = 0;
     uint64_t m_artifactKeyUniqueDomainShapes = 0;
@@ -897,6 +906,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_triggeredRefState = 0;
     uint64_t m_triggeredRefStateAcc = 0;
     uint64_t m_instances = 0;
+    std::map<std::string, SubgraphInternalOrderAggregate> m_internalOrderAggregates;
     std::vector<std::pair<std::string, uint64_t>> m_internalOrderTimes;
 
     static uint64_t ratioPermille(uint64_t numerator, uint64_t denominator) {
@@ -1072,6 +1082,24 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "input subgraph instances after", m_inputSubgraphInstancesAfter);
         V3Stats::addStat(prefix + "input subgraph instances before",
                          m_inputSubgraphInstancesBefore);
+        uint64_t internalOrderAggregateCalls = 0;
+        uint64_t internalOrderAggregateConstants = 0;
+        uint64_t internalOrderAggregateNodes = 0;
+        uint64_t internalOrderAggregateRefs = 0;
+        for (const auto& pair : m_internalOrderAggregates) {
+            const SubgraphInternalOrderAggregate& aggregate = pair.second;
+            internalOrderAggregateCalls += aggregate.m_calls;
+            internalOrderAggregateConstants += aggregate.m_constants;
+            internalOrderAggregateNodes += aggregate.m_nodes;
+            internalOrderAggregateRefs += aggregate.m_refs;
+        }
+        V3Stats::addStat(prefix + "internal order aggregate calls", internalOrderAggregateCalls);
+        V3Stats::addStat(prefix + "internal order aggregate constants",
+                         internalOrderAggregateConstants);
+        V3Stats::addStat(prefix + "internal order aggregate groups",
+                         m_internalOrderAggregates.size());
+        V3Stats::addStat(prefix + "internal order aggregate nodes", internalOrderAggregateNodes);
+        V3Stats::addStat(prefix + "internal order aggregate refs", internalOrderAggregateRefs);
         V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
         V3Stats::addStat(prefix + "order cache clone fail state", m_orderCacheCloneFailState);
         V3Stats::addStat(prefix + "order cache clone fail shadow", m_orderCacheCloneFailShadow);
@@ -1188,6 +1216,27 @@ struct SubgraphLoweringStats final {
                          seconds(m_timePrepareSnapshotsUsecs), 6);
         V3Stats::addStat(prefix + "time template map sec", seconds(m_timeTemplateMapUsecs), 6);
         V3Stats::addStat(prefix + "time total sec", seconds(m_timeTotalUsecs), 6);
+        std::vector<std::pair<std::string, SubgraphInternalOrderAggregate>> orderedAggregates{
+            m_internalOrderAggregates.begin(), m_internalOrderAggregates.end()};
+        std::sort(orderedAggregates.begin(), orderedAggregates.end(),
+                  [](const auto& lhs, const auto& rhs) {
+                      if (lhs.second.m_usecs != rhs.second.m_usecs) {
+                          return lhs.second.m_usecs > rhs.second.m_usecs;
+                      }
+                      return lhs.first < rhs.first;
+                  });
+        const size_t aggregateTopCount = std::min<size_t>(orderedAggregates.size(), 16);
+        for (size_t i = 0; i < aggregateTopCount; ++i) {
+            const std::string topPrefix = prefix + "internal order aggregate top " + cvtToStr(i)
+                                          + " " + orderedAggregates[i].first + " ";
+            const SubgraphInternalOrderAggregate& aggregate = orderedAggregates[i].second;
+            V3Stats::addStat(topPrefix + "calls", aggregate.m_calls);
+            V3Stats::addStat(topPrefix + "constants", aggregate.m_constants);
+            V3Stats::addStat(topPrefix + "max nodes", aggregate.m_maxNodes);
+            V3Stats::addStat(topPrefix + "nodes", aggregate.m_nodes);
+            V3Stats::addStat(topPrefix + "refs", aggregate.m_refs);
+            V3Stats::addStat(topPrefix + "sec", seconds(aggregate.m_usecs), 6);
+        }
         std::vector<std::pair<std::string, uint64_t>> orderedTimes = m_internalOrderTimes;
         std::sort(orderedTimes.begin(), orderedTimes.end(),
                   [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
@@ -1267,9 +1316,38 @@ struct SubgraphLoweringStats final {
         }
     }
 
-    void noteInternalOrderTime(const std::string& name, uint64_t usecs) {
-        if (!usecs) return;
-        m_internalOrderTimes.emplace_back(name, usecs);
+    void noteInternalOrder(const std::string& name, uint64_t usecs, AstNodeModule* modp,
+                           AstSubgraphInstance::Phase phase, const SubgraphWrapper& wrapper,
+                           const SubgraphOrderCacheKey& cacheKey,
+                           const SubgraphLogicSig& logicSig) {
+        if (!v3Global.opt.stats()) return;
+        uint64_t constants = 0;
+        uint64_t nodes = 0;
+        uint64_t refs = 0;
+        for (const SubgraphLogicNodeSig& node : logicSig) {
+            constants += node.m_constValues.size();
+            nodes += node.m_nodeTypes.size() + 1;
+            refs += node.m_refs.size();
+        }
+        size_t domainHash = 0;
+        for (const uintptr_t value : cacheKey.m_domainShape) {
+            domainHash ^= std::hash<uintptr_t>{}(value) + 0x9e3779b97f4a7c15ULL + (domainHash << 6)
+                          + (domainHash >> 2);
+        }
+        const std::string aggregateKey
+            = modp->name() + " p" + cvtToStr(static_cast<unsigned>(phase)) + " w"
+              + cvtToStr(static_cast<unsigned>(wrapper.m_kind)) + " k"
+              + cvtToStr(static_cast<unsigned>(wrapper.m_keyword)) + " d" + cvtToStr(domainHash)
+              + " n" + cvtToStr(cacheKey.m_logicShape.m_nodeTypes) + " r"
+              + cvtToStr(cacheKey.m_logicShape.m_refAccesses) + " size" + cvtToStr(nodes);
+        SubgraphInternalOrderAggregate& aggregate = m_internalOrderAggregates[aggregateKey];
+        ++aggregate.m_calls;
+        aggregate.m_constants += constants;
+        aggregate.m_maxNodes = std::max(aggregate.m_maxNodes, nodes);
+        aggregate.m_nodes += nodes;
+        aggregate.m_refs += refs;
+        aggregate.m_usecs += usecs;
+        if (usecs) m_internalOrderTimes.emplace_back(name, usecs);
     }
 
     void noteOrderCacheTemplateMapFail(SubgraphTemplateMapFailReason reason) {
@@ -3459,7 +3537,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                externalDomains, group.m_scopep);
         const uint64_t orderUsecs = orderStartUsecs ? V3Os::timeUsecs() - orderStartUsecs : 0;
         state.m_stats.m_timeInternalOrderUsecs += orderUsecs;
-        state.m_stats.noteInternalOrderTime(orderTag, orderUsecs);
+        state.m_stats.noteInternalOrder(orderTag, orderUsecs, cacheKey.m_modp, phase, wrapper,
+                                        cacheKey, logicSig);
         if (funcp) {
             util::splitCheck(funcp);
             const SubgraphTriggeredRefInfo preParameterTriggeredInfo
