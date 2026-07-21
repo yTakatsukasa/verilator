@@ -14,16 +14,19 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate calls\s+(\d+)", 2)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, internal order aggregate constants\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate groups\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate nodes\s+(\d+)", 23)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate refs\s+(\d+)", 7)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 0)
 test.file_grep(
-    test.stats, r"Scheduling, Subgraph nba, order cache recipe constant remaps\s+(\d+)", 1)
+    test.stats, r"Scheduling, Subgraph nba, order cache recipe constant remaps\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe hits\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 1)
 
 test.passes()
