@@ -501,16 +501,9 @@ struct SubgraphSharedHelperArg final {
     bool m_writes = false;
 };
 
-struct SubgraphSharedHelperConstArg final {
-    size_t m_constIndex = 0;
-    AstNodeDType* m_dtypep = nullptr;
-    size_t m_nodeIndex = 0;
-};
-
 struct SubgraphScheduleArtifact final {
     AstCFunc* m_callFuncp = nullptr;
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
-    std::vector<SubgraphSharedHelperConstArg> m_helperConstArgs;
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
     std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
@@ -552,7 +545,6 @@ struct SubgraphScheduleInstance final {
     AstCFunc* m_callFuncp = nullptr;
     SubgraphInstanceContract m_contract;
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
-    std::vector<V3Number> m_helperConstValues;
     AstScope* m_scopep = nullptr;
     bool m_sharedCall = false;
     std::vector<AstCFunc*> m_tailFuncps;
@@ -909,6 +901,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_sharedHelperFormalArgsAfter = 0;
     uint64_t m_sharedHelperFormalArgsBefore = 0;
     uint64_t m_sharedHelperHiddenUses = 0;
+    uint64_t m_sharedHelperImplicitContextVars = 0;
     uint64_t m_sharedHelperInstanceLocalArgs = 0;
     uint64_t m_sharedHelperParameterizationFails = 0;
     uint64_t m_sharedHelperParameterizations = 0;
@@ -1245,6 +1238,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "shared helper formal args before",
                          m_sharedHelperFormalArgsBefore);
         V3Stats::addStat(prefix + "shared helper hidden uses", m_sharedHelperHiddenUses);
+        V3Stats::addStat(prefix + "shared helper implicit context vars",
+                         m_sharedHelperImplicitContextVars);
         V3Stats::addStat(prefix + "shared helper instance local args",
                          m_sharedHelperInstanceLocalArgs);
         V3Stats::addStat(prefix + "shared helper parameterization fails",
@@ -1812,7 +1807,7 @@ public:
     static bool canShareTriggeredArtifact(const SubgraphTriggeredRefInfo& info) {
         if (!info.m_hasTriggered || !info.m_shareable) return false;
         if (info.m_writesNonLocal) return true;
-        return !info.m_writesInstanceLocal;
+        return !info.m_writesInstanceLocal || info.writesOnlySharedHelperSafeInstanceLocal();
     }
 
     static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
@@ -1835,20 +1830,6 @@ public:
                                         "__VsubgraphArg" + cvtToStr(index), arg.m_vscp->dtypep()};
         varp->direction(arg.m_writes ? (arg.m_reads ? VDirection::INOUT : VDirection::OUTPUT)
                                      : VDirection::CONSTREF);
-        varp->funcLocal(true);
-        funcp->addArgsp(varp);
-        AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
-        scopep->addVarsp(vscp);
-        return vscp;
-    }
-
-    static AstVarScope* newSharedHelperConstArg(AstCFunc* funcp, AstNodeDType* dtypep,
-                                                size_t index) {
-        FileLine* const flp = funcp->fileline();
-        AstScope* const scopep = funcp->scopep();
-        AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP,
-                                        "__VsubgraphConstArg" + cvtToStr(index), dtypep};
-        varp->direction(VDirection::CONSTREF);
         varp->funcLocal(true);
         funcp->addArgsp(varp);
         AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
@@ -1915,11 +1896,11 @@ public:
         gather(funcp);
     }
 
-    static bool parameterizeSharedHelper(
-        AstCFunc* funcp, AstScope* boundaryScopep, SubgraphLogicSig& logicSig,
-        bool parameterizeInstanceLocal, std::vector<SubgraphSharedHelperArg>& helperArgs,
-        std::vector<SubgraphSharedHelperConstArg>& helperConstArgs,
-        std::vector<V3Number>& helperConstValues, SubgraphLoweringStats& stats) {
+    static bool parameterizeSharedHelper(AstCFunc* funcp, AstScope* boundaryScopep,
+                                         SubgraphLogicSig& logicSig,
+                                         bool parameterizeInstanceLocal,
+                                         std::vector<SubgraphSharedHelperArg>& helperArgs,
+                                         SubgraphLoweringStats& stats) {
         std::unordered_set<const AstVarScope*> eligibleVscps;
         for (const SubgraphLogicNodeSig& node : logicSig) {
             for (const SubgraphLogicRefSig& ref : node.m_refs) {
@@ -1955,7 +1936,7 @@ public:
         for (AstCFunc* const scanFuncp : funcs) {
             scanFuncp->foreach([&](AstConst* constp) { orderedConstps.insert(constp); });
         }
-        std::unordered_map<const AstConst*, size_t> constArgIndex;
+        size_t parameterizableConstCount = 0;
         for (size_t nodeIndex = 0; nodeIndex < logicSig.size(); ++nodeIndex) {
             SubgraphLogicNodeSig& node = logicSig[nodeIndex];
             for (size_t constIndex = 0; constIndex < node.m_consts.size(); ++constIndex) {
@@ -1964,14 +1945,13 @@ public:
                     node.m_constParameterizable[constIndex] = false;
                     continue;
                 }
-                constArgIndex.emplace(constp, helperConstArgs.size());
-                helperConstArgs.push_back(
-                    SubgraphSharedHelperConstArg{constIndex, constp->dtypep(), nodeIndex});
-                helperConstValues.push_back(constp->num());
+                ++parameterizableConstCount;
             }
         }
 
         std::unordered_map<AstVarScope*, size_t> argIndex;
+        std::unordered_set<AstVarScope*> baselineArgs;
+        std::unordered_set<AstVarScope*> implicitContextVscps;
         std::unordered_set<AstVarScope*> instanceLocalArgs;
         for (AstCFunc* const scanFuncp : funcs) {
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
@@ -1989,6 +1969,12 @@ public:
                     if (!remappable) return;
                     eligibleVscps.insert(vscp);
                 }
+                baselineArgs.insert(vscp);
+                if (vscp->scopep() == boundaryScopep) {
+                    implicitContextVscps.insert(vscp);
+                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+                    return;
+                }
                 if (isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
                     instanceLocalArgs.insert(vscp);
                 }
@@ -1999,21 +1985,21 @@ public:
                 arg.m_writes |= refp->access().isWriteOrRW();
             });
         }
-        if (helperArgs.empty() && helperConstArgs.empty()) return true;
+        stats.m_sharedHelperFormalArgsBefore
+            += funcs.size() * (baselineArgs.size() + parameterizableConstCount);
+        stats.m_sharedHelperImplicitContextVars += implicitContextVscps.size();
+        if (helperArgs.empty()) {
+            stats.m_sharedHelperParameterizedFuncs += funcs.size();
+            ++stats.m_sharedHelperParameterizations;
+            return true;
+        }
 
         std::unordered_map<AstCFunc*, std::vector<AstCFunc*>> calleesByFunc;
         std::unordered_map<AstCFunc*, std::unordered_set<size_t>> requiredArgsByFunc;
-        std::unordered_map<AstCFunc*, std::unordered_set<size_t>> requiredConstArgsByFunc;
         for (AstCFunc* const scanFuncp : funcs) {
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 const auto it = argIndex.find(refp->varScopep());
                 if (it != argIndex.end()) requiredArgsByFunc[scanFuncp].insert(it->second);
-            });
-            scanFuncp->foreach([&](AstConst* constp) {
-                const auto it = constArgIndex.find(constp);
-                if (it != constArgIndex.end()) {
-                    requiredConstArgsByFunc[scanFuncp].insert(it->second);
-                }
             });
             scanFuncp->foreach([&](AstCCall* callp) {
                 if (seenFuncs.count(callp->funcp())) {
@@ -2030,22 +2016,15 @@ public:
             for (auto funcIt = funcs.rbegin(); funcIt != funcs.rend(); ++funcIt) {
                 AstCFunc* const scanFuncp = *funcIt;
                 std::unordered_set<size_t>& requiredArgs = requiredArgsByFunc[scanFuncp];
-                std::unordered_set<size_t>& requiredConstArgs = requiredConstArgsByFunc[scanFuncp];
                 for (AstCFunc* const calledFuncp : calleesByFunc[scanFuncp]) {
                     for (const size_t index : requiredArgsByFunc[calledFuncp]) {
                         changed |= requiredArgs.insert(index).second;
-                    }
-                    for (const size_t index : requiredConstArgsByFunc[calledFuncp]) {
-                        changed |= requiredConstArgs.insert(index).second;
                     }
                 }
             }
         } while (changed);
 
         std::unordered_map<AstCFunc*, std::vector<AstVarScope*>> argsByFunc;
-        std::unordered_map<AstCFunc*, std::vector<AstVarScope*>> constArgsByFunc;
-        stats.m_sharedHelperFormalArgsBefore
-            += funcs.size() * (helperArgs.size() + helperConstArgs.size());
         for (AstCFunc* const scanFuncp : funcs) {
             std::vector<AstVarScope*>& args = argsByFunc[scanFuncp];
             args.resize(helperArgs.size());
@@ -2054,17 +2033,9 @@ public:
                 args[i] = newSharedHelperArg(scanFuncp, helperArgs[i], i);
                 ++stats.m_sharedHelperFormalArgsAfter;
             }
-            std::vector<AstVarScope*>& constArgs = constArgsByFunc[scanFuncp];
-            constArgs.resize(helperConstArgs.size());
-            for (size_t i = 0; i < helperConstArgs.size(); ++i) {
-                if (!requiredConstArgsByFunc[scanFuncp].count(i)) continue;
-                constArgs[i] = newSharedHelperConstArg(scanFuncp, helperConstArgs[i].m_dtypep, i);
-                ++stats.m_sharedHelperFormalArgsAfter;
-            }
         }
         for (AstCFunc* const scanFuncp : funcs) {
             const std::vector<AstVarScope*>& args = argsByFunc.at(scanFuncp);
-            const std::vector<AstVarScope*>& constArgs = constArgsByFunc.at(scanFuncp);
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 const auto it = argIndex.find(refp->varScopep());
                 if (it == argIndex.end()) return;
@@ -2074,21 +2045,6 @@ public:
                 refp->varScopep(argVscp);
                 refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
             });
-            std::vector<AstConst*> replaceConstps;
-            scanFuncp->foreach([&](AstConst* constp) {
-                if (constArgIndex.count(constp)) replaceConstps.push_back(constp);
-            });
-            for (AstConst* const constp : replaceConstps) {
-                const auto it = constArgIndex.find(constp);
-                UASSERT_OBJ(it != constArgIndex.end(), constp,
-                            "Missing shared helper constant argument");
-                UASSERT_OBJ(constArgs[it->second], constp,
-                            "Missing shared helper function constant argument");
-                AstVarRef* const replacementp
-                    = new AstVarRef{constp->fileline(), constArgs[it->second], VAccess::READ};
-                constp->replaceWith(replacementp);
-                VL_DO_DANGLING(constp->deleteTree(), constp);
-            }
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
                 if (!seenFuncs.count(calledFuncp)) return;
@@ -2098,20 +2054,8 @@ public:
                     callp->addArgsp(new AstVarRef{callp->fileline(), args[i],
                                                   sharedHelperArgAccess(helperArgs[i])});
                 }
-                for (size_t i = 0; i < helperConstArgs.size(); ++i) {
-                    if (!requiredConstArgsByFunc[calledFuncp].count(i)) continue;
-                    UASSERT_OBJ(constArgs[i], callp,
-                                "Missing caller shared helper constant argument");
-                    callp->addArgsp(new AstVarRef{callp->fileline(), constArgs[i], VAccess::READ});
-                }
             });
         }
-        for (SubgraphLogicNodeSig& node : logicSig) {
-            for (size_t i = 0; i < node.m_consts.size(); ++i) {
-                if (node.m_constParameterizable[i]) node.m_consts[i] = nullptr;
-            }
-        }
-        stats.m_sharedHelperConstantArgs += helperConstArgs.size();
         stats.m_sharedHelperExternalArgs += helperArgs.size() - instanceLocalArgs.size();
         stats.m_sharedHelperInstanceLocalArgs += instanceLocalArgs.size();
         stats.m_sharedHelperParameterizedFuncs += funcs.size();
@@ -2184,43 +2128,25 @@ public:
         return true;
     }
 
-    static bool populateSharedHelperConstValues(SubgraphScheduleInstance& instance,
-                                                const SubgraphScheduleArtifact& artifact,
-                                                const LogicByScope& currentLogic,
-                                                bool requireParameterizedDifferences) {
+    static bool sharedHelperConstantsMatch(const SubgraphScheduleArtifact& artifact,
+                                           const LogicByScope& currentLogic,
+                                           bool requireExactMatch) {
+        if (!requireExactMatch) return true;
         std::vector<AstNode*> currentNodes;
         currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
         if (artifact.m_logicSig.size() != currentNodes.size()) return false;
 
-        std::vector<std::vector<AstConst*>> currentConsts;
-        currentConsts.reserve(currentNodes.size());
         for (size_t nodeIndex = 0; nodeIndex < currentNodes.size(); ++nodeIndex) {
             std::vector<AstConst*> consts;
             currentNodes[nodeIndex]->foreach([&](AstConst* constp) { consts.push_back(constp); });
             const SubgraphLogicNodeSig& templateNode = artifact.m_logicSig[nodeIndex];
             if (templateNode.m_constValues.size() != consts.size()) return false;
-            if (requireParameterizedDifferences) {
-                for (size_t constIndex = 0; constIndex < consts.size(); ++constIndex) {
-                    if (templateNode.m_constValues[constIndex]
-                        == consts[constIndex]->num().toString()) {
-                        continue;
-                    }
-                    if (!templateNode.m_constParameterizable[constIndex]) return false;
+            for (size_t constIndex = 0; constIndex < consts.size(); ++constIndex) {
+                if (templateNode.m_constValues[constIndex]
+                    != consts[constIndex]->num().toString()) {
+                    return false;
                 }
             }
-            currentConsts.push_back(std::move(consts));
-        }
-
-        instance.m_helperConstValues.clear();
-        instance.m_helperConstValues.reserve(artifact.m_helperConstArgs.size());
-        for (const SubgraphSharedHelperConstArg& arg : artifact.m_helperConstArgs) {
-            if (arg.m_nodeIndex >= currentConsts.size()
-                || arg.m_constIndex >= currentConsts[arg.m_nodeIndex].size()) {
-                instance.m_helperConstValues.clear();
-                return false;
-            }
-            instance.m_helperConstValues.push_back(
-                currentConsts[arg.m_nodeIndex][arg.m_constIndex]->num());
         }
         return true;
     }
@@ -2235,8 +2161,7 @@ public:
         if (!populateSharedHelperArgs(instance, artifact, currentScopep, templateVarMap, stats)) {
             return SubgraphSharedHelperApplyFailReason::ARGUMENTS;
         }
-        if (!populateSharedHelperConstValues(instance, artifact, currentLogic,
-                                             requireParameterizedDifferences)) {
+        if (!sharedHelperConstantsMatch(artifact, currentLogic, requireParameterizedDifferences)) {
             return SubgraphSharedHelperApplyFailReason::CONSTANTS;
         }
         return SubgraphSharedHelperApplyFailReason::NONE;
@@ -3060,14 +2985,12 @@ public:
 
     SubgraphScheduleArtifact* makeSubgraphScheduleArtifact(
         const SubgraphScheduleArtifactKey& key, AstScope* scopep, AstCFunc* callFuncp,
-        std::vector<SubgraphSharedHelperArg>&& helperArgs,
-        std::vector<SubgraphSharedHelperConstArg>&& helperConstArgs, SubgraphLogicSig&& logicSig,
+        std::vector<SubgraphSharedHelperArg>&& helperArgs, SubgraphLogicSig&& logicSig,
         const SubgraphTailContract& tailContract, bool cloneable, bool hasTriggered,
         bool triggeredShareable, bool cacheable) {
         std::unique_ptr<SubgraphScheduleArtifact> artifactp{new SubgraphScheduleArtifact};
         artifactp->m_callFuncp = callFuncp;
         artifactp->m_helperArgs = std::move(helperArgs);
-        artifactp->m_helperConstArgs = std::move(helperConstArgs);
         artifactp->m_key = key;
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
@@ -3621,8 +3544,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 && SubgraphLoweringState::populateSharedHelperArgs(
                     plan.m_instance, *artifactp, group.m_scopep, reuse.m_remap.m_templateVarMap,
                     state.m_stats)
-                && SubgraphLoweringState::populateSharedHelperConstValues(
-                    plan.m_instance, *artifactp, subgraphLogic, false)) {
+                && SubgraphLoweringState::sharedHelperConstantsMatch(*artifactp, subgraphLogic,
+                                                                     false)) {
                 if (tag == "stl") state.m_stlSubgraphFuncs[group.m_scopep].push_back(callFuncp);
                 plan.m_artifactp = artifactp;
                 if (tailFuncps) {
@@ -3654,8 +3577,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     AstCFunc* funcp = nullptr;
     SubgraphTriggeredRefInfo originalTriggeredInfo;
     std::vector<SubgraphSharedHelperArg> helperArgs;
-    std::vector<SubgraphSharedHelperConstArg> helperConstArgs;
-    std::vector<V3Number> helperConstValues;
     SubgraphOrderCacheEntry* matchedOrderCacheEntryp = nullptr;
     std::unordered_map<const AstConst*, const AstConst*> orderCacheTemplateConstMap;
     std::unordered_map<const AstVarScope*, AstVarScope*> orderCacheTemplateVarMap;
@@ -3755,8 +3676,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             orderCacheTemplateVarMap, state.m_stats);
                         const bool populatedConstants
                             = populatedArgs
-                              && SubgraphLoweringState::populateSharedHelperConstValues(
-                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false);
+                              && SubgraphLoweringState::sharedHelperConstantsMatch(
+                                  *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                             SubgraphLoweringState::discardLogic(subgraphLogic);
@@ -3913,8 +3834,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             orderCacheTemplateVarMap, state.m_stats);
                         const bool populatedConstants
                             = populatedArgs
-                              && SubgraphLoweringState::populateSharedHelperConstValues(
-                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false);
+                              && SubgraphLoweringState::sharedHelperConstantsMatch(
+                                  *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                             SubgraphLoweringState::discardLogic(subgraphLogic);
@@ -3968,7 +3889,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             if (cacheableArtifact
                 && !SubgraphLoweringState::parameterizeSharedHelper(
                     funcp, group.m_scopep, logicSig, parameterizeInstanceLocal, helperArgs,
-                    helperConstArgs, helperConstValues, state.m_stats)) {
+                    state.m_stats)) {
                 cacheableArtifact = false;
             }
             if (cacheableArtifact && !matchedOrderCacheEntryp) {
@@ -4049,12 +3970,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         }
     }
     plan.m_artifactp = state.makeSubgraphScheduleArtifact(
-        artifactKey, group.m_scopep, callFuncp, std::move(helperArgs), std::move(helperConstArgs),
-        std::move(logicSig), bundleContext.m_currentScopeTailContract, cloneableArtifact,
-        triggeredInfo.m_hasTriggered, triggeredShareableArtifact, cacheableArtifact);
+        artifactKey, group.m_scopep, callFuncp, std::move(helperArgs), std::move(logicSig),
+        bundleContext.m_currentScopeTailContract, cloneableArtifact, triggeredInfo.m_hasTriggered,
+        triggeredShareableArtifact, cacheableArtifact);
     if (insertedOrderCacheEntryp) insertedOrderCacheEntryp->m_artifactp = plan.m_artifactp;
     plan.m_instance.m_callFuncp = callFuncp;
-    plan.m_instance.m_helperConstValues = std::move(helperConstValues);
     plan.m_instance.m_scopep = group.m_scopep;
     SubgraphLoweringState::populateSharedHelperArgs(plan.m_instance, *plan.m_artifactp,
                                                     group.m_scopep, {}, state.m_stats);
@@ -4097,9 +4017,6 @@ AstSubgraphInstance* materializeSubgraphSchedulePlan(
     for (const SubgraphSharedHelperArg& arg : instance.m_helperArgs) {
         callp->addArgsp(new AstVarRef{callp->fileline(), arg.m_vscp,
                                       SubgraphLoweringState::sharedHelperArgAccess(arg)});
-    }
-    for (const V3Number& value : instance.m_helperConstValues) {
-        callp->addArgsp(new AstConst{callp->fileline(), value});
     }
     callp->dtypeSetVoid();
     AstNodeStmt* stmtsp = callp->makeStmt();
