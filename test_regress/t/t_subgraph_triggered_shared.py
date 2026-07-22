@@ -50,7 +50,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds\s+
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds avoided\s+(\d+)", 11)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper instance local args\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+0")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact input tail writes\s+([1-9]\d*)")

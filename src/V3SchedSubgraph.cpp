@@ -1892,9 +1892,6 @@ public:
         std::vector<V3Number>& helperConstValues, SubgraphLoweringStats& stats) {
         std::unordered_set<const AstVarScope*> eligibleVscps;
         for (const SubgraphLogicNodeSig& node : logicSig) {
-            const bool parameterizeRecipeVars = std::find(node.m_constParameterizable.begin(),
-                                                          node.m_constParameterizable.end(), true)
-                                                != node.m_constParameterizable.end();
             for (const SubgraphLogicRefSig& ref : node.m_refs) {
                 const AstVarScope* const vscp = ref.m_vscp;
                 const bool remappableInstanceLocal
@@ -1902,9 +1899,7 @@ public:
                       && (!vscp->varp()->isFuncLocal()
                           || instanceLocalVarKind(vscp)
                                  == SubgraphInstanceLocalVarKind::DELAYED_SHADOW);
-                if ((!isUnderBoundaryScope(vscp->scopep(), boundaryScopep)
-                     || remappableInstanceLocal || parameterizeRecipeVars)
-                    && (!vscp->varp()->isFuncLocal() || remappableInstanceLocal)) {
+                if (!vscp->varp()->isFuncLocal() || remappableInstanceLocal) {
                     eligibleVscps.insert(vscp);
                 }
             }
@@ -3463,7 +3458,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             }
             AstSenTree* sharedTriggerDomainp = nullptr;
             AstCFunc* sharedFuncp = nullptr;
-            if (!identityVarMap
+            if (!(artifactp->m_scopep == group.m_scopep && identityVarMap)
                 && SubgraphLoweringState::canUseSharedHelper(artifactp, sharedContext)
                 && SubgraphLoweringState::sharedHelperCoversVarMap(
                     *artifactp, reuse.m_remap.m_templateVarMap)) {
