@@ -34,8 +34,7 @@ test.file_grep(test.stats,
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
                0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip other\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)",
-               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 1)
 
