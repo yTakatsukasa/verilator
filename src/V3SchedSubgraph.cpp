@@ -906,8 +906,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_schedulePlans = 0;
     uint64_t m_sharedHelperConstantArgs = 0;
     uint64_t m_sharedHelperExternalArgs = 0;
-    uint64_t m_sharedHelperInstanceLocalArgs = 0;
+    uint64_t m_sharedHelperFormalArgsAfter = 0;
+    uint64_t m_sharedHelperFormalArgsBefore = 0;
     uint64_t m_sharedHelperHiddenUses = 0;
+    uint64_t m_sharedHelperInstanceLocalArgs = 0;
     uint64_t m_sharedHelperParameterizationFails = 0;
     uint64_t m_sharedHelperParameterizations = 0;
     uint64_t m_sharedHelperParameterizedFuncs = 0;
@@ -1238,9 +1240,13 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
         V3Stats::addStat(prefix + "shared helper constant args", m_sharedHelperConstantArgs);
         V3Stats::addStat(prefix + "shared helper external args", m_sharedHelperExternalArgs);
+        V3Stats::addStat(prefix + "shared helper formal args after",
+                         m_sharedHelperFormalArgsAfter);
+        V3Stats::addStat(prefix + "shared helper formal args before",
+                         m_sharedHelperFormalArgsBefore);
+        V3Stats::addStat(prefix + "shared helper hidden uses", m_sharedHelperHiddenUses);
         V3Stats::addStat(prefix + "shared helper instance local args",
                          m_sharedHelperInstanceLocalArgs);
-        V3Stats::addStat(prefix + "shared helper hidden uses", m_sharedHelperHiddenUses);
         V3Stats::addStat(prefix + "shared helper parameterization fails",
                          m_sharedHelperParameterizationFails);
         V3Stats::addStat(prefix + "shared helper parameterizations",
@@ -1995,19 +2001,65 @@ public:
         }
         if (helperArgs.empty() && helperConstArgs.empty()) return true;
 
+        std::unordered_map<AstCFunc*, std::vector<AstCFunc*>> calleesByFunc;
+        std::unordered_map<AstCFunc*, std::unordered_set<size_t>> requiredArgsByFunc;
+        std::unordered_map<AstCFunc*, std::unordered_set<size_t>> requiredConstArgsByFunc;
+        for (AstCFunc* const scanFuncp : funcs) {
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                const auto it = argIndex.find(refp->varScopep());
+                if (it != argIndex.end()) requiredArgsByFunc[scanFuncp].insert(it->second);
+            });
+            scanFuncp->foreach([&](AstConst* constp) {
+                const auto it = constArgIndex.find(constp);
+                if (it != constArgIndex.end()) {
+                    requiredConstArgsByFunc[scanFuncp].insert(it->second);
+                }
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                if (seenFuncs.count(callp->funcp())) {
+                    calleesByFunc[scanFuncp].push_back(callp->funcp());
+                }
+            });
+        }
+
+        // Propagate callee requirements to callers without making every split helper carry the
+        // complete artifact contract.
+        bool changed = false;
+        do {
+            changed = false;
+            for (auto funcIt = funcs.rbegin(); funcIt != funcs.rend(); ++funcIt) {
+                AstCFunc* const scanFuncp = *funcIt;
+                std::unordered_set<size_t>& requiredArgs = requiredArgsByFunc[scanFuncp];
+                std::unordered_set<size_t>& requiredConstArgs = requiredConstArgsByFunc[scanFuncp];
+                for (AstCFunc* const calledFuncp : calleesByFunc[scanFuncp]) {
+                    for (const size_t index : requiredArgsByFunc[calledFuncp]) {
+                        changed |= requiredArgs.insert(index).second;
+                    }
+                    for (const size_t index : requiredConstArgsByFunc[calledFuncp]) {
+                        changed |= requiredConstArgs.insert(index).second;
+                    }
+                }
+            }
+        } while (changed);
+
         std::unordered_map<AstCFunc*, std::vector<AstVarScope*>> argsByFunc;
         std::unordered_map<AstCFunc*, std::vector<AstVarScope*>> constArgsByFunc;
+        stats.m_sharedHelperFormalArgsBefore
+            += funcs.size() * (helperArgs.size() + helperConstArgs.size());
         for (AstCFunc* const scanFuncp : funcs) {
             std::vector<AstVarScope*>& args = argsByFunc[scanFuncp];
-            args.reserve(helperArgs.size());
+            args.resize(helperArgs.size());
             for (size_t i = 0; i < helperArgs.size(); ++i) {
-                args.push_back(newSharedHelperArg(scanFuncp, helperArgs[i], i));
+                if (!requiredArgsByFunc[scanFuncp].count(i)) continue;
+                args[i] = newSharedHelperArg(scanFuncp, helperArgs[i], i);
+                ++stats.m_sharedHelperFormalArgsAfter;
             }
             std::vector<AstVarScope*>& constArgs = constArgsByFunc[scanFuncp];
-            constArgs.reserve(helperConstArgs.size());
+            constArgs.resize(helperConstArgs.size());
             for (size_t i = 0; i < helperConstArgs.size(); ++i) {
-                constArgs.push_back(
-                    newSharedHelperConstArg(scanFuncp, helperConstArgs[i].m_dtypep, i));
+                if (!requiredConstArgsByFunc[scanFuncp].count(i)) continue;
+                constArgs[i] = newSharedHelperConstArg(scanFuncp, helperConstArgs[i].m_dtypep, i);
+                ++stats.m_sharedHelperFormalArgsAfter;
             }
         }
         for (AstCFunc* const scanFuncp : funcs) {
@@ -2017,6 +2069,7 @@ public:
                 const auto it = argIndex.find(refp->varScopep());
                 if (it == argIndex.end()) return;
                 AstVarScope* const argVscp = args[it->second];
+                UASSERT_OBJ(argVscp, refp, "Missing shared helper function argument");
                 refp->varp(argVscp->varp());
                 refp->varScopep(argVscp);
                 refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
@@ -2029,20 +2082,27 @@ public:
                 const auto it = constArgIndex.find(constp);
                 UASSERT_OBJ(it != constArgIndex.end(), constp,
                             "Missing shared helper constant argument");
+                UASSERT_OBJ(constArgs[it->second], constp,
+                            "Missing shared helper function constant argument");
                 AstVarRef* const replacementp
                     = new AstVarRef{constp->fileline(), constArgs[it->second], VAccess::READ};
                 constp->replaceWith(replacementp);
                 VL_DO_DANGLING(constp->deleteTree(), constp);
             }
             scanFuncp->foreach([&](AstCCall* callp) {
-                const auto it = argsByFunc.find(callp->funcp());
-                if (it == argsByFunc.end()) return;
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (!seenFuncs.count(calledFuncp)) return;
                 for (size_t i = 0; i < helperArgs.size(); ++i) {
+                    if (!requiredArgsByFunc[calledFuncp].count(i)) continue;
+                    UASSERT_OBJ(args[i], callp, "Missing caller shared helper argument");
                     callp->addArgsp(new AstVarRef{callp->fileline(), args[i],
                                                   sharedHelperArgAccess(helperArgs[i])});
                 }
-                for (AstVarScope* const constArgVscp : constArgs) {
-                    callp->addArgsp(new AstVarRef{callp->fileline(), constArgVscp, VAccess::READ});
+                for (size_t i = 0; i < helperConstArgs.size(); ++i) {
+                    if (!requiredConstArgsByFunc[calledFuncp].count(i)) continue;
+                    UASSERT_OBJ(constArgs[i], callp,
+                                "Missing caller shared helper constant argument");
+                    callp->addArgsp(new AstVarRef{callp->fileline(), constArgs[i], VAccess::READ});
                 }
             });
         }
