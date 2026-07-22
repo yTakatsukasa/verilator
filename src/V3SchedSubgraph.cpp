@@ -319,6 +319,13 @@ enum class SubgraphTemplateMapFailReason : uint8_t {
     REF_COUNT,
 };
 
+enum class SubgraphSharedHelperApplyFailReason : uint8_t {
+    NONE,
+    ARGUMENTS,
+    CALL_FUNCTION,
+    CONSTANTS,
+};
+
 struct SubgraphOrderCacheEntry final {
     SubgraphScheduleArtifact* m_artifactp = nullptr;
     std::vector<uintptr_t> m_exactDomainShape;
@@ -839,6 +846,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_logicShapeBuilds = 0;
     uint64_t m_logicSigBuilds = 0;
     uint64_t m_logicSigBuildsAvoided = 0;
+    uint64_t m_orderCacheCloneApplyFailArguments = 0;
+    uint64_t m_orderCacheCloneApplyFailConstants = 0;
     uint64_t m_orderCacheCloneFailOther = 0;
     uint64_t m_orderCacheCloneFailState = 0;
     uint64_t m_orderCacheCloneFailShadow = 0;
@@ -864,7 +873,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheRecipeHits = 0;
     uint64_t m_orderCacheRecipeSharedHits = 0;
     uint64_t m_orderCacheSharedHits = 0;
+    uint64_t m_orderCacheSharedSkipArguments = 0;
+    uint64_t m_orderCacheSharedSkipCallFunction = 0;
     uint64_t m_orderCacheSharedSkipCloneFail = 0;
+    uint64_t m_orderCacheSharedSkipConstants = 0;
     uint64_t m_orderCacheSharedSkipModuleMismatch = 0;
     uint64_t m_orderCacheSharedSkipNonLoose = 0;
     uint64_t m_orderCacheSharedSkipOther = 0;
@@ -873,6 +885,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheSharedSkipTriggeredInputTail = 0;
     uint64_t m_orderCacheSharedSkipTriggeredNotShareable = 0;
     uint64_t m_orderCacheSharedSkipTriggeredOther = 0;
+    uint64_t m_orderCacheSharedSkipVarMap = 0;
     uint64_t m_orderCacheSkipTriggered = 0;
     uint64_t m_orderCacheSkipTriggeredInstanceLocal = 0;
     uint64_t m_orderCacheSkipTriggeredNoArtifact = 0;
@@ -1139,6 +1152,10 @@ struct SubgraphLoweringStats final {
                          m_internalOrderAggregates.size());
         V3Stats::addStat(prefix + "internal order aggregate nodes", internalOrderAggregateNodes);
         V3Stats::addStat(prefix + "internal order aggregate refs", internalOrderAggregateRefs);
+        V3Stats::addStat(prefix + "order cache clone apply fail arguments",
+                         m_orderCacheCloneApplyFailArguments);
+        V3Stats::addStat(prefix + "order cache clone apply fail constants",
+                         m_orderCacheCloneApplyFailConstants);
         V3Stats::addStat(prefix + "order cache clone fail other", m_orderCacheCloneFailOther);
         V3Stats::addStat(prefix + "order cache clone fail state", m_orderCacheCloneFailState);
         V3Stats::addStat(prefix + "order cache clone fail shadow", m_orderCacheCloneFailShadow);
@@ -1177,8 +1194,14 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache recipe hits", m_orderCacheRecipeHits);
         V3Stats::addStat(prefix + "order cache recipe shared hits", m_orderCacheRecipeSharedHits);
         V3Stats::addStat(prefix + "order cache shared hits", m_orderCacheSharedHits);
+        V3Stats::addStat(prefix + "order cache shared skip arguments",
+                         m_orderCacheSharedSkipArguments);
+        V3Stats::addStat(prefix + "order cache shared skip call function",
+                         m_orderCacheSharedSkipCallFunction);
         V3Stats::addStat(prefix + "order cache shared skip clone fail",
                          m_orderCacheSharedSkipCloneFail);
+        V3Stats::addStat(prefix + "order cache shared skip constants",
+                         m_orderCacheSharedSkipConstants);
         V3Stats::addStat(prefix + "order cache shared skip module mismatch",
                          m_orderCacheSharedSkipModuleMismatch);
         V3Stats::addStat(prefix + "order cache shared skip non loose",
@@ -1193,6 +1216,7 @@ struct SubgraphLoweringStats final {
                          m_orderCacheSharedSkipTriggeredNotShareable);
         V3Stats::addStat(prefix + "order cache shared skip triggered other",
                          m_orderCacheSharedSkipTriggeredOther);
+        V3Stats::addStat(prefix + "order cache shared skip var map", m_orderCacheSharedSkipVarMap);
         V3Stats::addStat(prefix + "order cache skip triggered", m_orderCacheSkipTriggered);
         V3Stats::addStat(prefix + "order cache skip triggered instance local",
                          m_orderCacheSkipTriggeredInstanceLocal);
@@ -2141,6 +2165,23 @@ public:
         return true;
     }
 
+    static SubgraphSharedHelperApplyFailReason populateSharedHelperInstance(
+        SubgraphScheduleInstance& instance, const SubgraphScheduleArtifact& artifact,
+        AstScope* currentScopep,
+        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
+        const LogicByScope& currentLogic, bool requireParameterizedDifferences,
+        SubgraphLoweringStats& stats) {
+        if (!instance.m_callFuncp) return SubgraphSharedHelperApplyFailReason::CALL_FUNCTION;
+        if (!populateSharedHelperArgs(instance, artifact, currentScopep, templateVarMap, stats)) {
+            return SubgraphSharedHelperApplyFailReason::ARGUMENTS;
+        }
+        if (!populateSharedHelperConstValues(instance, artifact, currentLogic,
+                                             requireParameterizedDifferences)) {
+            return SubgraphSharedHelperApplyFailReason::CONSTANTS;
+        }
+        return SubgraphSharedHelperApplyFailReason::NONE;
+    }
+
     static bool sharedHelperCoversVarMap(
         const SubgraphScheduleArtifact& artifact,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
@@ -2808,6 +2849,21 @@ public:
         case SubgraphSharedHelperSkipReason::TRIGGERED_NOT_SHAREABLE:
             ++m_stats.m_orderCacheSharedSkipTriggered;
             ++m_stats.m_orderCacheSharedSkipTriggeredNotShareable;
+            return;
+        }
+    }
+
+    void noteOrderCacheSharedSkip(SubgraphSharedHelperApplyFailReason reason) {
+        switch (reason) {
+        case SubgraphSharedHelperApplyFailReason::NONE: return;
+        case SubgraphSharedHelperApplyFailReason::ARGUMENTS:
+            ++m_stats.m_orderCacheSharedSkipArguments;
+            return;
+        case SubgraphSharedHelperApplyFailReason::CALL_FUNCTION:
+            ++m_stats.m_orderCacheSharedSkipCallFunction;
+            return;
+        case SubgraphSharedHelperApplyFailReason::CONSTANTS:
+            ++m_stats.m_orderCacheSharedSkipConstants;
             return;
         }
     }
@@ -3579,44 +3635,47 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             if (orderCacheConstantsDiffer || orderCacheDomainsDiffer) {
                 if (cacheEntry.m_artifactp
                     && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
-                                                                 sharedContext)
-                    && SubgraphLoweringState::sharedHelperCoversVarMap(*cacheEntry.m_artifactp,
-                                                                       orderCacheTemplateVarMap)) {
-                    if (tailFuncps) {
-                        for (AstCFunc* const tailFuncp : *tailFuncps) {
-                            plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                                                                 sharedContext)) {
+                    if (!SubgraphLoweringState::sharedHelperCoversVarMap(
+                            *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
+                        ++state.m_stats.m_orderCacheSharedSkipVarMap;
+                    } else {
+                        if (tailFuncps) {
+                            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+                            }
                         }
+                        AstSenTree* sharedTriggerDomainp = nullptr;
+                        AstCFunc* const sharedFuncp = SubgraphLoweringState::sharedHelperCallFunc(
+                            *cacheEntry.m_artifactp, group.m_senTreep, sharedTriggerDomainp);
+                        plan.m_artifactp = cacheEntry.m_artifactp;
+                        plan.m_instance.m_callFuncp = sharedFuncp;
+                        plan.m_instance.m_scopep = group.m_scopep;
+                        plan.m_instance.m_sharedCall
+                            = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
+                        plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
+                        const SubgraphSharedHelperApplyFailReason applyFail
+                            = SubgraphLoweringState::populateSharedHelperInstance(
+                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                                orderCacheTemplateVarMap, subgraphLogic, true, state.m_stats);
+                        if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
+                            populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                     subgraphLogic);
+                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            plan.m_phase = phase;
+                            plan.m_wrapper = wrapper;
+                            ++state.m_stats.m_logicSigBuildsAvoided;
+                            ++state.m_stats.m_orderCacheHits;
+                            ++state.m_stats.m_orderCacheRecipeHits;
+                            ++state.m_stats.m_orderCacheRecipeSharedHits;
+                            ++state.m_stats.m_orderCacheSharedHits;
+                            ++state.m_stats.m_schedulePlans;
+                            if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+                            return plan;
+                        }
+                        state.noteOrderCacheSharedSkip(applyFail);
+                        plan = SubgraphSchedulePlan{};
                     }
-                    AstSenTree* sharedTriggerDomainp = nullptr;
-                    AstCFunc* const sharedFuncp = SubgraphLoweringState::sharedHelperCallFunc(
-                        *cacheEntry.m_artifactp, group.m_senTreep, sharedTriggerDomainp);
-                    plan.m_artifactp = cacheEntry.m_artifactp;
-                    plan.m_instance.m_callFuncp = sharedFuncp;
-                    plan.m_instance.m_scopep = group.m_scopep;
-                    plan.m_instance.m_sharedCall
-                        = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
-                    plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
-                    if (sharedFuncp
-                        && SubgraphLoweringState::populateSharedHelperArgs(
-                            plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                            orderCacheTemplateVarMap, state.m_stats)
-                        && SubgraphLoweringState::populateSharedHelperConstValues(
-                            plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, true)) {
-                        populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                                 subgraphLogic);
-                        SubgraphLoweringState::discardLogic(subgraphLogic);
-                        plan.m_phase = phase;
-                        plan.m_wrapper = wrapper;
-                        ++state.m_stats.m_logicSigBuildsAvoided;
-                        ++state.m_stats.m_orderCacheHits;
-                        ++state.m_stats.m_orderCacheRecipeHits;
-                        ++state.m_stats.m_orderCacheRecipeSharedHits;
-                        ++state.m_stats.m_orderCacheSharedHits;
-                        ++state.m_stats.m_schedulePlans;
-                        if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
-                        return plan;
-                    }
-                    plan = SubgraphSchedulePlan{};
                 }
                 if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
@@ -3631,11 +3690,14 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         plan.m_artifactp = cacheEntry.m_artifactp;
                         plan.m_instance.m_callFuncp = clonedFuncp;
                         plan.m_instance.m_scopep = group.m_scopep;
-                        if (SubgraphLoweringState::populateSharedHelperArgs(
-                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                orderCacheTemplateVarMap, state.m_stats)
-                            && SubgraphLoweringState::populateSharedHelperConstValues(
-                                plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, true)) {
+                        const bool populatedArgs = SubgraphLoweringState::populateSharedHelperArgs(
+                            plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                            orderCacheTemplateVarMap, state.m_stats);
+                        const bool populatedConstants
+                            = populatedArgs
+                              && SubgraphLoweringState::populateSharedHelperConstValues(
+                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, true);
+                        if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                             SubgraphLoweringState::discardLogic(subgraphLogic);
                             plan.m_phase = phase;
@@ -3649,7 +3711,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
                             return plan;
                         }
-                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        if (populatedArgs) {
+                            ++state.m_stats.m_orderCacheCloneApplyFailConstants;
+                        } else {
+                            ++state.m_stats.m_orderCacheCloneApplyFailArguments;
+                        }
                         plan = SubgraphSchedulePlan{};
                     } else {
                         ++state.m_stats.m_orderCacheCloneNull;
@@ -3677,12 +3743,15 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         if (sharedSkipReason == SubgraphSharedHelperSkipReason::NONE
                             && !SubgraphLoweringState::sharedHelperCoversVarMap(
                                 *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
-                            sharedSkipReason = SubgraphSharedHelperSkipReason::OTHER;
+                            ++state.m_stats.m_orderCacheSharedSkipVarMap;
+                            ++state.m_stats.m_orderCacheSkipTriggered;
+                            matchedOrderCacheEntryp = nullptr;
                         }
-                        if (sharedSkipReason != SubgraphSharedHelperSkipReason::NONE) {
+                        if (matchedOrderCacheEntryp
+                            && sharedSkipReason != SubgraphSharedHelperSkipReason::NONE) {
                             ++state.m_stats.m_orderCacheSkipTriggered;
                             state.noteOrderCacheSharedSkip(sharedSkipReason);
-                        } else {
+                        } else if (matchedOrderCacheEntryp) {
                             if (tailFuncps) {
                                 for (AstCFunc* const tailFuncp : *tailFuncps) {
                                     plan.m_instance.m_tailFuncps.push_back(tailFuncp);
@@ -3699,13 +3768,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             plan.m_instance.m_sharedCall
                                 = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
                             plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
-                            if (sharedFuncp
-                                && SubgraphLoweringState::populateSharedHelperArgs(
+                            const SubgraphSharedHelperApplyFailReason applyFail
+                                = SubgraphLoweringState::populateSharedHelperInstance(
                                     plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                    orderCacheTemplateVarMap, state.m_stats)
-                                && SubgraphLoweringState::populateSharedHelperConstValues(
-                                    plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic,
-                                    false)) {
+                                    orderCacheTemplateVarMap, subgraphLogic, false, state.m_stats);
+                            if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                                 populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                          subgraphLogic);
                                 SubgraphLoweringState::discardLogic(subgraphLogic);
@@ -3718,7 +3785,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                 if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
                                 return plan;
                             } else {
-                                ++state.m_stats.m_orderCacheSharedSkipOther;
+                                state.noteOrderCacheSharedSkip(applyFail);
                                 plan = SubgraphSchedulePlan{};
                             }
                         }
@@ -3742,12 +3809,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     plan.m_instance.m_sharedCall
                         = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
                     plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
-                    if (sharedFuncp
-                        && SubgraphLoweringState::populateSharedHelperArgs(
+                    const SubgraphSharedHelperApplyFailReason applyFail
+                        = SubgraphLoweringState::populateSharedHelperInstance(
                             plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                            orderCacheTemplateVarMap, state.m_stats)
-                        && SubgraphLoweringState::populateSharedHelperConstValues(
-                            plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false)) {
+                            orderCacheTemplateVarMap, subgraphLogic, false, state.m_stats);
+                    if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                         populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                  subgraphLogic);
                         SubgraphLoweringState::discardLogic(subgraphLogic);
@@ -3760,10 +3826,16 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
                         return plan;
                     } else {
-                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        state.noteOrderCacheSharedSkip(applyFail);
                         plan = SubgraphSchedulePlan{};
                     }
                 } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
+                    if (SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
+                                                                  sharedContext)
+                        && !SubgraphLoweringState::sharedHelperCoversVarMap(
+                            *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
+                        ++state.m_stats.m_orderCacheSharedSkipVarMap;
+                    }
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap, {},
                         state.m_stats);
@@ -3776,11 +3848,14 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         plan.m_artifactp = cacheEntry.m_artifactp;
                         plan.m_instance.m_callFuncp = clonedFuncp;
                         plan.m_instance.m_scopep = group.m_scopep;
-                        if (SubgraphLoweringState::populateSharedHelperArgs(
-                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                orderCacheTemplateVarMap, state.m_stats)
-                            && SubgraphLoweringState::populateSharedHelperConstValues(
-                                plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false)) {
+                        const bool populatedArgs = SubgraphLoweringState::populateSharedHelperArgs(
+                            plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                            orderCacheTemplateVarMap, state.m_stats);
+                        const bool populatedConstants
+                            = populatedArgs
+                              && SubgraphLoweringState::populateSharedHelperConstValues(
+                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false);
+                        if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                             SubgraphLoweringState::discardLogic(subgraphLogic);
                             plan.m_phase = phase;
@@ -3792,7 +3867,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
                             return plan;
                         }
-                        ++state.m_stats.m_orderCacheSharedSkipOther;
+                        if (populatedArgs) {
+                            ++state.m_stats.m_orderCacheCloneApplyFailConstants;
+                        } else {
+                            ++state.m_stats.m_orderCacheCloneApplyFailArguments;
+                        }
                         plan = SubgraphSchedulePlan{};
                     } else {
                         ++state.m_stats.m_orderCacheCloneNull;
