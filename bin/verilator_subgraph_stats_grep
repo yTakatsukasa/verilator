@@ -96,7 +96,10 @@ grep_stats "Parent order graph size" \
     'Scheduling, Order (act|nba|ico|stl)( built| ordered| domains| move built)?, (edges|edges hard|edges soft|vertices|vertices logic|vertices logic subgraph|vertices var|vertices var phase|vertices var pord|vertices var post|vertices var pre|vertices var std)'
 
 grep_stats "Subgraph lowering time" \
-    'Scheduling, Subgraph [^,]+, time (total|lower groups|build plans|internal order|lookup artifacts|prepare snapshots|materialize|emit snapshots|collect groups|collect input stats|collect region written vars|internal order top [0-9]+ .*) sec'
+    'Scheduling, Subgraph [^,]+, time (total|lower groups|build plans|build logic shape|build logic signature|compute domain shape|internal order|lookup artifacts|prepare snapshots|materialize|emit snapshots|collect groups|collect input stats|collect region written vars|template map|internal order top [0-9]+ .*) sec'
+
+grep_stats "Subgraph internal order aggregates" \
+    'Scheduling, Subgraph [^,]+, internal order aggregate (calls|constants|groups|nodes|refs|top [0-9]+ .*)'
 
 grep_stats "Subgraph input hiding" \
     'Scheduling, Subgraph [^,]+, input (nodes|parent visible nodes|parent visible reduction|hidden body nodes|direct statements|direct subgraph instances|direct snapshot instances|subgraph instances|subgraph instance body nodes|snapshot procedure body nodes|snapshot instance body nodes) (before|after|reduced|permille)'
@@ -111,10 +114,13 @@ grep_stats "Template mapping failures" \
     'Scheduling, Subgraph [^,]+, (artifact reuse|order cache) template map fail'
 
 grep_stats "Order cache" \
-    'Scheduling, Subgraph [^,]+, order cache (lookups|entries|entry hits|hits|shared hits|misses|hit permille|skip triggered|shared skip|clone null|clone fail|clone generated var remap)'
+    'Scheduling, Subgraph [^,]+, order cache (lookups|entries|entry hits|hits|shared hits|misses|miss no entry|hit permille|recipe|variant|skip triggered|shared skip|clone apply fail|clone null|clone fail|clone generated var remap)'
 
 grep_stats "Order cache clone diagnostics" \
     'Scheduling, Subgraph [^,]+, (ordered function clones|order cache clone (null|fail name|fail (other|state|shadow|temp|vlem)|generated var remap))'
+
+grep_stats "Shared helper parameterization" \
+    'Scheduling, Subgraph [^,]+, shared helper (constant args|external args|hidden uses|instance local args|parameterization fails|parameterizations|parameterized funcs)'
 
 grep_stats "Triggered shareability" \
     'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'
