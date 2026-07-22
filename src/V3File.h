@@ -208,6 +208,7 @@ public:
     ~V3OutFile() override;
 
     std::string filename() const { return m_filename; }
+    std::size_t writtenBytes() const { return m_writtenBytes + m_usedBytes; }
 
     void putsForceIncs();
 
@@ -256,7 +257,10 @@ public:
         : V3OutFile{filename, lang} {
         resetPrivate();
     }
-    ~V3OutCFile() override { statRecordWritten(); }
+    ~V3OutCFile() override {
+        statRecordWritten();
+        V3Stats::addStatMax(V3Stats::STAT_CPP_MAX_FILE_BYTES, writtenBytes());
+    }
     virtual void putsHeader() { puts("// Verilated -*- C++ -*-\n"); }
     virtual void putsIntTopInclude() { putsForceIncs(); }
     virtual void putsGuard();

@@ -22,6 +22,8 @@
 
 #include "V3Error.h"
 
+#include <algorithm>
+
 class AstNetlist;
 
 //============================================================================
@@ -67,6 +69,7 @@ public:
 
 class V3Statistic final {
     // A statistical entry we want published into the database
+    const bool m_maxit;  ///< Take maximum of similar stats
     const string m_name;  ///< Name of this statistic
     double m_value;  ///< Value of statistic (count, ratio, etc.)
     unsigned m_precision;  ///< Precision to print with (number of fractional digits)
@@ -80,18 +83,24 @@ public:
     string name() const VL_MT_SAFE { return m_name; }
     double value() const VL_MT_SAFE { return m_value; }
     unsigned precision() const VL_MT_SAFE { return m_precision; }
+    bool maxit() const VL_MT_SAFE { return m_maxit; }
     bool sumit() const VL_MT_SAFE { return m_sumit; }
     bool perf() const VL_MT_SAFE { return m_perf; }
     bool printit() const VL_MT_SAFE { return m_printit; }
     virtual void dump(std::ofstream& os) const VL_MT_SAFE;
     void combineWith(V3Statistic* otherp) {
-        m_value += otherp->value();
+        if (m_maxit) {
+            m_value = std::max(m_value, otherp->value());
+        } else {
+            m_value += otherp->value();
+        }
         otherp->m_printit = false;
     }
     // CONSTRUCTORS
     V3Statistic(const string& stage, const string& name, double value, unsigned precision,
-                bool sumit, bool perf)
-        : m_name{name}
+                bool maxit, bool sumit, bool perf)
+        : m_maxit{maxit}
+        , m_name{name}
         , m_value{value}
         , m_precision{precision}
         , m_stage{stage}
@@ -109,6 +118,8 @@ public:
     // Symbolic names for some statistics that are later read by summaryReport()
     static constexpr const char* STAT_CPP_CHARS = "Output, C++ bytes written";
     static constexpr const char* STAT_CPP_FILES = "Output, C++ files written";
+    static constexpr const char* STAT_CPP_MAX_FILE_BYTES = "Output, C++ max file bytes";
+    static constexpr const char* STAT_CPP_MAX_FUNCTION_BYTES = "Output, C++ max function bytes";
     static constexpr const char* STAT_CPUTIME = "CPU time, Total (sec)";
     static constexpr const char* STAT_MODEL_SIZE = "Size prediction, Model total (bytes)";
     static constexpr const char* STAT_SOURCE_CHARS = "Input, Verilog bytes read";
@@ -121,10 +132,15 @@ public:
     static void addStat(const V3Statistic&);
     static void addStat(const string& stage, const string& name, double value,
                         unsigned precision = 0) {
-        addStat(V3Statistic{stage, name, value, precision, false, false});
+        addStat(V3Statistic{stage, name, value, precision, false, false, false});
     }
     static void addStat(const string& name, double value, unsigned precision = 0) {
-        addStat(V3Statistic{"*", name, value, precision, false, false});
+        addStat(V3Statistic{"*", name, value, precision, false, false, false});
+    }
+    // Add maximum statistic - Threadsafe _unlike most other functions here_
+    static void addStatMax(const char* name, double value) VL_MT_SAFE_EXCLUDES(s_mutex) {
+        const V3LockGuard lock{s_mutex};
+        addStat(V3Statistic{"*", name, value, 0, true, false, false});
     }
     // Add summary statistic - Threadsafe _unlike most other functions here_
     static void addStatSum(const char* name, double count) VL_MT_SAFE_EXCLUDES(s_mutex) {
@@ -132,13 +148,13 @@ public:
         // e.g. from V3Const invoked on individual expressions.
         if (count == 0.0) return;
         const V3LockGuard lock{s_mutex};
-        addStat(V3Statistic{"*", name, count, 0, true, false});
+        addStat(V3Statistic{"*", name, count, 0, false, true, false});
     }
     static void addStatSum(const std::string& name, double count) {
         addStatSum(name.c_str(), count);
     }
     static void addStatPerf(const string& name, double value) {
-        addStat(V3Statistic{"*", name, value, 6, true, true});
+        addStat(V3Statistic{"*", name, value, 6, false, true, true});
     }
     /// Return value of statistic, or zero if not found
     static double getStatSum(const string& name);

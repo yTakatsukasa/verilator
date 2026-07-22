@@ -50,7 +50,7 @@ class StatsReport final {
         V3Statistic* lastp = nullptr;
         for (const auto& itr : byName) {
             V3Statistic* repp = itr.second;
-            if (lastp && lastp->sumit() && lastp->printit() && repp->printit()
+            if (lastp && (lastp->maxit() || lastp->sumit()) && lastp->printit() && repp->printit()
                 && lastp->name() == repp->name() && lastp->stage() == repp->stage()) {
                 lastp->combineWith(repp);
             } else {

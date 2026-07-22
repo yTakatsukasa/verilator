@@ -896,10 +896,13 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheVariantMax = 0;
     uint64_t m_orderedFuncClones = 0;
     uint64_t m_schedulePlans = 0;
+    uint64_t m_sharedHelperCallArgs = 0;
+    uint64_t m_sharedHelperCallArgsMax = 0;
     uint64_t m_sharedHelperConstantArgs = 0;
     uint64_t m_sharedHelperExternalArgs = 0;
     uint64_t m_sharedHelperFormalArgsAfter = 0;
     uint64_t m_sharedHelperFormalArgsBefore = 0;
+    uint64_t m_sharedHelperFormalArgsMax = 0;
     uint64_t m_sharedHelperHiddenUses = 0;
     uint64_t m_sharedHelperImplicitContextVars = 0;
     uint64_t m_sharedHelperInstanceLocalArgs = 0;
@@ -1231,12 +1234,15 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache variant max", m_orderCacheVariantMax);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
         V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
+        V3Stats::addStat(prefix + "shared helper call args", m_sharedHelperCallArgs);
+        V3Stats::addStat(prefix + "shared helper call args max", m_sharedHelperCallArgsMax);
         V3Stats::addStat(prefix + "shared helper constant args", m_sharedHelperConstantArgs);
         V3Stats::addStat(prefix + "shared helper external args", m_sharedHelperExternalArgs);
         V3Stats::addStat(prefix + "shared helper formal args after",
                          m_sharedHelperFormalArgsAfter);
         V3Stats::addStat(prefix + "shared helper formal args before",
                          m_sharedHelperFormalArgsBefore);
+        V3Stats::addStat(prefix + "shared helper formal args max", m_sharedHelperFormalArgsMax);
         V3Stats::addStat(prefix + "shared helper hidden uses", m_sharedHelperHiddenUses);
         V3Stats::addStat(prefix + "shared helper implicit context vars",
                          m_sharedHelperImplicitContextVars);
@@ -2028,11 +2034,15 @@ public:
         for (AstCFunc* const scanFuncp : funcs) {
             std::vector<AstVarScope*>& args = argsByFunc[scanFuncp];
             args.resize(helperArgs.size());
+            uint64_t formalArgs = 0;
             for (size_t i = 0; i < helperArgs.size(); ++i) {
                 if (!requiredArgsByFunc[scanFuncp].count(i)) continue;
                 args[i] = newSharedHelperArg(scanFuncp, helperArgs[i], i);
+                ++formalArgs;
                 ++stats.m_sharedHelperFormalArgsAfter;
             }
+            stats.m_sharedHelperFormalArgsMax
+                = std::max(stats.m_sharedHelperFormalArgsMax, formalArgs);
         }
         for (AstCFunc* const scanFuncp : funcs) {
             const std::vector<AstVarScope*>& args = argsByFunc.at(scanFuncp);
@@ -2048,12 +2058,17 @@ public:
             scanFuncp->foreach([&](AstCCall* callp) {
                 AstCFunc* const calledFuncp = callp->funcp();
                 if (!seenFuncs.count(calledFuncp)) return;
+                uint64_t callArgs = 0;
                 for (size_t i = 0; i < helperArgs.size(); ++i) {
                     if (!requiredArgsByFunc[calledFuncp].count(i)) continue;
                     UASSERT_OBJ(args[i], callp, "Missing caller shared helper argument");
                     callp->addArgsp(new AstVarRef{callp->fileline(), args[i],
                                                   sharedHelperArgAccess(helperArgs[i])});
+                    ++callArgs;
                 }
+                stats.m_sharedHelperCallArgs += callArgs;
+                stats.m_sharedHelperCallArgsMax
+                    = std::max(stats.m_sharedHelperCallArgsMax, callArgs);
             });
         }
         stats.m_sharedHelperExternalArgs += helperArgs.size() - instanceLocalArgs.size();
@@ -4018,6 +4033,10 @@ AstSubgraphInstance* materializeSubgraphSchedulePlan(
         callp->addArgsp(new AstVarRef{callp->fileline(), arg.m_vscp,
                                       SubgraphLoweringState::sharedHelperArgAccess(arg)});
     }
+    state.m_stats.m_sharedHelperCallArgs += instance.m_helperArgs.size();
+    state.m_stats.m_sharedHelperCallArgsMax
+        = std::max(state.m_stats.m_sharedHelperCallArgsMax,
+                   static_cast<uint64_t>(instance.m_helperArgs.size()));
     callp->dtypeSetVoid();
     AstNodeStmt* stmtsp = callp->makeStmt();
     if (instance.m_triggerDomainp) {

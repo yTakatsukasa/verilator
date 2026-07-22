@@ -117,6 +117,7 @@ public:
 
 class EmitCFunc VL_NOT_FINAL : public EmitCConstInit {
     VMemberMap m_memberMap;
+    std::size_t m_maxEmittedFunctionBytes = 0;
     AstVarRef* m_wideTempRefp = nullptr;  // Variable that _WW macros should be setting
     std::unordered_map<AstJumpBlock*, size_t> m_labelNumbers;  // Label numbers for AstJumpBlocks
     bool m_createdScopeHash = false;  // Already created a scope hash
@@ -412,6 +413,7 @@ public:
 
         puts("\n");
         m_lazyDecls.emit(nodep);
+        const std::size_t functionStartBytes = ofp()->writtenBytes();
         if (nodep->ifdef() != "") putns(nodep, "#ifdef " + nodep->ifdef() + "\n");
         emitCFuncHeader(nodep, m_modp, /* withScope: */ true);
 
@@ -501,6 +503,8 @@ public:
 
         puts("}\n");
         if (nodep->ifdef() != "") puts("#endif  // " + nodep->ifdef() + "\n");
+        m_maxEmittedFunctionBytes
+            = std::max(m_maxEmittedFunctionBytes, ofp()->writtenBytes() - functionStartBytes);
     }
 
     void visit(AstVar* nodep) override {
@@ -1929,7 +1933,9 @@ public:
 
 protected:
     EmitCFunc() = default;
-    ~EmitCFunc() override = default;
+    ~EmitCFunc() override {
+        V3Stats::addStatMax(V3Stats::STAT_CPP_MAX_FUNCTION_BYTES, m_maxEmittedFunctionBytes);
+    }
 };
 
 #endif  // guard
