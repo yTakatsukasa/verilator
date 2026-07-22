@@ -3696,7 +3696,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         const bool populatedConstants
                             = populatedArgs
                               && SubgraphLoweringState::populateSharedHelperConstValues(
-                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, true);
+                                  plan.m_instance, *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                             SubgraphLoweringState::discardLogic(subgraphLogic);

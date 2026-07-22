@@ -58,17 +58,17 @@ module sg_dual_recipe (
   output logic [14:0] y_c
 ); `SUBGRAPH_BOUNDARY
 
-  logic [14:0] q_a = 15'h1234;
-  logic [14:0] q_b = 15'h5678;
-  logic [14:0] q_c = 15'h6abc;
+  logic [44:0] q_a = 45'h1234_5678_6abc;
+  logic [44:0] q_b = 45'h5678_6abc_1234;
+  logic [44:0] q_c = 45'h6abc_1234_5678;
 
-  assign y_a = q_a;
-  assign y_b = q_b;
-  assign y_c = q_c;
+  assign y_a = q_a[14:0];
+  assign y_b = q_b[14:0];
+  assign y_c = q_c[14:0];
 
-  always_ff @(posedge clk_a) q_a <= {q_a[13:0], q_a[14]} + 15'h1021;
-  always_ff @(posedge clk_b) q_b <= {q_b[13:0], q_b[14]} + 15'h2043;
-  always_ff @(posedge clk_c) q_c <= {q_c[13:0], q_c[14]} + 15'h1021;
+  always_ff @(posedge clk_a) q_a <= {q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]};
+  always_ff @(posedge clk_b) q_b <= {q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]};
+  always_ff @(posedge clk_c) q_c <= {q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]};
 
 endmodule
 
@@ -81,16 +81,16 @@ module sg_dual_recipe_ref (
   output logic [14:0] y_c
 );
 
-  logic [14:0] q_a = 15'h1234;
-  logic [14:0] q_b = 15'h5678;
-  logic [14:0] q_c = 15'h6abc;
+  logic [44:0] q_a = 45'h1234_5678_6abc;
+  logic [44:0] q_b = 45'h5678_6abc_1234;
+  logic [44:0] q_c = 45'h6abc_1234_5678;
 
-  assign y_a = q_a;
-  assign y_b = q_b;
-  assign y_c = q_c;
+  assign y_a = q_a[14:0];
+  assign y_b = q_b[14:0];
+  assign y_c = q_c[14:0];
 
-  always_ff @(posedge clk_a) q_a <= {q_a[13:0], q_a[14]} + 15'h1021;
-  always_ff @(posedge clk_b) q_b <= {q_b[13:0], q_b[14]} + 15'h2043;
-  always_ff @(posedge clk_c) q_c <= {q_c[13:0], q_c[14]} + 15'h1021;
+  always_ff @(posedge clk_a) q_a <= {q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]};
+  always_ff @(posedge clk_b) q_b <= {q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]};
+  always_ff @(posedge clk_c) q_c <= {q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]};
 
 endmodule
