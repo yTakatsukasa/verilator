@@ -33,8 +33,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe consta
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe hits\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip arguments\s+(\d+)",
                0)
 test.file_grep(test.stats,
