@@ -139,12 +139,8 @@ public:
         return stmtsp;
     }
 
-    // Emit one logic vertex
-    void emitLogic(const OrderLogicVertex* lVtxp) {
-        // Sensitivity domain of logic we are emitting
-        AstSenTree* const domainp = lVtxp->domainp();
-        // We are move the logic into a CFunc
-        AstNode* const logicp = lVtxp->nodep();
+    // Emit one logic node.
+    void emitLogic(AstNode* logicp, AstScope* scopep, AstSenTree* domainp) {
         // If the logic is a procedure, we need to do a few special things
         AstActive* const activep = VN_CAST(logicp, Active);
         AstNodeProcedure* const procp = VN_CAST(logicp, NodeProcedure);
@@ -182,7 +178,6 @@ public:
             if (!m_funcp) {
                 UASSERT_OBJ(!m_size, currp, "Should have used forceNewFunction");
                 FileLine* const flp = currp->fileline();
-                AstScope* const scopep = lVtxp->scopep();
                 AstNodeModule* const modp = scopep->modp();
                 const std::string name = cfuncName(flp, scopep, modp, domainp);
                 m_funcp = new AstCFunc{flp, name, scopep, suspendable ? "VlCoroutine" : ""};
@@ -201,6 +196,11 @@ public:
         }
         // Put suspendable processes into individual functions on their own
         if (suspendable) forceNewFunction();
+    }
+
+    // Emit one logic vertex.
+    void emitLogic(const OrderLogicVertex* lVtxp) {
+        emitLogic(lVtxp->nodep(), lVtxp->scopep(), lVtxp->domainp());
     }
 };
 

@@ -30,7 +30,11 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 //######################################################################
 // OrderSerial class
 
-AstNodeStmt* V3Order::createSerial(OrderMoveGraph& moveGraph, const std::string& tag, bool slow) {
+AstNodeStmt*
+V3Order::createSerial(OrderMoveGraph& moveGraph, const std::string& tag, bool slow,
+                      const std::unordered_map<const AstNode*, size_t>* logicIndexp,
+                      const std::unordered_map<const AstNode*, AstSenTree*>* sourceDomainp,
+                      OrderRecipe* recipep) {
 
     UINFO(2, "  Constructing serial code for '" + tag + "'");
 
@@ -50,8 +54,19 @@ AstNodeStmt* V3Order::createSerial(OrderMoveGraph& moveGraph, const std::string&
         if (OrderLogicVertex* const logicp = mVtxp->logicp()) {
             // Force a new function if the domain or scope changed, for better combining.
             OrderMoveDomScope* const domScopep = &mVtxp->domScope();
-            if (domScopep != prevDomScopep) emitter.forceNewFunction();
+            const bool forceNewFunction = domScopep != prevDomScopep;
+            if (forceNewFunction) emitter.forceNewFunction();
             prevDomScopep = domScopep;
+            if (recipep) {
+                const auto indexIt = logicIndexp->find(logicp->nodep());
+                const auto domainIt = sourceDomainp->find(logicp->nodep());
+                UASSERT_OBJ(indexIt != logicIndexp->end(), logicp->nodep(),
+                            "Missing ordered logic recipe index");
+                UASSERT_OBJ(domainIt != sourceDomainp->end(), logicp->nodep(),
+                            "Missing ordered logic source domain");
+                recipep->m_entries.push_back(OrderRecipeEntry{indexIt->second, forceNewFunction});
+                if (domainIt->second != logicp->domainp()) recipep->m_replayable = false;
+            }
             // Emit the logic under this vertex
             emitter.emitLogic(logicp);
         }
@@ -66,5 +81,40 @@ AstNodeStmt* V3Order::createSerial(OrderMoveGraph& moveGraph, const std::string&
         }
     }
 
+    return emitter.getStmts();
+}
+
+AstNodeStmt* V3Order::replaySerial(const std::vector<V3Sched::LogicByScope*>& logic,
+                                   const OrderRecipe& recipe, const std::string& tag, bool slow) {
+    struct ReplayLogic final {
+        AstNode* m_logicp = nullptr;
+        AstScope* m_scopep = nullptr;
+        AstSenTree* m_domainp = nullptr;
+    };
+
+    std::vector<ReplayLogic> replayLogic;
+    replayLogic.reserve(recipe.m_logicCount);
+    for (const V3Sched::LogicByScope* const lbsp : logic) {
+        for (const auto& pair : *lbsp) {
+            for (AstNode* nodep = pair.second->stmtsp(); nodep; nodep = nodep->nextp()) {
+                replayLogic.push_back(ReplayLogic{nodep, pair.first, pair.second->sentreep()});
+            }
+        }
+    }
+    if (replayLogic.size() != recipe.m_logicCount
+        || recipe.m_entries.size() != recipe.m_logicCount) {
+        return nullptr;
+    }
+
+    std::vector<bool> emitted(recipe.m_logicCount, false);
+    V3OrderCFuncEmitter emitter{tag, slow};
+    for (const OrderRecipeEntry& entry : recipe.m_entries) {
+        if (entry.m_logicIndex >= replayLogic.size() || emitted[entry.m_logicIndex])
+            return nullptr;
+        emitted[entry.m_logicIndex] = true;
+        if (entry.m_forceNewFunction) emitter.forceNewFunction();
+        const ReplayLogic& item = replayLogic[entry.m_logicIndex];
+        emitter.emitLogic(item.m_logicp, item.m_scopep, item.m_domainp);
+    }
     return emitter.getStmts();
 }

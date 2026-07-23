@@ -53,6 +53,15 @@ void processDomains(AstNetlist* netlistp,  //
 
 AstNodeStmt* createSerial(OrderMoveGraph& moveGraph,  //
                           const std::string& tag,  //
+                          bool slow,  //
+                          const std::unordered_map<const AstNode*, size_t>* logicIndexp = nullptr,
+                          const std::unordered_map<const AstNode*, AstSenTree*>* sourceDomainp
+                          = nullptr,
+                          OrderRecipe* recipep = nullptr);
+
+AstNodeStmt* replaySerial(const std::vector<V3Sched::LogicByScope*>& logic,  //
+                          const OrderRecipe& recipe,  //
+                          const std::string& tag,  //
                           bool slow);
 
 AstNodeStmt* createParallel(const OrderGraph& orderGraph,  //

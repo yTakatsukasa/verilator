@@ -21,11 +21,13 @@
 #include "verilatedos.h"
 
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
 class AstCFunc;
 class AstNetlist;
+class AstNode;
 class AstScope;
 class AstSenItem;
 class AstSenTree;
@@ -44,6 +46,17 @@ using ExternalDomainsProvider = std::function<void(const AstVarScope*, std::vect
 // Map from Trigger Sensitivity tree to original Sensitivity tree
 using TrigToSenMap = std::unordered_map<const AstSenTree*, const AstSenTree*>;
 
+struct OrderRecipeEntry final {
+    size_t m_logicIndex = 0;
+    bool m_forceNewFunction = false;
+};
+
+struct OrderRecipe final {
+    std::vector<OrderRecipeEntry> m_entries;
+    size_t m_logicCount = 0;
+    bool m_replayable = true;
+};
+
 AstCFunc* order(AstNetlist* netlistp,  //
                 const std::vector<V3Sched::LogicByScope*>& logic,  //
                 const TrigToSenMap& trigToSen,  //
@@ -51,7 +64,15 @@ AstCFunc* order(AstNetlist* netlistp,  //
                 bool parallel,  //
                 bool slow,  //
                 const ExternalDomainsProvider& externalDomains,  //
-                AstScope* resultScopep = nullptr) VL_MT_DISABLED;
+                AstScope* resultScopep = nullptr,
+                std::shared_ptr<const OrderRecipe>* recipepp = nullptr) VL_MT_DISABLED;
+
+AstCFunc* replay(AstNetlist* netlistp,  //
+                 const std::vector<V3Sched::LogicByScope*>& logic,  //
+                 const OrderRecipe& recipe,  //
+                 const string& tag,  //
+                 bool slow,  //
+                 AstScope* resultScopep = nullptr) VL_MT_DISABLED;
 
 void selfTestParallel();
 

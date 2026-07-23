@@ -331,6 +331,7 @@ struct SubgraphOrderCacheEntry final {
     std::vector<uintptr_t> m_exactDomainShape;
     AstCFunc* m_funcp = nullptr;
     SubgraphLogicSig m_logicSig;
+    std::shared_ptr<const V3Order::OrderRecipe> m_recipep;
     bool m_cloneable = true;
     bool m_triggeredShareable = false;
     bool m_triggeredWritesDelayedShadow = false;
@@ -870,6 +871,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheRecipeClones = 0;
     uint64_t m_orderCacheRecipeConstantRemaps = 0;
     uint64_t m_orderCacheRecipeHits = 0;
+    uint64_t m_orderCacheRecipeReplays = 0;
     uint64_t m_orderCacheRecipeSharedHits = 0;
     uint64_t m_orderCacheSharedHits = 0;
     uint64_t m_orderCacheSharedSkipArguments = 0;
@@ -1197,6 +1199,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache recipe constant remaps",
                          m_orderCacheRecipeConstantRemaps);
         V3Stats::addStat(prefix + "order cache recipe hits", m_orderCacheRecipeHits);
+        V3Stats::addStat(prefix + "order cache recipe replays", m_orderCacheRecipeReplays);
         V3Stats::addStat(prefix + "order cache recipe shared hits", m_orderCacheRecipeSharedHits);
         V3Stats::addStat(prefix + "order cache shared hits", m_orderCacheSharedHits);
         V3Stats::addStat(prefix + "order cache shared skip arguments",
@@ -3655,6 +3658,31 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     std::unordered_map<const AstVarScope*, AstVarScope*> orderCacheTemplateVarMap;
     bool orderCacheConstantsDiffer = false;
     bool orderCacheDomainsDiffer = false;
+    const auto replayCachedOrder = [&](const SubgraphOrderCacheEntry& cacheEntry) {
+        if (!cacheEntry.m_recipep || !cacheEntry.m_artifactp) return false;
+        const std::string replayTag = tag + "_subgraph_recipe_" + cvtToStr(subgraphIndex++);
+        AstCFunc* const replayedFuncp = V3Order::replay(
+            netlistp, {&subgraphLogic}, *cacheEntry.m_recipep, replayTag, slow, group.m_scopep);
+        if (!replayedFuncp) return false;
+        if (tailFuncps) {
+            for (AstCFunc* const tailFuncp : *tailFuncps) {
+                plan.m_instance.m_tailFuncps.push_back(tailFuncp);
+            }
+        }
+        plan.m_artifactp = cacheEntry.m_artifactp;
+        plan.m_instance.m_callFuncp = replayedFuncp;
+        plan.m_instance.m_scopep = group.m_scopep;
+        populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+        plan.m_phase = phase;
+        plan.m_wrapper = wrapper;
+        ++state.m_stats.m_logicSigBuildsAvoided;
+        ++state.m_stats.m_orderCacheHits;
+        ++state.m_stats.m_orderCacheRecipeHits;
+        ++state.m_stats.m_orderCacheRecipeReplays;
+        ++state.m_stats.m_schedulePlans;
+        if (tailFuncps) ++state.m_stats.m_artifactTailReuses;
+        return true;
+    };
     if (canShare) {
         ensureLogicShape();
         ++state.m_stats.m_orderCacheLookups;
@@ -3731,6 +3759,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         plan = SubgraphSchedulePlan{};
                     }
                 }
+                if (replayCachedOrder(cacheEntry)) return plan;
                 if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
@@ -3882,6 +3911,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     } else {
                         state.noteOrderCacheSharedSkip(applyFail);
                         plan = SubgraphSchedulePlan{};
+                        if (replayCachedOrder(cacheEntry)) return plan;
                     }
                 } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     if (SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
@@ -3890,6 +3920,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
                         ++state.m_stats.m_orderCacheSharedSkipVarMap;
                     }
+                    if (replayCachedOrder(cacheEntry)) return plan;
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap, {},
                         state.m_stats);
@@ -3944,8 +3975,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         }
         const std::string orderTag = tag + "_subgraph_" + cvtToStr(subgraphIndex++);
         const uint64_t orderStartUsecs = statStartUsecs();
+        std::shared_ptr<const V3Order::OrderRecipe> orderRecipep;
         funcp = V3Order::order(netlistp, {&subgraphLogic}, trigToSen, orderTag, false, slow,
-                               externalDomains, group.m_scopep);
+                               externalDomains, group.m_scopep, &orderRecipep);
         const uint64_t orderUsecs = orderStartUsecs ? V3Os::timeUsecs() - orderStartUsecs : 0;
         state.m_stats.m_timeInternalOrderUsecs += orderUsecs;
         state.m_stats.noteInternalOrder(orderTag, orderUsecs, cacheKey.m_modp, phase, wrapper,
@@ -3977,8 +4009,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     = state.m_subgraphOrderCache[cacheKey];
                 if (entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
                 entries.push_back(SubgraphOrderCacheEntry{
-                    nullptr, domainShapes.m_exact, funcp, logicSig, triggeredCloneable,
-                    triggeredShareable, triggeredInfo.m_writesDelayedShadow,
+                    nullptr, domainShapes.m_exact, funcp, logicSig, orderRecipep,
+                    triggeredCloneable, triggeredShareable, triggeredInfo.m_writesDelayedShadow,
                     triggeredInfo.m_writesInstanceLocal, triggeredInfo.m_writesLocalTemp,
                     triggeredInfo.m_writesNonLocal, triggeredInfo.m_writesTriggerTemp,
                     triggeredInfo.m_writesVlemTemp});

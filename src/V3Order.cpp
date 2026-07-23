@@ -113,6 +113,30 @@ void addElapsedStat(const string& prefix, const string& name, uint64_t startUsec
     V3Stats::addStat(prefix + "time " + name + " sec", elapsedUsecs / 1.0e6, 6);
 }
 
+AstCFunc* makeResultFunction(AstNetlist* netlistp, AstNodeStmt* stmtsp, const string& tag,
+                             bool slow, AstScope* resultScopep) {
+    if (!stmtsp) return nullptr;
+    FileLine* const flp = netlistp->fileline();
+    AstScope* const scopep = resultScopep ? resultScopep : netlistp->topScopep()->scopep();
+    AstCFunc* const funcp = new AstCFunc{flp, "_eval_" + tag, scopep, ""};
+    funcp->dontCombine(true);
+    funcp->isStatic(false);
+    funcp->isLoose(true);
+    funcp->slow(slow);
+    funcp->isConst(false);
+    funcp->declPrivate(true);
+    scopep->addBlocksp(funcp);
+
+    if (v3Global.opt.profExec()) {
+        funcp->addStmtsp(AstCStmt::profExecSectionPush(flp, "func " + tag));
+    }
+    funcp->addStmtsp(stmtsp);
+    if (v3Global.opt.profExec()) {
+        funcp->addStmtsp(AstCStmt::profExecSectionPop(flp, "func " + tag));
+    }
+    return funcp;
+}
+
 struct OrderGraphStats final {
     uint64_t m_edges = 0;
     uint64_t m_hardEdges = 0;
@@ -275,7 +299,24 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
                          bool parallel,  //
                          bool slow,  //
                          const ExternalDomainsProvider& externalDomains,  //
-                         AstScope* resultScopep) {
+                         AstScope* resultScopep,
+                         std::shared_ptr<const V3Order::OrderRecipe>* recipepp) {
+    std::shared_ptr<OrderRecipe> recipep;
+    std::unordered_map<const AstNode*, size_t> logicIndex;
+    std::unordered_map<const AstNode*, AstSenTree*> sourceDomain;
+    if (recipepp && !parallel) {
+        recipep = std::make_shared<OrderRecipe>();
+        for (const V3Sched::LogicByScope* const lbsp : logic) {
+            for (const auto& pair : *lbsp) {
+                for (AstNode* nodep = pair.second->stmtsp(); nodep; nodep = nodep->nextp()) {
+                    const size_t index = logicIndex.size();
+                    logicIndex.emplace(nodep, index);
+                    sourceDomain.emplace(nodep, pair.second->sentreep());
+                }
+            }
+        }
+        recipep->m_logicCount = logicIndex.size();
+    }
     // Build the OrderGraph
     const string statPrefix = "Scheduling, Order " + tag + ", ";
     uint64_t startUsecs = statStartUsecs();
@@ -308,7 +349,8 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
             stmtsp = createParallel(*graph, *moveGraphp, tag, slow);
         } else {
             startUsecs = statStartUsecs();
-            stmtsp = createSerial(*moveGraphp, tag, slow);
+            stmtsp = createSerial(*moveGraphp, tag, slow, recipep ? &logicIndex : nullptr,
+                                  recipep ? &sourceDomain : nullptr, recipep.get());
         }
         addElapsedStat(statPrefix, parallel ? "create parallel" : "create serial", startUsecs);
         // Should have consumed all vertices
@@ -322,33 +364,23 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
     // Dispose of the remnants of the inputs
     for (auto* const lbsp : logic) lbsp->deleteActives();
 
-    // If there is no resulting logic, then don't create an empty function
+    if (recipepp) {
+        if (stmtsp && recipep && recipep->m_replayable
+            && recipep->m_entries.size() == recipep->m_logicCount) {
+            *recipepp = recipep;
+        } else {
+            recipepp->reset();
+        }
+    }
+    return makeResultFunction(netlistp, stmtsp, tag, slow, resultScopep);
+}
+
+AstCFunc* V3Order::replay(AstNetlist* netlistp, const std::vector<V3Sched::LogicByScope*>& logic,
+                          const V3Order::OrderRecipe& recipe, const string& tag, bool slow,
+                          AstScope* resultScopep) {
+    if (!recipe.m_replayable) return nullptr;
+    AstNodeStmt* const stmtsp = replaySerial(logic, recipe, tag, slow);
     if (!stmtsp) return nullptr;
-
-    // Create the result function
-    FileLine* const flp = netlistp->fileline();
-    AstCFunc* const funcp = [&]() {
-        AstScope* const scopep = resultScopep ? resultScopep : netlistp->topScopep()->scopep();
-        AstCFunc* const resp = new AstCFunc{flp, "_eval_" + tag, scopep, ""};
-        resp->dontCombine(true);
-        resp->isStatic(false);
-        resp->isLoose(true);
-        resp->slow(slow);
-        resp->isConst(false);
-        resp->declPrivate(true);
-        scopep->addBlocksp(resp);
-        return resp;
-    }();
-
-    // Assemble the body
-    if (v3Global.opt.profExec()) {
-        funcp->addStmtsp(AstCStmt::profExecSectionPush(flp, "func " + tag));
-    }
-    funcp->addStmtsp(stmtsp);
-    if (v3Global.opt.profExec()) {  //
-        funcp->addStmtsp(AstCStmt::profExecSectionPop(flp, "func " + tag));
-    }
-
-    // Done
-    return funcp;
+    for (V3Sched::LogicByScope* const lbsp : logic) lbsp->deleteActives();
+    return makeResultFunction(netlistp, stmtsp, tag, slow, resultScopep);
 }
