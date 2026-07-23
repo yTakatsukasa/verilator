@@ -66,9 +66,17 @@ module sg_dual_recipe (
   assign y_b = q_b[14:0];
   assign y_c = q_c[14:0];
 
-  always_ff @(posedge clk_a) q_a <= {q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]};
-  always_ff @(posedge clk_b) q_b <= {q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]};
-  always_ff @(posedge clk_c) q_c <= {q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]};
+  function automatic logic [44:0] identity(input logic [44:0] value,
+                                            input logic [5:0] opcode);
+    return value ^ {39'b0, opcode};
+  endfunction
+
+  always_ff @(posedge clk_a)
+    q_a <= identity({q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]}, 6'd3);
+  always_ff @(posedge clk_b)
+    q_b <= identity({q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]}, 6'd7);
+  always_ff @(posedge clk_c)
+    q_c <= identity({q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]}, 6'd11);
 
 endmodule
 
@@ -89,8 +97,16 @@ module sg_dual_recipe_ref (
   assign y_b = q_b[14:0];
   assign y_c = q_c[14:0];
 
-  always_ff @(posedge clk_a) q_a <= {q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]};
-  always_ff @(posedge clk_b) q_b <= {q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]};
-  always_ff @(posedge clk_c) q_c <= {q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]};
+  function automatic logic [44:0] identity(input logic [44:0] value,
+                                            input logic [5:0] opcode);
+    return value ^ {39'b0, opcode};
+  endfunction
+
+  always_ff @(posedge clk_a)
+    q_a <= identity({q_a[43:0], q_a[44]} ^ {30'b0, q_a[0 +: 15]}, 6'd3);
+  always_ff @(posedge clk_b)
+    q_b <= identity({q_b[43:0], q_b[44]} ^ {30'b0, q_b[15 +: 15]}, 6'd7);
+  always_ff @(posedge clk_c)
+    q_c <= identity({q_c[43:0], q_c[44]} ^ {30'b0, q_c[30 +: 15]}, 6'd11);
 
 endmodule

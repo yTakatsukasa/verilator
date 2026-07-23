@@ -18,15 +18,17 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clon
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate calls\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate constants\s+(\d+)",
-               3)
+               4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate groups\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate nodes\s+(\d+)", 26)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate refs\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate nodes\s+(\d+)", 34)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate refs\s+(\d+)", 12)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe constant remaps\s+(\d+)",
-               2)
+               4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe hits\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)",
+               2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip arguments\s+(\d+)",
                0)
 test.file_grep(test.stats,
@@ -34,7 +36,6 @@ test.file_grep(test.stats,
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
                0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip other\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 0)
 

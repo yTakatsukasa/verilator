@@ -501,6 +501,12 @@ struct SubgraphSharedHelperArg final {
     bool m_writes = false;
 };
 
+enum class SubgraphSharedHelperVarRole : uint8_t {
+    ARGUMENT,
+    HELPER_LOCAL,
+    IDENTITY,
+};
+
 struct SubgraphScheduleArtifact final {
     AstCFunc* m_callFuncp = nullptr;
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
@@ -509,6 +515,7 @@ struct SubgraphScheduleArtifact final {
     std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     SubgraphTailContract m_tailContract;
+    std::unordered_map<const AstVarScope*, SubgraphSharedHelperVarRole> m_varMapContract;
     bool m_cloneable = true;
     bool m_hasTriggered = false;
     bool m_triggeredShareable = false;
@@ -1824,10 +1831,7 @@ public:
     }
 
     static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
-        return !info.m_hasTriggered
-               || (info.m_shareable
-                   && (!info.m_writesInstanceLocal
-                       || info.writesOnlySharedHelperSafeInstanceLocal()));
+        return !info.m_hasTriggered || info.m_shareable;
     }
 
     static VAccess sharedHelperArgAccess(const SubgraphSharedHelperArg& arg) {
@@ -2192,19 +2196,48 @@ public:
     static bool sharedHelperCoversVarMap(
         const SubgraphScheduleArtifact& artifact,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap) {
-        std::unordered_set<const AstVarScope*> helperVscps;
-        helperVscps.reserve(artifact.m_helperArgs.size());
-        for (const SubgraphSharedHelperArg& arg : artifact.m_helperArgs) {
-            helperVscps.insert(arg.m_vscp);
-        }
         for (const auto& pair : templateVarMap) {
-            if (pair.first == pair.second || pair.first->varp() == pair.second->varp()
-                || helperVscps.count(pair.first)) {
+            const auto contractIt = artifact.m_varMapContract.find(pair.first);
+            if (contractIt == artifact.m_varMapContract.end()) return false;
+            switch (contractIt->second) {
+            case SubgraphSharedHelperVarRole::ARGUMENT: continue;
+            case SubgraphSharedHelperVarRole::HELPER_LOCAL:
+                if (!pair.second->varp()->isFuncLocal()) return false;
+                if (!pair.second->dtypep()->similarDType(pair.first->dtypep())) return false;
                 continue;
+            case SubgraphSharedHelperVarRole::IDENTITY:
+                if (pair.first == pair.second || pair.first->varp() == pair.second->varp()) {
+                    continue;
+                }
+                return false;
             }
-            return false;
         }
         return true;
+    }
+
+    static std::unordered_map<const AstVarScope*, SubgraphSharedHelperVarRole>
+    buildSharedHelperVarMapContract(const SubgraphLogicSig& logicSig,
+                                    const std::vector<SubgraphSharedHelperArg>& helperArgs) {
+        std::unordered_set<const AstVarScope*> helperArgVscps;
+        helperArgVscps.reserve(helperArgs.size());
+        for (const SubgraphSharedHelperArg& arg : helperArgs) {
+            helperArgVscps.insert(arg.m_vscp);
+        }
+
+        std::unordered_map<const AstVarScope*, SubgraphSharedHelperVarRole> result;
+        for (const SubgraphLogicNodeSig& node : logicSig) {
+            for (const SubgraphLogicRefSig& ref : node.m_refs) {
+                const AstVarScope* const vscp = ref.m_vscp;
+                SubgraphSharedHelperVarRole role = SubgraphSharedHelperVarRole::IDENTITY;
+                if (helperArgVscps.count(vscp)) {
+                    role = SubgraphSharedHelperVarRole::ARGUMENT;
+                } else if (vscp->varp()->isFuncLocal()) {
+                    role = SubgraphSharedHelperVarRole::HELPER_LOCAL;
+                }
+                result.emplace(vscp, role);
+            }
+        }
+        return result;
     }
 
     static TailCloneSig buildTailCloneSig(AstCFunc* funcp) {
@@ -3033,6 +3066,8 @@ public:
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
         artifactp->m_tailContract = tailContract;
+        artifactp->m_varMapContract
+            = buildSharedHelperVarMapContract(artifactp->m_logicSig, artifactp->m_helperArgs);
         artifactp->m_cloneable = cloneable;
         artifactp->m_hasTriggered = hasTriggered;
         artifactp->m_triggeredShareable = triggeredShareable;
