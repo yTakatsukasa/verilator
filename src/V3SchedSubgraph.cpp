@@ -1597,6 +1597,7 @@ public:
                              std::unordered_map<const AstConst*, const AstConst*>* constRemapp
                              = nullptr,
                              bool* constantsDifferp = nullptr) {
+        std::unordered_map<const AstVarScope*, const AstVarScope*> reverseVarMap;
         std::vector<AstNode*> currentNodes;
         currentLogic.foreachLogic([&](AstNode* logicp) { currentNodes.push_back(logicp); });
         if (templateSig.size() != currentNodes.size()) {
@@ -1658,7 +1659,13 @@ public:
                         return SubgraphTemplateMapFailReason::REF_CONFLICT;
                     }
                 } else {
+                    const auto reverseIt = reverseVarMap.find(currentVscp);
+                    if (reverseIt != reverseVarMap.end()
+                        && reverseIt->second != templateRef.m_vscp) {
+                        return SubgraphTemplateMapFailReason::REF_CONFLICT;
+                    }
                     result.emplace(templateRef.m_vscp, currentVscp);
+                    reverseVarMap.emplace(currentVscp, templateRef.m_vscp);
                 }
             }
         }
@@ -2275,6 +2282,16 @@ public:
         return mappedBoundaryScopep && mappedBoundaryScopep != destBoundaryScopep;
     }
 
+    static bool canUseStructuralGeneratedVarMap(const AstVarScope* sourceVscp,
+                                                AstVarScope* mappedVscp,
+                                                AstScope* destBoundaryScopep) {
+        if (!canRemapGeneratedCloneVarByName(sourceVscp)) return true;
+        if (instanceLocalVarKind(sourceVscp) != instanceLocalVarKind(mappedVscp)) return false;
+        if (!mappedVscp->dtypep()->similarDType(sourceVscp->dtypep())) return false;
+        if (mapsToOtherSubgraphBoundary(mappedVscp, destBoundaryScopep)) return false;
+        return isUnderBoundaryScope(mappedVscp->scopep(), destBoundaryScopep);
+    }
+
     static bool mustBeDestScopedInClone(const AstVarScope* vscp) {
         return isRemappableInstanceLocalVar(vscp) || vscp->varp()->name().rfind("__PVT__", 0) == 0;
     }
@@ -2405,9 +2422,15 @@ public:
 
         std::unordered_map<const AstVarScope*, AstVarScope*> resolvedVarMap;
         for (const auto& pair : templateVarMap) {
-            if (canRemapGeneratedCloneVarByName(pair.first)) continue;
             if (mapsToOtherSubgraphBoundary(pair.second, destBoundaryScopep)) continue;
+            if (!canUseStructuralGeneratedVarMap(pair.first, pair.second, destBoundaryScopep)) {
+                continue;
+            }
             resolvedVarMap.emplace(pair);
+            if (canRemapGeneratedCloneVarByName(pair.first) && pair.first != pair.second) {
+                noteGeneratedVarRemap(pair.first, stats);
+                ++stats.m_orderCacheCloneGeneratedVarRemaps;
+            }
         }
         std::unordered_map<const AstCFunc*, std::unordered_set<const AstVar*>> argVarsByFunc;
         for (AstCFunc* const origFuncp : orderedFuncs) {

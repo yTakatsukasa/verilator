@@ -15,7 +15,7 @@ test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)", 2)
