@@ -22,6 +22,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate groups\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate nodes\s+(\d+)", 34)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate refs\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index fallbacks\s+(\d+)",
+               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index hits\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index lookups\s+(\d+)",
+               2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe constant remaps\s+(\d+)",
                0)

@@ -23,6 +23,8 @@
 #include "V3Stats.h"
 #include "V3SubgraphSummary.h"
 
+#include <limits>
+
 namespace V3Sched {
 
 namespace {
@@ -340,6 +342,11 @@ struct SubgraphOrderCacheEntry final {
     bool m_triggeredWritesNonLocal = false;
     bool m_triggeredWritesTriggerTemp = false;
     bool m_triggeredWritesVlemTemp = false;
+};
+
+struct SubgraphOrderCacheBucket final {
+    std::vector<SubgraphOrderCacheEntry> m_entries;
+    size_t m_recipeIndex = std::numeric_limits<size_t>::max();
 };
 
 struct SubgraphOrderCacheKey final {
@@ -860,6 +867,9 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheCloneGeneratedVarRemapTrigger = 0;
     uint64_t m_orderCacheCloneGeneratedVarRemapVlem = 0;
     uint64_t m_orderCacheCloneGeneratedVarRemaps = 0;
+    uint64_t m_orderCacheDirectIndexFallbacks = 0;
+    uint64_t m_orderCacheDirectIndexHits = 0;
+    uint64_t m_orderCacheDirectIndexLookups = 0;
     uint64_t m_orderCacheEntries = 0;
     uint64_t m_orderCacheEntryHits = 0;
     uint64_t m_orderCacheHits = 0;
@@ -1182,6 +1192,11 @@ struct SubgraphLoweringStats final {
                          m_orderCacheCloneGeneratedVarRemapVlem);
         V3Stats::addStat(prefix + "order cache clone generated var remaps",
                          m_orderCacheCloneGeneratedVarRemaps);
+        V3Stats::addStat(prefix + "order cache direct index fallbacks",
+                         m_orderCacheDirectIndexFallbacks);
+        V3Stats::addStat(prefix + "order cache direct index hits", m_orderCacheDirectIndexHits);
+        V3Stats::addStat(prefix + "order cache direct index lookups",
+                         m_orderCacheDirectIndexLookups);
         V3Stats::addStat(prefix + "order cache entries", m_orderCacheEntries);
         V3Stats::addStat(prefix + "order cache entry hits", m_orderCacheEntryHits);
         V3Stats::addStat(prefix + "order cache hits", m_orderCacheHits);
@@ -3245,8 +3260,7 @@ public:
                        SubgraphScheduleArtifactKeyHash>
         m_subgraphArtifactCache;
     std::vector<std::unique_ptr<SubgraphScheduleArtifact>> m_subgraphArtifacts;
-    std::unordered_map<SubgraphOrderCacheKey, std::vector<SubgraphOrderCacheEntry>,
-                       SubgraphOrderCacheKeyHash>
+    std::unordered_map<SubgraphOrderCacheKey, SubgraphOrderCacheBucket, SubgraphOrderCacheKeyHash>
         m_subgraphOrderCache;
     std::unordered_map<SnapshotBucketKey, size_t, SnapshotBucketKeyHash> m_snapshotBucketIndex;
     std::vector<SnapshotBucket> m_snapshotBuckets;
@@ -3689,8 +3703,9 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         const auto cacheIt = state.m_subgraphOrderCache.find(cacheKey);
         if (cacheIt != state.m_subgraphOrderCache.end()) {
             ++state.m_stats.m_orderCacheEntryHits;
-            state.m_stats.m_orderCacheVariantCandidates += cacheIt->second.size();
-            for (SubgraphOrderCacheEntry& cacheEntry : cacheIt->second) {
+            SubgraphOrderCacheBucket& bucket = cacheIt->second;
+            state.m_stats.m_orderCacheVariantCandidates += bucket.m_entries.size();
+            const auto tryCandidate = [&](SubgraphOrderCacheEntry& cacheEntry) {
                 orderCacheConstantsDiffer = false;
                 orderCacheDomainsDiffer = false;
                 orderCacheTemplateConstMap.clear();
@@ -3705,9 +3720,24 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     orderCacheDomainsDiffer
                         = cacheEntry.m_exactDomainShape != domainShapes.m_exact;
                     matchedOrderCacheEntryp = &cacheEntry;
-                    break;
+                    return true;
                 }
                 state.m_stats.noteOrderCacheTemplateMapFail(templateMapFail);
+                return false;
+            };
+            if (bucket.m_recipeIndex < bucket.m_entries.size()) {
+                ++state.m_stats.m_orderCacheDirectIndexLookups;
+                if (tryCandidate(bucket.m_entries[bucket.m_recipeIndex])) {
+                    ++state.m_stats.m_orderCacheDirectIndexHits;
+                } else {
+                    ++state.m_stats.m_orderCacheDirectIndexFallbacks;
+                }
+            }
+            if (!matchedOrderCacheEntryp) {
+                for (size_t index = 0; index < bucket.m_entries.size(); ++index) {
+                    if (index == bucket.m_recipeIndex) continue;
+                    if (tryCandidate(bucket.m_entries[index])) break;
+                }
             }
         } else {
             state.noteOrderCacheNoEntry(cacheKey);
@@ -4005,19 +4035,21 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
                 const bool triggeredCloneable
                     = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
-                std::vector<SubgraphOrderCacheEntry>& entries
-                    = state.m_subgraphOrderCache[cacheKey];
-                if (entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
-                entries.push_back(SubgraphOrderCacheEntry{
+                SubgraphOrderCacheBucket& bucket = state.m_subgraphOrderCache[cacheKey];
+                if (bucket.m_entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
+                bucket.m_entries.push_back(SubgraphOrderCacheEntry{
                     nullptr, domainShapes.m_exact, funcp, logicSig, orderRecipep,
                     triggeredCloneable, triggeredShareable, triggeredInfo.m_writesDelayedShadow,
                     triggeredInfo.m_writesInstanceLocal, triggeredInfo.m_writesLocalTemp,
                     triggeredInfo.m_writesNonLocal, triggeredInfo.m_writesTriggerTemp,
                     triggeredInfo.m_writesVlemTemp});
-                insertedOrderCacheEntryp = &entries.back();
+                if (orderRecipep && bucket.m_recipeIndex == std::numeric_limits<size_t>::max()) {
+                    bucket.m_recipeIndex = bucket.m_entries.size() - 1;
+                }
+                insertedOrderCacheEntryp = &bucket.m_entries.back();
                 ++state.m_stats.m_orderCacheEntries;
-                state.m_stats.m_orderCacheVariantMax
-                    = std::max<uint64_t>(state.m_stats.m_orderCacheVariantMax, entries.size());
+                state.m_stats.m_orderCacheVariantMax = std::max<uint64_t>(
+                    state.m_stats.m_orderCacheVariantMax, bucket.m_entries.size());
             }
         }
     }
