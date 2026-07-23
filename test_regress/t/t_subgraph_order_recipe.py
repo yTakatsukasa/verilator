@@ -43,5 +43,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip c
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip other\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, time build contract sec\s+\d+\.\d+")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, time discard logic sec\s+\d+\.\d+")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, time recipe replay sec\s+\d+\.\d+")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, time triggered analysis sec\s+\d+\.\d+")
 
 test.passes()

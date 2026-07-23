@@ -940,21 +940,25 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
-    uint64_t m_timeBuildPlansUsecs = 0;
+    uint64_t m_timeBuildContractUsecs = 0;
     uint64_t m_timeBuildLogicShapeUsecs = 0;
     uint64_t m_timeBuildLogicSigUsecs = 0;
+    uint64_t m_timeBuildPlansUsecs = 0;
     uint64_t m_timeCollectGroupsUsecs = 0;
     uint64_t m_timeCollectInputStatsUsecs = 0;
     uint64_t m_timeCollectRegionWrittenVarsUsecs = 0;
     uint64_t m_timeComputeDomainShapeUsecs = 0;
+    uint64_t m_timeDiscardLogicUsecs = 0;
     uint64_t m_timeEmitSnapshotsUsecs = 0;
     uint64_t m_timeInternalOrderUsecs = 0;
     uint64_t m_timeLookupArtifactsUsecs = 0;
     uint64_t m_timeLowerGroupsUsecs = 0;
     uint64_t m_timeMaterializeUsecs = 0;
     uint64_t m_timePrepareSnapshotsUsecs = 0;
+    uint64_t m_timeRecipeReplayUsecs = 0;
     uint64_t m_timeTemplateMapUsecs = 0;
     uint64_t m_timeTotalUsecs = 0;
+    uint64_t m_timeTriggeredAnalysisUsecs = 0;
     uint64_t m_triggeredArtifactCandidates = 0;
     uint64_t m_triggeredArtifactInputTailShareable = 0;
     uint64_t m_triggeredArtifactInputTailWrites = 0;
@@ -1291,6 +1295,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
+        V3Stats::addStat(prefix + "time build contract sec", seconds(m_timeBuildContractUsecs), 6);
         V3Stats::addStat(prefix + "time build logic shape sec",
                          seconds(m_timeBuildLogicShapeUsecs), 6);
         V3Stats::addStat(prefix + "time build logic signature sec",
@@ -1303,6 +1308,7 @@ struct SubgraphLoweringStats final {
                          seconds(m_timeCollectRegionWrittenVarsUsecs), 6);
         V3Stats::addStat(prefix + "time compute domain shape sec",
                          seconds(m_timeComputeDomainShapeUsecs), 6);
+        V3Stats::addStat(prefix + "time discard logic sec", seconds(m_timeDiscardLogicUsecs), 6);
         V3Stats::addStat(prefix + "time emit snapshots sec", seconds(m_timeEmitSnapshotsUsecs), 6);
         V3Stats::addStat(prefix + "time internal order sec", seconds(m_timeInternalOrderUsecs), 6);
         V3Stats::addStat(prefix + "time lookup artifacts sec", seconds(m_timeLookupArtifactsUsecs),
@@ -1311,8 +1317,11 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "time materialize sec", seconds(m_timeMaterializeUsecs), 6);
         V3Stats::addStat(prefix + "time prepare snapshots sec",
                          seconds(m_timePrepareSnapshotsUsecs), 6);
+        V3Stats::addStat(prefix + "time recipe replay sec", seconds(m_timeRecipeReplayUsecs), 6);
         V3Stats::addStat(prefix + "time template map sec", seconds(m_timeTemplateMapUsecs), 6);
         V3Stats::addStat(prefix + "time total sec", seconds(m_timeTotalUsecs), 6);
+        V3Stats::addStat(prefix + "time triggered analysis sec",
+                         seconds(m_timeTriggeredAnalysisUsecs), 6);
         std::vector<std::pair<std::string, SubgraphInternalOrderAggregate>> orderedAggregates{
             m_internalOrderAggregates.begin(), m_internalOrderAggregates.end()};
         std::sort(orderedAggregates.begin(), orderedAggregates.end(),
@@ -1503,13 +1512,15 @@ public:
         return false;
     }
 
-    static void discardLogic(LogicByScope& logic) {
+    void discardLogic(LogicByScope& logic) {
+        const uint64_t startUsecs = statStartUsecs();
         for (const auto& pair : logic) {
             AstActive* const activep = pair.second;
             if (activep->backp()) activep->unlinkFrBack();
             activep->deleteTree();
         }
         logic.clear();
+        addElapsedUsecs(m_stats.m_timeDiscardLogicUsecs, startUsecs);
     }
 
     static SubgraphDomainShapes
@@ -1810,6 +1821,7 @@ public:
                                                                     AstScope* boundaryScopep,
                                                                     SubgraphLoweringStats& stats,
                                                                     bool noteStats = true) {
+        const uint64_t startUsecs = statStartUsecs();
         std::unordered_set<AstCFunc*> seenFuncs;
         SubgraphTriggeredRefInfo result;
         std::function<void(AstCFunc*)> gather = [&](AstCFunc* scanFuncp) {
@@ -1839,6 +1851,7 @@ public:
             });
         };
         gather(funcp);
+        addElapsedUsecs(stats.m_timeTriggeredAnalysisUsecs, startUsecs);
         return result;
     }
 
@@ -3434,21 +3447,25 @@ AstSubgraphInstance::Phase subgraphPhaseFor(const SubgraphWrapper& wrapper, bool
 
 void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
                                               SubgraphLoweringState& state) {
+    const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, instance.m_callFuncp, instance.m_scopep);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
+    addElapsedUsecs(state.m_stats.m_timeBuildContractUsecs, startUsecs);
 }
 
 void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
                                               SubgraphLoweringState& state,
                                               const LogicByScope& logic) {
+    const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, logic, instance.m_scopep);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
+    addElapsedUsecs(state.m_stats.m_timeBuildContractUsecs, startUsecs);
 }
 
 SubgraphTailContract buildSubgraphTailContract(const std::vector<AstCFunc*>& tailFuncps,
@@ -3649,7 +3666,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 } else {
                     populateSubgraphScheduleInstanceContract(plan.m_instance, state);
                 }
-                SubgraphLoweringState::discardLogic(subgraphLogic);
+                state.discardLogic(subgraphLogic);
                 plan.m_phase = phase;
                 plan.m_wrapper = wrapper;
                 ++state.m_stats.m_artifactReuses;
@@ -3675,8 +3692,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     const auto replayCachedOrder = [&](const SubgraphOrderCacheEntry& cacheEntry) {
         if (!cacheEntry.m_recipep || !cacheEntry.m_artifactp) return false;
         const std::string replayTag = tag + "_subgraph_recipe_" + cvtToStr(subgraphIndex++);
+        const uint64_t replayStartUsecs = statStartUsecs();
         AstCFunc* const replayedFuncp = V3Order::replay(
             netlistp, {&subgraphLogic}, *cacheEntry.m_recipep, replayTag, slow, group.m_scopep);
+        addElapsedUsecs(state.m_stats.m_timeRecipeReplayUsecs, replayStartUsecs);
         if (!replayedFuncp) return false;
         if (tailFuncps) {
             for (AstCFunc* const tailFuncp : *tailFuncps) {
@@ -3773,7 +3792,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                      subgraphLogic);
-                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
                             ++state.m_stats.m_logicSigBuildsAvoided;
@@ -3812,7 +3831,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                   *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
-                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
                             ++state.m_stats.m_logicSigBuildsAvoided;
@@ -3888,7 +3907,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                                 populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                          subgraphLogic);
-                                SubgraphLoweringState::discardLogic(subgraphLogic);
+                                state.discardLogic(subgraphLogic);
                                 plan.m_phase = phase;
                                 plan.m_wrapper = wrapper;
                                 ++state.m_stats.m_orderCacheHits;
@@ -3929,7 +3948,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                         populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                  subgraphLogic);
-                        SubgraphLoweringState::discardLogic(subgraphLogic);
+                        state.discardLogic(subgraphLogic);
                         plan.m_phase = phase;
                         plan.m_wrapper = wrapper;
                         ++state.m_stats.m_orderCacheHits;
@@ -3972,7 +3991,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                   *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state);
-                            SubgraphLoweringState::discardLogic(subgraphLogic);
+                            state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
                             ++state.m_stats.m_orderCacheHits;
