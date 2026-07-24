@@ -513,6 +513,7 @@ enum class SubgraphSharedHelperVarRole : uint8_t {
     ARGUMENT,
     HELPER_LOCAL,
     IDENTITY,
+    IMPLICIT_CONTEXT,
 };
 
 struct SubgraphScheduleArtifact final {
@@ -918,6 +919,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_sharedHelperCallArgs = 0;
     uint64_t m_sharedHelperCallArgsMax = 0;
     uint64_t m_sharedHelperConstantArgs = 0;
+    uint64_t m_sharedHelperContractArgumentVars = 0;
+    uint64_t m_sharedHelperContractHelperLocalVars = 0;
+    uint64_t m_sharedHelperContractIdentityVars = 0;
+    uint64_t m_sharedHelperContractImplicitContextVars = 0;
     uint64_t m_sharedHelperExternalArgs = 0;
     uint64_t m_sharedHelperFormalArgsAfter = 0;
     uint64_t m_sharedHelperFormalArgsBefore = 0;
@@ -1266,6 +1271,14 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "shared helper call args", m_sharedHelperCallArgs);
         V3Stats::addStat(prefix + "shared helper call args max", m_sharedHelperCallArgsMax);
         V3Stats::addStat(prefix + "shared helper constant args", m_sharedHelperConstantArgs);
+        V3Stats::addStat(prefix + "shared helper contract argument vars",
+                         m_sharedHelperContractArgumentVars);
+        V3Stats::addStat(prefix + "shared helper contract helper local vars",
+                         m_sharedHelperContractHelperLocalVars);
+        V3Stats::addStat(prefix + "shared helper contract identity vars",
+                         m_sharedHelperContractIdentityVars);
+        V3Stats::addStat(prefix + "shared helper contract implicit context vars",
+                         m_sharedHelperContractImplicitContextVars);
         V3Stats::addStat(prefix + "shared helper external args", m_sharedHelperExternalArgs);
         V3Stats::addStat(prefix + "shared helper formal args after",
                          m_sharedHelperFormalArgsAfter);
@@ -2237,6 +2250,7 @@ public:
                 if (!pair.second->dtypep()->similarDType(pair.first->dtypep())) return false;
                 continue;
             case SubgraphSharedHelperVarRole::IDENTITY:
+            case SubgraphSharedHelperVarRole::IMPLICIT_CONTEXT:
                 if (pair.first == pair.second || pair.first->varp() == pair.second->varp()) {
                     continue;
                 }
@@ -2248,7 +2262,8 @@ public:
 
     static std::unordered_map<const AstVarScope*, SubgraphSharedHelperVarRole>
     buildSharedHelperVarMapContract(const SubgraphLogicSig& logicSig,
-                                    const std::vector<SubgraphSharedHelperArg>& helperArgs) {
+                                    const std::vector<SubgraphSharedHelperArg>& helperArgs,
+                                    AstScope* boundaryScopep, SubgraphLoweringStats& stats) {
         std::unordered_set<const AstVarScope*> helperArgVscps;
         helperArgVscps.reserve(helperArgs.size());
         for (const SubgraphSharedHelperArg& arg : helperArgs) {
@@ -2264,6 +2279,22 @@ public:
                     role = SubgraphSharedHelperVarRole::ARGUMENT;
                 } else if (vscp->varp()->isFuncLocal()) {
                     role = SubgraphSharedHelperVarRole::HELPER_LOCAL;
+                } else if (isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
+                    role = SubgraphSharedHelperVarRole::IMPLICIT_CONTEXT;
+                }
+                switch (role) {
+                case SubgraphSharedHelperVarRole::ARGUMENT:
+                    ++stats.m_sharedHelperContractArgumentVars;
+                    break;
+                case SubgraphSharedHelperVarRole::HELPER_LOCAL:
+                    ++stats.m_sharedHelperContractHelperLocalVars;
+                    break;
+                case SubgraphSharedHelperVarRole::IDENTITY:
+                    ++stats.m_sharedHelperContractIdentityVars;
+                    break;
+                case SubgraphSharedHelperVarRole::IMPLICIT_CONTEXT:
+                    ++stats.m_sharedHelperContractImplicitContextVars;
+                    break;
                 }
                 result.emplace(vscp, role);
             }
@@ -3097,8 +3128,8 @@ public:
         artifactp->m_logicSig = std::move(logicSig);
         artifactp->m_scopep = scopep;
         artifactp->m_tailContract = tailContract;
-        artifactp->m_varMapContract
-            = buildSharedHelperVarMapContract(artifactp->m_logicSig, artifactp->m_helperArgs);
+        artifactp->m_varMapContract = buildSharedHelperVarMapContract(
+            artifactp->m_logicSig, artifactp->m_helperArgs, scopep, m_stats);
         artifactp->m_cloneable = cloneable;
         artifactp->m_hasTriggered = hasTriggered;
         artifactp->m_triggeredShareable = triggeredShareable;
