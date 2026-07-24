@@ -126,4 +126,4 @@ grep_stats "Triggered shareability" \
     'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'
 
 grep_stats "Subgraph order graph contracts" \
-    'Scheduling, Subgraph order graph [^,]+, (coarse nodes|contract uses|nested contract uses|phase vertices)'
+    'Scheduling, Subgraph order graph [^,]+, (coarse nodes|contract uses|delayed shadow|nested contract uses|phase vertices|post commit procedure)'

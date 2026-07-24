@@ -89,7 +89,11 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_contractUsesForcePost = 0;
         uint64_t m_contractUsesNormal = 0;
         uint64_t m_contractUsesRaw = 0;
+        uint64_t m_delayedShadowIndexVars = 0;
+        uint64_t m_delayedShadowLookups = 0;
         uint64_t m_nestedContractUses = 0;
+        uint64_t m_postCommitProcedureRefs = 0;
+        uint64_t m_postCommitProcedureScans = 0;
         uint64_t m_phaseBarrierCanonicalizedUses = 0;
         uint64_t m_phaseBarrierIrrelevantUsesSkipped = 0;
         uint64_t m_phaseBarrierUses = 0;
@@ -132,6 +136,7 @@ class OrderGraphBuilder final : public VNVisitor {
     const AstSenTree* m_subgraphBarrierp = nullptr;
     // Sensitivity list for hybrid logic, nullptr for everything else
     AstSenTree* m_hybridp = nullptr;
+    std::unordered_set<string> m_delayedShadowVarNames;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphClockedPhaseVtxps;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphPostPhaseVtxps;
     std::unordered_map<const AstSenTree*, OrderSubgraphPhaseVertex*> m_subgraphSnapshotPhaseVtxps;
@@ -277,14 +282,20 @@ class OrderGraphBuilder final : public VNVisitor {
         return nullptr;
     }
 
-    bool hasDelayedShadowVar(AstVarScope* vscp) const {
+    void collectDelayedShadowVars() {
         AstScope* const topScopep = v3Global.rootp()->topScopep()->scopep();
-        const std::string shadowName = "__Vdly__" + vscp->varp()->name();
         for (AstVarScope* scanp = topScopep->varsp(); scanp;
              scanp = VN_AS(scanp->nextp(), VarScope)) {
-            if (scanp->varp()->name() == shadowName) return true;
+            const string& name = scanp->varp()->name();
+            if (0 != name.rfind("__Vdly__", 0)) continue;
+            m_delayedShadowVarNames.insert(name.substr(8));
         }
-        return false;
+        m_subgraphStats.m_delayedShadowIndexVars = m_delayedShadowVarNames.size();
+    }
+
+    bool hasDelayedShadowVar(AstVarScope* vscp) {
+        ++m_subgraphStats.m_delayedShadowLookups;
+        return m_delayedShadowVarNames.count(vscp->varp()->name());
     }
 
     bool isSubgraphWrapperCall(AstCCall* nodep) const {
@@ -592,7 +603,15 @@ class OrderGraphBuilder final : public VNVisitor {
                          m_subgraphStats.m_contractUsesForcePost);
         V3Stats::addStat(prefix + "contract uses normal", m_subgraphStats.m_contractUsesNormal);
         V3Stats::addStat(prefix + "contract uses raw", m_subgraphStats.m_contractUsesRaw);
+        V3Stats::addStat(prefix + "delayed shadow index vars",
+                         m_subgraphStats.m_delayedShadowIndexVars);
+        V3Stats::addStat(prefix + "delayed shadow lookups",
+                         m_subgraphStats.m_delayedShadowLookups);
         V3Stats::addStat(prefix + "nested contract uses", m_subgraphStats.m_nestedContractUses);
+        V3Stats::addStat(prefix + "post commit procedure refs",
+                         m_subgraphStats.m_postCommitProcedureRefs);
+        V3Stats::addStat(prefix + "post commit procedure scans",
+                         m_subgraphStats.m_postCommitProcedureScans);
         V3Stats::addStat(prefix + "phase barrier canonical keys",
                          m_subgraphPhaseCanonicalKeyps.size());
         V3Stats::addStat(prefix + "phase barrier canonicalized uses",
@@ -606,10 +625,12 @@ class OrderGraphBuilder final : public VNVisitor {
         V3Stats::addStat(prefix + "phase vertices snapshot", m_subgraphSnapshotPhaseVtxps.size());
     }
 
-    bool isSubgraphCommitPostProcedure(AstNodeProcedure* nodep) const {
+    bool isSubgraphCommitPostProcedure(AstNodeProcedure* nodep) {
+        ++m_subgraphStats.m_postCommitProcedureScans;
         bool commitsDelayedState = false;
         nodep->foreach([&](AstVarRef* refp) {
             if (commitsDelayedState) return;
+            ++m_subgraphStats.m_postCommitProcedureRefs;
             AstVarScope* const vscp = refp->varScopep();
             if (refp->access().isReadOrRW() && 0 == vscp->varp()->name().rfind("__Vdly__", 0)) {
                 commitsDelayedState = true;
@@ -742,7 +763,8 @@ class OrderGraphBuilder final : public VNVisitor {
         VL_RESTORER(m_isSubgraphCommitPostLogic);
         VL_RESTORER(m_isSubgraphSnapshotLogic);
         m_inPost = true;
-        m_isSubgraphCommitPostLogic = isSubgraphCommitPostProcedure(nodep);
+        m_isSubgraphCommitPostLogic
+            = !m_subgraphRelevantBarrierps.empty() && isSubgraphCommitPostProcedure(nodep);
         m_isSubgraphSnapshotLogic = isSubgraphSnapshotProcedure(nodep);
         iterateLogic(nodep);
     }
@@ -790,7 +812,10 @@ class OrderGraphBuilder final : public VNVisitor {
                       const V3Order::TrigToSenMap& trigToSen, const std::string& tag)
         : m_trigToSen{trigToSen}
         , m_tag{tag} {
-        collectSubgraphRelevantBarriers(coll);
+        if (v3Global.opt.subgraphSchedule()) {
+            collectSubgraphRelevantBarriers(coll);
+            if (!m_subgraphRelevantBarrierps.empty()) collectDelayedShadowVars();
+        }
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
