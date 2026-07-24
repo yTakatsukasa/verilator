@@ -14,11 +14,9 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, artifact reuse template map fail ref dtype\s+(\d+)", 1)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, order cache template map fail ref dtype\s+(\d+)", 1)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, artifact reuse template map fail ref dtype\s+(\d+)", 1)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, order cache template map fail ref dtype\s+(\d+)", 1)
 
 test.passes()
