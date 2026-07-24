@@ -46,7 +46,13 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant ar
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant builds\s+(\d+)",
                2)
 test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, shared helper remap variant candidate vars\s+(\d+)", 8)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, shared helper remap variant candidate vars max\s+(\d+)", 4)
+test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper remap variant constant remaps\s+(\d+)", 4)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, shared helper remap variant oversize skips\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant vars\s+(\d+)",
                8)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time build contract sec\s+\d+\.\d+")

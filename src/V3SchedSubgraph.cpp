@@ -319,6 +319,7 @@ enum class SubgraphTemplateMapFailReason : uint8_t {
     REF_ACCESS,
     REF_CONFLICT,
     REF_COUNT,
+    REF_DTYPE,
 };
 
 enum class SubgraphSharedHelperApplyFailReason : uint8_t {
@@ -817,6 +818,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_artifactReuseTemplateMapFailRefAccess = 0;
     uint64_t m_artifactReuseTemplateMapFailRefConflict = 0;
     uint64_t m_artifactReuseTemplateMapFailRefCount = 0;
+    uint64_t m_artifactReuseTemplateMapFailRefDType = 0;
     uint64_t m_artifactReuseTemplateMapFails = 0;
     uint64_t m_artifactReuses = 0;
     uint64_t m_artifactReuseCloneFails = 0;
@@ -918,6 +920,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheTemplateMapFailRefAccess = 0;
     uint64_t m_orderCacheTemplateMapFailRefConflict = 0;
     uint64_t m_orderCacheTemplateMapFailRefCount = 0;
+    uint64_t m_orderCacheTemplateMapFailRefDType = 0;
     uint64_t m_orderCacheTemplateMapFails = 0;
     uint64_t m_orderCacheVariantBuckets = 0;
     uint64_t m_orderCacheVariantCandidates = 0;
@@ -942,8 +945,11 @@ struct SubgraphLoweringStats final {
     uint64_t m_sharedHelperParameterizations = 0;
     uint64_t m_sharedHelperParameterizedFuncs = 0;
     uint64_t m_sharedHelperRemapVariantBuilds = 0;
+    uint64_t m_sharedHelperRemapVariantCandidateVars = 0;
+    uint64_t m_sharedHelperRemapVariantCandidateVarsMax = 0;
     uint64_t m_sharedHelperRemapVariantConstantRemaps = 0;
     uint64_t m_sharedHelperRemapVariantHits = 0;
+    uint64_t m_sharedHelperRemapVariantOversizeSkips = 0;
     uint64_t m_sharedHelperRemapVariantVars = 0;
     uint64_t m_snapshotBuckets = 0;
     uint64_t m_snapshotBundleElems = 0;
@@ -1010,7 +1016,7 @@ struct SubgraphLoweringStats final {
                                         uint64_t constValue, uint64_t nodeCount,
                                         uint64_t nodeTopology, uint64_t nodeType,
                                         uint64_t refAccess, uint64_t refConflict,
-                                        uint64_t refCount, uint64_t total) {
+                                        uint64_t refCount, uint64_t refDType, uint64_t total) {
         V3Stats::addStat(prefix + path + " template map fail constant value", constValue);
         V3Stats::addStat(prefix + path + " template map fail node count", nodeCount);
         V3Stats::addStat(prefix + path + " template map fail node topology", nodeTopology);
@@ -1018,6 +1024,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + path + " template map fail ref access", refAccess);
         V3Stats::addStat(prefix + path + " template map fail ref conflict", refConflict);
         V3Stats::addStat(prefix + path + " template map fail ref count", refCount);
+        V3Stats::addStat(prefix + path + " template map fail ref dtype", refDType);
         V3Stats::addStat(prefix + path + " template map fails", total);
     }
 
@@ -1103,7 +1110,7 @@ struct SubgraphLoweringStats final {
             m_artifactReuseTemplateMapFailNodeCount, m_artifactReuseTemplateMapFailNodeTopology,
             m_artifactReuseTemplateMapFailNodeType, m_artifactReuseTemplateMapFailRefAccess,
             m_artifactReuseTemplateMapFailRefConflict, m_artifactReuseTemplateMapFailRefCount,
-            m_artifactReuseTemplateMapFails);
+            m_artifactReuseTemplateMapFailRefDType, m_artifactReuseTemplateMapFails);
         V3Stats::addStat(prefix + "artifact reuses", m_artifactReuses);
         V3Stats::addStat(prefix + "artifact reuse permille",
                          ratioPermille(m_artifactReuses, artifactLookups));
@@ -1274,7 +1281,7 @@ struct SubgraphLoweringStats final {
             m_orderCacheTemplateMapFailNodeCount, m_orderCacheTemplateMapFailNodeTopology,
             m_orderCacheTemplateMapFailNodeType, m_orderCacheTemplateMapFailRefAccess,
             m_orderCacheTemplateMapFailRefConflict, m_orderCacheTemplateMapFailRefCount,
-            m_orderCacheTemplateMapFails);
+            m_orderCacheTemplateMapFailRefDType, m_orderCacheTemplateMapFails);
         V3Stats::addStat(prefix + "order cache variant buckets", m_orderCacheVariantBuckets);
         V3Stats::addStat(prefix + "order cache variant candidates", m_orderCacheVariantCandidates);
         V3Stats::addStat(prefix + "order cache variant max", m_orderCacheVariantMax);
@@ -1310,10 +1317,16 @@ struct SubgraphLoweringStats final {
                          m_sharedHelperParameterizedFuncs);
         V3Stats::addStat(prefix + "shared helper remap variant builds",
                          m_sharedHelperRemapVariantBuilds);
+        V3Stats::addStat(prefix + "shared helper remap variant candidate vars",
+                         m_sharedHelperRemapVariantCandidateVars);
+        V3Stats::addStat(prefix + "shared helper remap variant candidate vars max",
+                         m_sharedHelperRemapVariantCandidateVarsMax);
         V3Stats::addStat(prefix + "shared helper remap variant constant remaps",
                          m_sharedHelperRemapVariantConstantRemaps);
         V3Stats::addStat(prefix + "shared helper remap variant hits",
                          m_sharedHelperRemapVariantHits);
+        V3Stats::addStat(prefix + "shared helper remap variant oversize skips",
+                         m_sharedHelperRemapVariantOversizeSkips);
         V3Stats::addStat(prefix + "shared helper remap variant vars",
                          m_sharedHelperRemapVariantVars);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
@@ -1451,6 +1464,9 @@ struct SubgraphLoweringStats final {
         case SubgraphTemplateMapFailReason::REF_COUNT:
             ++m_artifactReuseTemplateMapFailRefCount;
             return;
+        case SubgraphTemplateMapFailReason::REF_DTYPE:
+            ++m_artifactReuseTemplateMapFailRefDType;
+            return;
         case SubgraphTemplateMapFailReason::NONE: return;
         }
     }
@@ -1513,12 +1529,17 @@ struct SubgraphLoweringStats final {
         case SubgraphTemplateMapFailReason::REF_COUNT:
             ++m_orderCacheTemplateMapFailRefCount;
             return;
+        case SubgraphTemplateMapFailReason::REF_DTYPE:
+            ++m_orderCacheTemplateMapFailRefDType;
+            return;
         case SubgraphTemplateMapFailReason::NONE: return;
         }
     }
 };
 
 class SubgraphLoweringState final {
+    static constexpr size_t MAX_SHARED_HELPER_REMAP_VARS = 64;
+
     static std::unordered_map<AstScope*, std::vector<AstCFunc*>>& stlSubgraphFuncsStorage() {
         static std::unordered_map<AstScope*, std::vector<AstCFunc*>> s_stlSubgraphFuncs;
         return s_stlSubgraphFuncs;
@@ -1722,6 +1743,10 @@ public:
                     return SubgraphTemplateMapFailReason::REF_ACCESS;
                 }
                 AstVarScope* const currentVscp = currentRefp->varScopep();
+                if (!templateRef.m_vscp->dtypep()->skipRefp()->sameTree(
+                        currentVscp->dtypep()->skipRefp())) {
+                    return SubgraphTemplateMapFailReason::REF_DTYPE;
+                }
                 const auto it = result.find(templateRef.m_vscp);
                 if (it != result.end()) {
                     if (it->second != currentVscp) {
@@ -2433,6 +2458,13 @@ public:
             }
         }
         if (implicitVscps.empty()) return nullptr;
+        stats.m_sharedHelperRemapVariantCandidateVars += implicitVscps.size();
+        stats.m_sharedHelperRemapVariantCandidateVarsMax = std::max<uint64_t>(
+            stats.m_sharedHelperRemapVariantCandidateVarsMax, implicitVscps.size());
+        if (implicitVscps.size() > MAX_SHARED_HELPER_REMAP_VARS) {
+            ++stats.m_sharedHelperRemapVariantOversizeSkips;
+            return nullptr;
+        }
 
         std::vector<string> constValues;
         for (const SubgraphLogicNodeSig& node : artifact.m_logicSig) {
