@@ -45,20 +45,17 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant builds\s+(\d+)",
                2)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, shared helper remap variant constant remaps\s+(\d+)", 4)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, shared helper remap variant constant remaps\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant vars\s+(\d+)",
                8)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time build contract sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time discard logic sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time recipe replay sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time triggered analysis sec\s+\d+\.\d+")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph order graph nba, delayed shadow index vars\s+([1-9]\d*)")
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph order graph nba, delayed shadow lookups\s+(\d+)", 0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph order graph nba, delayed shadow index vars\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph nba, delayed shadow lookups\s+(\d+)",
+               0)
 
 test.passes()

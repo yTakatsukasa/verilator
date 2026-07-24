@@ -16,9 +16,11 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
+               2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, shared helper contract implicit context vars\s+([1-9]\d*)")
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph nba, shared helper contract implicit context vars\s+([1-9]\d*)")
 
 test.passes()
