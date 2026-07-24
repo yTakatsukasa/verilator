@@ -120,7 +120,7 @@ grep_stats "Order cache clone diagnostics" \
     'Scheduling, Subgraph [^,]+, (ordered function clones|order cache clone (null|fail name|fail (other|state|shadow|temp|vlem)|generated var remap))'
 
 grep_stats "Shared helper parameterization" \
-    'Scheduling, Subgraph [^,]+, shared helper (constant args|contract|external args|hidden uses|instance local args|parameterization fails|parameterizations|parameterized funcs)'
+    'Scheduling, Subgraph [^,]+, shared helper (constant args|contract|external args|hidden uses|instance local args|parameterization fails|parameterizations|parameterized funcs|remap variant)'
 
 grep_stats "Triggered shareability" \
     'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'

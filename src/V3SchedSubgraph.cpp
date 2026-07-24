@@ -509,6 +509,13 @@ struct SubgraphSharedHelperArg final {
     bool m_writes = false;
 };
 
+struct SubgraphSharedHelperRemapVariant final {
+    AstCFunc* m_callFuncp = nullptr;
+    std::vector<std::string> m_constValues;
+    std::vector<SubgraphSharedHelperArg> m_helperArgs;
+    std::vector<const AstVarScope*> m_implicitVscps;
+};
+
 enum class SubgraphSharedHelperVarRole : uint8_t {
     ARGUMENT,
     HELPER_LOCAL,
@@ -521,6 +528,7 @@ struct SubgraphScheduleArtifact final {
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
     SubgraphScheduleArtifactKey m_key;
     SubgraphLogicSig m_logicSig;
+    std::vector<SubgraphSharedHelperRemapVariant> m_remapVariants;
     std::unordered_map<AstScope*, AstCFunc*> m_scopeCloneFuncps;
     AstScope* m_scopep = nullptr;
     SubgraphTailContract m_tailContract;
@@ -933,6 +941,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_sharedHelperParameterizationFails = 0;
     uint64_t m_sharedHelperParameterizations = 0;
     uint64_t m_sharedHelperParameterizedFuncs = 0;
+    uint64_t m_sharedHelperRemapVariantBuilds = 0;
+    uint64_t m_sharedHelperRemapVariantConstantRemaps = 0;
+    uint64_t m_sharedHelperRemapVariantHits = 0;
+    uint64_t m_sharedHelperRemapVariantVars = 0;
     uint64_t m_snapshotBuckets = 0;
     uint64_t m_snapshotBundleElems = 0;
     uint64_t m_snapshotBundles = 0;
@@ -1296,6 +1308,14 @@ struct SubgraphLoweringStats final {
                          m_sharedHelperParameterizations);
         V3Stats::addStat(prefix + "shared helper parameterized funcs",
                          m_sharedHelperParameterizedFuncs);
+        V3Stats::addStat(prefix + "shared helper remap variant builds",
+                         m_sharedHelperRemapVariantBuilds);
+        V3Stats::addStat(prefix + "shared helper remap variant constant remaps",
+                         m_sharedHelperRemapVariantConstantRemaps);
+        V3Stats::addStat(prefix + "shared helper remap variant hits",
+                         m_sharedHelperRemapVariantHits);
+        V3Stats::addStat(prefix + "shared helper remap variant vars",
+                         m_sharedHelperRemapVariantVars);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
         V3Stats::addStat(prefix + "snapshot bundle elements", m_snapshotBundleElems);
         V3Stats::addStat(prefix + "snapshot bundles", m_snapshotBundles);
@@ -2133,13 +2153,114 @@ public:
         return true;
     }
 
+    static bool parameterizeSharedHelperImplicitVars(
+        AstCFunc* funcp, const std::vector<const AstVarScope*>& implicitVscps,
+        std::vector<SubgraphSharedHelperArg>& helperArgs, SubgraphLoweringStats& stats) {
+        std::unordered_map<const AstVarScope*, size_t> argIndex;
+        for (const AstVarScope* const vscp : implicitVscps) {
+            argIndex.emplace(vscp, helperArgs.size());
+            helperArgs.push_back(
+                SubgraphSharedHelperArg{const_cast<AstVarScope*>(vscp), false, false});
+        }
+
+        std::vector<AstCFunc*> funcs;
+        std::unordered_set<AstCFunc*> seenFuncs;
+        std::function<void(AstCFunc*)> gatherFuncs = [&](AstCFunc* scanFuncp) {
+            if (!seenFuncs.insert(scanFuncp).second) return;
+            funcs.push_back(scanFuncp);
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint() || calledFuncp->dpiImportPrototype()
+                    || calledFuncp->scopep() != funcp->scopep()) {
+                    return;
+                }
+                gatherFuncs(calledFuncp);
+            });
+        };
+        gatherFuncs(funcp);
+
+        for (AstCFunc* const scanFuncp : funcs) {
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                const auto it = argIndex.find(refp->varScopep());
+                if (it == argIndex.end()) return;
+                SubgraphSharedHelperArg& arg = helperArgs[it->second];
+                arg.m_reads |= refp->access().isReadOrRW();
+                arg.m_writes |= refp->access().isWriteOrRW();
+            });
+        }
+
+        std::unordered_map<AstCFunc*, std::vector<AstCFunc*>> calleesByFunc;
+        std::unordered_map<AstCFunc*, std::unordered_set<size_t>> requiredArgsByFunc;
+        for (AstCFunc* const scanFuncp : funcs) {
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                const auto it = argIndex.find(refp->varScopep());
+                if (it != argIndex.end()) requiredArgsByFunc[scanFuncp].insert(it->second);
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                if (seenFuncs.count(callp->funcp())) {
+                    calleesByFunc[scanFuncp].push_back(callp->funcp());
+                }
+            });
+        }
+
+        bool changed = false;
+        do {
+            changed = false;
+            for (auto funcIt = funcs.rbegin(); funcIt != funcs.rend(); ++funcIt) {
+                AstCFunc* const scanFuncp = *funcIt;
+                std::unordered_set<size_t>& requiredArgs = requiredArgsByFunc[scanFuncp];
+                for (AstCFunc* const calledFuncp : calleesByFunc[scanFuncp]) {
+                    for (const size_t index : requiredArgsByFunc[calledFuncp]) {
+                        changed |= requiredArgs.insert(index).second;
+                    }
+                }
+            }
+        } while (changed);
+
+        std::unordered_map<AstCFunc*, std::vector<AstVarScope*>> argsByFunc;
+        for (AstCFunc* const scanFuncp : funcs) {
+            std::vector<AstVarScope*>& args = argsByFunc[scanFuncp];
+            args.resize(helperArgs.size());
+            for (size_t i = 0; i < helperArgs.size(); ++i) {
+                if (!requiredArgsByFunc[scanFuncp].count(i)) continue;
+                args[i] = newSharedHelperArg(scanFuncp, helperArgs[i], i);
+                ++stats.m_sharedHelperFormalArgsAfter;
+            }
+        }
+        for (AstCFunc* const scanFuncp : funcs) {
+            const std::vector<AstVarScope*>& args = argsByFunc.at(scanFuncp);
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                const auto it = argIndex.find(refp->varScopep());
+                if (it == argIndex.end()) return;
+                AstVarScope* const argVscp = args[it->second];
+                UASSERT_OBJ(argVscp, refp, "Missing remapped shared helper function argument");
+                refp->varp(argVscp->varp());
+                refp->varScopep(argVscp);
+                refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+            });
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (!seenFuncs.count(calledFuncp)) return;
+                for (size_t i = 0; i < helperArgs.size(); ++i) {
+                    if (!requiredArgsByFunc[calledFuncp].count(i)) continue;
+                    UASSERT_OBJ(args[i], callp, "Missing remapped caller shared helper argument");
+                    callp->addArgsp(new AstVarRef{callp->fileline(), args[i],
+                                                  sharedHelperArgAccess(helperArgs[i])});
+                }
+            });
+        }
+        stats.m_sharedHelperParameterizedFuncs += funcs.size();
+        ++stats.m_sharedHelperParameterizations;
+        return true;
+    }
+
     static bool populateSharedHelperArgs(
         SubgraphScheduleInstance& instance, const SubgraphScheduleArtifact& artifact,
-        AstScope* currentScopep,
+        const std::vector<SubgraphSharedHelperArg>& helperArgs, AstScope* currentScopep,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
         SubgraphLoweringStats& stats) {
         instance.m_helperArgs.clear();
-        instance.m_helperArgs.reserve(artifact.m_helperArgs.size());
+        instance.m_helperArgs.reserve(helperArgs.size());
         if (artifact.m_scopep != currentScopep) {
             for (AstVarScope* vscp = currentScopep->varsp(); vscp;
                  vscp = VN_AS(vscp->nextp(), VarScope)) {
@@ -2148,7 +2269,7 @@ public:
                 }
             }
         }
-        for (const SubgraphSharedHelperArg& arg : artifact.m_helperArgs) {
+        for (const SubgraphSharedHelperArg& arg : helperArgs) {
             AstVarScope* currentVscp = arg.m_vscp;
             const auto directIt = templateVarMap.find(arg.m_vscp);
             if (directIt != templateVarMap.end()) {
@@ -2196,6 +2317,15 @@ public:
                                        stats);
         }
         return true;
+    }
+
+    static bool populateSharedHelperArgs(
+        SubgraphScheduleInstance& instance, const SubgraphScheduleArtifact& artifact,
+        AstScope* currentScopep,
+        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
+        SubgraphLoweringStats& stats) {
+        return populateSharedHelperArgs(instance, artifact, artifact.m_helperArgs, currentScopep,
+                                        templateVarMap, stats);
     }
 
     static bool sharedHelperConstantsMatch(const SubgraphScheduleArtifact& artifact,
@@ -2258,6 +2388,85 @@ public:
             }
         }
         return true;
+    }
+
+    static SubgraphSharedHelperRemapVariant* findOrMakeSharedHelperRemapVariant(
+        SubgraphScheduleArtifact& artifact,
+        const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
+        const std::unordered_map<const AstConst*, const AstConst*>& templateConstMap,
+        SubgraphLoweringStats& stats) {
+        std::vector<const AstVarScope*> implicitVscps;
+        std::unordered_set<const AstVarScope*> seenImplicitVscps;
+        for (const SubgraphLogicNodeSig& node : artifact.m_logicSig) {
+            for (const SubgraphLogicRefSig& ref : node.m_refs) {
+                const auto mapIt = templateVarMap.find(ref.m_vscp);
+                if (mapIt == templateVarMap.end()) continue;
+                const auto contractIt = artifact.m_varMapContract.find(ref.m_vscp);
+                if (contractIt == artifact.m_varMapContract.end()) return nullptr;
+                AstVarScope* const mappedVscp = mapIt->second;
+                switch (contractIt->second) {
+                case SubgraphSharedHelperVarRole::ARGUMENT: continue;
+                case SubgraphSharedHelperVarRole::HELPER_LOCAL:
+                    if (!mappedVscp->varp()->isFuncLocal()
+                        || !mappedVscp->dtypep()->similarDType(ref.m_vscp->dtypep())) {
+                        return nullptr;
+                    }
+                    continue;
+                case SubgraphSharedHelperVarRole::IDENTITY:
+                    if (ref.m_vscp != mappedVscp && ref.m_vscp->varp() != mappedVscp->varp()) {
+                        return nullptr;
+                    }
+                    continue;
+                case SubgraphSharedHelperVarRole::IMPLICIT_CONTEXT:
+                    if (ref.m_vscp == mappedVscp || ref.m_vscp->varp() == mappedVscp->varp()) {
+                        continue;
+                    }
+                    if (mappedVscp->varp()->isFuncLocal()
+                        || !mappedVscp->dtypep()->similarDType(ref.m_vscp->dtypep())) {
+                        return nullptr;
+                    }
+                    if (seenImplicitVscps.insert(ref.m_vscp).second) {
+                        implicitVscps.push_back(ref.m_vscp);
+                    }
+                    continue;
+                }
+            }
+        }
+        if (implicitVscps.empty()) return nullptr;
+
+        std::vector<string> constValues;
+        for (const SubgraphLogicNodeSig& node : artifact.m_logicSig) {
+            for (const AstConst* const constp : node.m_consts) {
+                const auto mapIt = templateConstMap.find(constp);
+                const AstConst* const mappedConstp
+                    = mapIt == templateConstMap.end() ? constp : mapIt->second;
+                constValues.push_back(mappedConstp->num().toString());
+            }
+        }
+        for (SubgraphSharedHelperRemapVariant& variant : artifact.m_remapVariants) {
+            if (variant.m_implicitVscps != implicitVscps || variant.m_constValues != constValues) {
+                continue;
+            }
+            ++stats.m_sharedHelperRemapVariantHits;
+            return &variant;
+        }
+
+        AstCFunc* const variantFuncp = cloneOrderedFuncGraph(
+            artifact.m_callFuncp, artifact.m_scopep, {}, templateConstMap, stats, nullptr, true);
+        if (!variantFuncp) return nullptr;
+        SubgraphSharedHelperRemapVariant variant;
+        variant.m_callFuncp = variantFuncp;
+        variant.m_constValues = std::move(constValues);
+        variant.m_helperArgs = artifact.m_helperArgs;
+        variant.m_implicitVscps = std::move(implicitVscps);
+        if (!parameterizeSharedHelperImplicitVars(variant.m_callFuncp, variant.m_implicitVscps,
+                                                  variant.m_helperArgs, stats)) {
+            return nullptr;
+        }
+        stats.m_sharedHelperRemapVariantVars += variant.m_implicitVscps.size();
+        ++stats.m_sharedHelperRemapVariantBuilds;
+        artifact.m_remapVariants.push_back(std::move(variant));
+        return &artifact.m_remapVariants.back();
     }
 
     static std::unordered_map<const AstVarScope*, SubgraphSharedHelperVarRole>
@@ -2459,7 +2668,8 @@ public:
         AstCFunc* funcp, AstScope* destBoundaryScopep,
         const std::unordered_map<const AstVarScope*, AstVarScope*>& templateVarMap,
         const std::unordered_map<const AstConst*, const AstConst*>& templateConstMap,
-        SubgraphLoweringStats& stats, AstSenTree* triggerDomainp = nullptr) {
+        SubgraphLoweringStats& stats, AstSenTree* triggerDomainp = nullptr,
+        bool remapVariant = false) {
         static unsigned s_cloneIndex = 0;
 
         if (triggerDomainp) {
@@ -2676,7 +2886,11 @@ public:
                 AstConst* const replacementp = const_cast<AstConst*>(it->second)->cloneTree(false);
                 clonedConstps[i]->replaceWith(replacementp);
                 VL_DO_DANGLING(clonedConstps[i]->deleteTree(), clonedConstps[i]);
-                ++stats.m_orderCacheRecipeConstantRemaps;
+                if (remapVariant) {
+                    ++stats.m_sharedHelperRemapVariantConstantRemaps;
+                } else {
+                    ++stats.m_orderCacheRecipeConstantRemaps;
+                }
             }
             bool failed = false;
             bodyp->foreachAndNext([&](AstCCall* callp) {
@@ -2885,11 +3099,11 @@ public:
         return classifySharedHelperUse(artifactp, context) == SubgraphSharedHelperSkipReason::NONE;
     }
 
-    static AstCFunc* sharedHelperCallFunc(const SubgraphScheduleArtifact& artifact,
+    static AstCFunc* sharedHelperCallFunc(AstCFunc* helperFuncp, bool hasTriggered,
                                           AstSenTree* currentDomainp, AstSenTree*& callDomainp) {
         callDomainp = nullptr;
-        if (!artifact.m_hasTriggered) return artifact.m_callFuncp;
-        AstIf* const guardp = VN_CAST(artifact.m_callFuncp->stmtsp(), If);
+        if (!hasTriggered) return helperFuncp;
+        AstIf* const guardp = VN_CAST(helperFuncp->stmtsp(), If);
         if (!guardp || guardp->nextp() || guardp->elsesp() || !guardp->thensp()) return nullptr;
         AstCFunc* bodyFuncp = nullptr;
         bool multipleCalls = false;
@@ -2901,12 +3115,17 @@ public:
             }
         });
         if (!bodyFuncp || multipleCalls || bodyFuncp->entryPoint()
-            || bodyFuncp->dpiImportPrototype()
-            || bodyFuncp->scopep() != artifact.m_callFuncp->scopep()) {
+            || bodyFuncp->dpiImportPrototype() || bodyFuncp->scopep() != helperFuncp->scopep()) {
             return nullptr;
         }
         callDomainp = currentDomainp;
         return bodyFuncp;
+    }
+
+    static AstCFunc* sharedHelperCallFunc(const SubgraphScheduleArtifact& artifact,
+                                          AstSenTree* currentDomainp, AstSenTree*& callDomainp) {
+        return sharedHelperCallFunc(artifact.m_callFuncp, artifact.m_hasTriggered, currentDomainp,
+                                    callDomainp);
     }
 
     void noteSharedReuseSkip(SubgraphSharedHelperSkipReason reason) {
@@ -3794,32 +4013,91 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         }
         if (matchedOrderCacheEntryp) {
             SubgraphOrderCacheEntry& cacheEntry = *matchedOrderCacheEntryp;
+            bool orderCacheSharedHelperCovers = false;
+            SubgraphSharedHelperRemapVariant* orderCacheRemapVariantp = nullptr;
+            if (cacheEntry.m_artifactp
+                && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
+                                                             sharedContext)) {
+                orderCacheSharedHelperCovers = SubgraphLoweringState::sharedHelperCoversVarMap(
+                    *cacheEntry.m_artifactp, orderCacheTemplateVarMap);
+                if (!orderCacheSharedHelperCovers) {
+                    orderCacheRemapVariantp
+                        = SubgraphLoweringState::findOrMakeSharedHelperRemapVariant(
+                            *cacheEntry.m_artifactp, orderCacheTemplateVarMap,
+                            orderCacheTemplateConstMap, state.m_stats);
+                }
+            }
+            const auto populateOrderCacheSharedHelper = [&](bool requireExactConstants) {
+                SubgraphScheduleArtifact& artifact = *cacheEntry.m_artifactp;
+                AstSenTree* sharedTriggerDomainp = nullptr;
+                AstCFunc* const sharedFuncp
+                    = orderCacheRemapVariantp
+                          ? SubgraphLoweringState::sharedHelperCallFunc(
+                                orderCacheRemapVariantp->m_callFuncp, artifact.m_hasTriggered,
+                                group.m_senTreep, sharedTriggerDomainp)
+                          : SubgraphLoweringState::sharedHelperCallFunc(artifact, group.m_senTreep,
+                                                                        sharedTriggerDomainp);
+                plan.m_artifactp = &artifact;
+                plan.m_instance.m_callFuncp = sharedFuncp;
+                plan.m_instance.m_scopep = group.m_scopep;
+                plan.m_instance.m_sharedCall
+                    = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
+                plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
+                if (!sharedFuncp) return SubgraphSharedHelperApplyFailReason::CALL_FUNCTION;
+                if (orderCacheRemapVariantp) {
+                    if (!SubgraphLoweringState::populateSharedHelperArgs(
+                            plan.m_instance, artifact, orderCacheRemapVariantp->m_helperArgs,
+                            group.m_scopep, orderCacheTemplateVarMap, state.m_stats)) {
+                        return SubgraphSharedHelperApplyFailReason::ARGUMENTS;
+                    }
+                    return SubgraphSharedHelperApplyFailReason::NONE;
+                }
+                return SubgraphLoweringState::populateSharedHelperInstance(
+                    plan.m_instance, artifact, group.m_scopep, orderCacheTemplateVarMap,
+                    subgraphLogic, requireExactConstants, state.m_stats);
+            };
             if (orderCacheConstantsDiffer || orderCacheDomainsDiffer) {
                 if (cacheEntry.m_artifactp
                     && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
                                                                  sharedContext)) {
-                    if (!SubgraphLoweringState::sharedHelperCoversVarMap(
-                            *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
-                        ++state.m_stats.m_orderCacheSharedSkipVarMap;
-                    } else {
+                    SubgraphScheduleArtifact& artifact = *cacheEntry.m_artifactp;
+                    if (orderCacheSharedHelperCovers || orderCacheRemapVariantp) {
                         if (tailFuncps) {
                             for (AstCFunc* const tailFuncp : *tailFuncps) {
                                 plan.m_instance.m_tailFuncps.push_back(tailFuncp);
                             }
                         }
                         AstSenTree* sharedTriggerDomainp = nullptr;
-                        AstCFunc* const sharedFuncp = SubgraphLoweringState::sharedHelperCallFunc(
-                            *cacheEntry.m_artifactp, group.m_senTreep, sharedTriggerDomainp);
-                        plan.m_artifactp = cacheEntry.m_artifactp;
+                        AstCFunc* const sharedFuncp
+                            = orderCacheRemapVariantp
+                                  ? SubgraphLoweringState::sharedHelperCallFunc(
+                                        orderCacheRemapVariantp->m_callFuncp,
+                                        artifact.m_hasTriggered, group.m_senTreep,
+                                        sharedTriggerDomainp)
+                                  : SubgraphLoweringState::sharedHelperCallFunc(
+                                        artifact, group.m_senTreep, sharedTriggerDomainp);
+                        plan.m_artifactp = &artifact;
                         plan.m_instance.m_callFuncp = sharedFuncp;
                         plan.m_instance.m_scopep = group.m_scopep;
                         plan.m_instance.m_sharedCall
                             = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
                         plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
-                        const SubgraphSharedHelperApplyFailReason applyFail
-                            = SubgraphLoweringState::populateSharedHelperInstance(
-                                plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
+                        SubgraphSharedHelperApplyFailReason applyFail
+                            = SubgraphSharedHelperApplyFailReason::NONE;
+                        if (!sharedFuncp) {
+                            applyFail = SubgraphSharedHelperApplyFailReason::CALL_FUNCTION;
+                        } else if (orderCacheRemapVariantp) {
+                            if (!SubgraphLoweringState::populateSharedHelperArgs(
+                                    plan.m_instance, artifact,
+                                    orderCacheRemapVariantp->m_helperArgs, group.m_scopep,
+                                    orderCacheTemplateVarMap, state.m_stats)) {
+                                applyFail = SubgraphSharedHelperApplyFailReason::ARGUMENTS;
+                            }
+                        } else {
+                            applyFail = SubgraphLoweringState::populateSharedHelperInstance(
+                                plan.m_instance, artifact, group.m_scopep,
                                 orderCacheTemplateVarMap, subgraphLogic, true, state.m_stats);
+                        }
                         if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                      subgraphLogic);
@@ -3837,6 +4115,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         }
                         state.noteOrderCacheSharedSkip(applyFail);
                         plan = SubgraphSchedulePlan{};
+                    } else {
+                        ++state.m_stats.m_orderCacheSharedSkipVarMap;
                     }
                 }
                 if (replayCachedOrder(cacheEntry)) return plan;
@@ -3904,8 +4184,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                             = SubgraphLoweringState::classifySharedHelperUse(
                                 cacheEntry.m_artifactp, sharedContext);
                         if (sharedSkipReason == SubgraphSharedHelperSkipReason::NONE
-                            && !SubgraphLoweringState::sharedHelperCoversVarMap(
-                                *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
+                            && !orderCacheSharedHelperCovers && !orderCacheRemapVariantp) {
                             ++state.m_stats.m_orderCacheSharedSkipVarMap;
                             ++state.m_stats.m_orderCacheSkipTriggered;
                             matchedOrderCacheEntryp = nullptr;
@@ -3920,21 +4199,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                     plan.m_instance.m_tailFuncps.push_back(tailFuncp);
                                 }
                             }
-                            AstSenTree* sharedTriggerDomainp = nullptr;
-                            AstCFunc* const sharedFuncp
-                                = SubgraphLoweringState::sharedHelperCallFunc(
-                                    *cacheEntry.m_artifactp, group.m_senTreep,
-                                    sharedTriggerDomainp);
-                            plan.m_artifactp = cacheEntry.m_artifactp;
-                            plan.m_instance.m_callFuncp = sharedFuncp;
-                            plan.m_instance.m_scopep = group.m_scopep;
-                            plan.m_instance.m_sharedCall
-                                = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
-                            plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
                             const SubgraphSharedHelperApplyFailReason applyFail
-                                = SubgraphLoweringState::populateSharedHelperInstance(
-                                    plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                                    orderCacheTemplateVarMap, subgraphLogic, false, state.m_stats);
+                                = populateOrderCacheSharedHelper(false);
                             if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                                 populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                          subgraphLogic);
@@ -3956,26 +4222,14 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 } else if (cacheEntry.m_artifactp
                            && SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
                                                                         sharedContext)
-                           && SubgraphLoweringState::sharedHelperCoversVarMap(
-                               *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
+                           && (orderCacheSharedHelperCovers || orderCacheRemapVariantp)) {
                     if (tailFuncps) {
                         for (AstCFunc* const tailFuncp : *tailFuncps) {
                             plan.m_instance.m_tailFuncps.push_back(tailFuncp);
                         }
                     }
-                    AstSenTree* sharedTriggerDomainp = nullptr;
-                    AstCFunc* const sharedFuncp = SubgraphLoweringState::sharedHelperCallFunc(
-                        *cacheEntry.m_artifactp, group.m_senTreep, sharedTriggerDomainp);
-                    plan.m_artifactp = cacheEntry.m_artifactp;
-                    plan.m_instance.m_callFuncp = sharedFuncp;
-                    plan.m_instance.m_scopep = group.m_scopep;
-                    plan.m_instance.m_sharedCall
-                        = sharedFuncp && sharedFuncp->scopep() != group.m_scopep;
-                    plan.m_instance.m_triggerDomainp = sharedTriggerDomainp;
                     const SubgraphSharedHelperApplyFailReason applyFail
-                        = SubgraphLoweringState::populateSharedHelperInstance(
-                            plan.m_instance, *cacheEntry.m_artifactp, group.m_scopep,
-                            orderCacheTemplateVarMap, subgraphLogic, false, state.m_stats);
+                        = populateOrderCacheSharedHelper(false);
                     if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                         populateSubgraphScheduleInstanceContract(plan.m_instance, state,
                                                                  subgraphLogic);
@@ -3996,8 +4250,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     if (SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
                                                                   sharedContext)
-                        && !SubgraphLoweringState::sharedHelperCoversVarMap(
-                            *cacheEntry.m_artifactp, orderCacheTemplateVarMap)) {
+                        && !orderCacheSharedHelperCovers && !orderCacheRemapVariantp) {
                         ++state.m_stats.m_orderCacheSharedSkipVarMap;
                     }
                     if (replayCachedOrder(cacheEntry)) return plan;
