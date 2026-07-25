@@ -51,7 +51,14 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds av
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper implicit context vars\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+0")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use cache hits\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use calls\s+(\d+)", 11)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use scans\s+(\d+)", 11)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+(\d+)", 34)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper scope index builds\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper scope index hits\s+0")
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper var index builds\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper var index hits\s+(\d+)", 52)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+([1-9]\d*)")
 test.file_grep(test.stats,

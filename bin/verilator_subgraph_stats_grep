@@ -96,7 +96,7 @@ grep_stats "Parent order graph size" \
     'Scheduling, Order (act|nba|ico|stl)( built| ordered| domains| move built)?, (edges|edges hard|edges soft|vertices|vertices logic|vertices logic subgraph|vertices var|vertices var phase|vertices var pord|vertices var post|vertices var pre|vertices var std)'
 
 grep_stats "Subgraph lowering time" \
-    'Scheduling, Subgraph [^,]+, time (total|lower groups|build plans|build contract|build logic shape|build logic signature|compute domain shape|discard logic|internal order|lookup artifacts|prepare snapshots|materialize|emit snapshots|collect groups|collect input stats|collect region written vars|recipe replay|template map|triggered analysis|internal order top [0-9]+ .*) sec'
+    'Scheduling, Subgraph [^,]+, time (total|lower groups|build plans|build contract|build logic shape|build logic signature|clone ordered funcs|compute domain shape|discard logic|internal order|lookup artifacts|make artifacts|mark hidden uses|parameterize helpers|parameterize remap variants|populate helper args|prepare snapshots|materialize|emit snapshots|collect groups|collect input stats|collect region written vars|recipe replay|split ordered funcs|template map|triggered analysis|internal order top [0-9]+ .*) sec'
 
 grep_stats "Subgraph internal order aggregates" \
     'Scheduling, Subgraph [^,]+, internal order aggregate (calls|constants|groups|nodes|refs|top [0-9]+ .*)'
@@ -120,7 +120,10 @@ grep_stats "Order cache clone diagnostics" \
     'Scheduling, Subgraph [^,]+, (ordered function clones|order cache clone (null|fail name|fail (other|state|shadow|temp|vlem)|generated var remap))'
 
 grep_stats "Shared helper parameterization" \
-    'Scheduling, Subgraph [^,]+, shared helper (constant args|contract|external args|hidden uses|instance local args|parameterization fails|parameterizations|parameterized funcs|remap variant)'
+    'Scheduling, Subgraph [^,]+, shared helper (call args|constant args|contract|external args|formal args|hidden use|hidden uses|implicit context vars|instance local args|parameterization fails|parameterizations|parameterized funcs|remap variant|scope index|var index)'
+
+grep_stats "Generated C++ size" \
+    'Output, C\+\+ (bytes|files|max file bytes|max function bytes)'
 
 grep_stats "Triggered shareability" \
     'Scheduling, Subgraph [^,]+, triggered (artifact|ref)'
