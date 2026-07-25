@@ -62,8 +62,8 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, time discard logic sec\s+
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time make artifacts sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time mark hidden uses sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time parameterize helpers sec\s+\d+\.\d+")
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph nba, time parameterize remap variants sec\s+\d+\.\d+")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, time parameterize remap variants sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time populate helper args sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time recipe replay sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time split ordered funcs sec\s+\d+\.\d+")
