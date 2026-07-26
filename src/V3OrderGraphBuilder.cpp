@@ -89,6 +89,7 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_contractUsesForcePost = 0;
         uint64_t m_contractUsesNormal = 0;
         uint64_t m_contractUsesRaw = 0;
+        uint64_t m_contractUsesSoft = 0;
         uint64_t m_delayedShadowIndexVars = 0;
         uint64_t m_delayedShadowLookups = 0;
         uint64_t m_nestedContractUses = 0;
@@ -103,6 +104,7 @@ class OrderGraphBuilder final : public VNVisitor {
         FORCE_NOT_POST,
         FORCE_POST,
         NORMAL,
+        SOFT,
     };
     struct SubgraphContractUse final {
         AstVarScope* m_vscp = nullptr;
@@ -470,6 +472,34 @@ class OrderGraphBuilder final : public VNVisitor {
         }
     }
 
+    void addSoftVarUsage(AstVarScope* varscp, bool isRead, bool isWrite, AstNode* nodep) {
+        UASSERT_OBJ(m_logicVxp, nodep, "Var usage not under logic");
+        UASSERT_OBJ(varscp, nodep, "Var didn't get varscoped in V3Scope.cpp");
+
+        const bool prevGen = varscp->user2() & VU_GEN;
+        const bool prevCon = varscp->user2() & VU_CON;
+        const bool gen = !prevGen && isWrite && !varscp->varp()->ignoreSchedWrite();
+
+        bool con = false;
+        if (!prevCon && isRead) {
+            con = true;
+            if (m_forceReadEdgeIgnores.count(varscp) || !m_readTriggersCombLogic(varscp)) {
+                con = false;
+            }
+        }
+
+        if (gen) {
+            varscp->user2Or(VU_GEN);
+            OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+            m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
+        }
+        if (con) {
+            varscp->user2Or(VU_CON);
+            OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+            m_graphp->addSoftEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
+        }
+    }
+
     void addPhaseUsage(OrderSubgraphPhaseVertex* phaseVtxp, bool isRead, bool isWrite,
                        AstNode* nodep) {
         UASSERT_OBJ(m_logicVxp, nodep, "Phase usage not under logic");
@@ -509,6 +539,10 @@ class OrderGraphBuilder final : public VNVisitor {
             ++m_subgraphStats.m_contractUsesNormal;
             addVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
             return;
+        case SubgraphContractUseMode::SOFT:
+            ++m_subgraphStats.m_contractUsesSoft;
+            addSoftVarUsage(use.m_vscp, use.m_read, use.m_write, nodep);
+            return;
         }
     }
 
@@ -516,10 +550,14 @@ class OrderGraphBuilder final : public VNVisitor {
                                       std::vector<SubgraphContractUse>& uses) {
         const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
+        const bool softNonFeedthroughRead = !m_inClocked && nodep->hasClockedState()
+                                            && nodep->phase() == AstSubgraphInstance::Phase::POST;
         if (!hideClockedBoundaryContract) {
             for (const auto& read : nodep->boundaryReads()) {
                 AstVarScope* const vscp = read.m_varscp;
-                if (read.m_derived) {
+                if (softNonFeedthroughRead) {
+                    addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::SOFT, true, false);
+                } else if (read.m_derived) {
                     addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, true,
                                            false);
                 } else {
@@ -552,6 +590,9 @@ class OrderGraphBuilder final : public VNVisitor {
         AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
         const bool hideClockedBoundaryContract = m_inClocked && subgraphp->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !subgraphp->boundaryWrites().empty();
+        const bool softNonFeedthroughRead
+            = !m_inClocked && subgraphp->hasClockedState()
+              && subgraphp->phase() == AstSubgraphInstance::Phase::POST;
         if (hideClockedBoundaryContract && sourceBoundaryp == scopep && vscp->scopep() == scopep
             && vscp->varp()->isIO() && vscp->varp()->direction().isNonOutput()) {
             return;
@@ -559,8 +600,12 @@ class OrderGraphBuilder final : public VNVisitor {
         if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
             return;
         }
+        if (softNonFeedthroughRead && use.m_read) {
+            addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::SOFT, true, false);
+        }
+        const bool hardRead = use.m_read && !softNonFeedthroughRead;
         if (sourceBoundaryp && sourceBoundaryp != scopep) {
-            const bool coarseRead = use.m_read;
+            const bool coarseRead = hardRead;
             const bool coarseWrite = publishBoundaryWrites && use.m_write;
             if (coarseRead || coarseWrite) {
                 addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, coarseRead,
@@ -568,9 +613,9 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         } else {
             addSubgraphContractUse(uses, vscp,
-                                   use.m_read ? SubgraphContractUseMode::FORCE_NOT_POST
-                                              : SubgraphContractUseMode::NORMAL,
-                                   use.m_read, use.m_write);
+                                   hardRead ? SubgraphContractUseMode::FORCE_NOT_POST
+                                            : SubgraphContractUseMode::NORMAL,
+                                   hardRead, use.m_write);
         }
     }
 
@@ -608,6 +653,7 @@ class OrderGraphBuilder final : public VNVisitor {
                          m_subgraphStats.m_contractUsesForcePost);
         V3Stats::addStat(prefix + "contract uses normal", m_subgraphStats.m_contractUsesNormal);
         V3Stats::addStat(prefix + "contract uses raw", m_subgraphStats.m_contractUsesRaw);
+        V3Stats::addStat(prefix + "contract uses soft", m_subgraphStats.m_contractUsesSoft);
         V3Stats::addStat(prefix + "delayed shadow index vars",
                          m_subgraphStats.m_delayedShadowIndexVars);
         V3Stats::addStat(prefix + "delayed shadow lookups",

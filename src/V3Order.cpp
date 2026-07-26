@@ -76,6 +76,7 @@
 #include "V3OrderInternal.h"
 #include "V3Os.h"
 #include "V3Sched.h"
+#include "V3SchedSubgraph.h"
 #include "V3Stats.h"
 
 #include <memory>
@@ -203,6 +204,23 @@ void reportOrderGraphStats(const string& tag, const string& stage, const V3Graph
     V3Stats::addStat(prefix + "vertices var pre", stats.m_preVertices);
     V3Stats::addStat(prefix + "vertices var std", stats.m_stdVertices);
 }
+
+void markSubgraphInputRefreshes(OrderGraph& graph) {
+    // Acyclic preserves the pre-cut SCC colors. Refresh a subgraph input if its soft dependency
+    // participated in a cycle, even when acyclic chose another edge in that cycle to cut.
+    for (V3GraphVertex& vertex : graph.vertices()) {
+        auto* const logicp = dynamic_cast<OrderLogicVertex*>(&vertex);
+        if (!logicp) continue;
+        AstSubgraphInstance* const subgraphp = VN_CAST(logicp->nodep(), SubgraphInstance);
+        if (!subgraphp) continue;
+        for (const V3GraphEdge& edge : vertex.inEdges()) {
+            if (vertex.color() && edge.cutable() && edge.fromp()->color() == vertex.color()) {
+                V3Sched::rememberSubgraphInputRefreshScope(subgraphp->scopep());
+                break;
+            }
+        }
+    }
+}
 }  // namespace
 
 string OrderGraph::loopsVertexCb(V3GraphVertex* vertexp) {
@@ -283,6 +301,7 @@ void V3Order::orderOrderGraph(OrderGraph& graph, const std::string& tag) {
     // the introduction of Hybid sensitivity expressions, before invoking
     // ordering (e.g. in V3SchedAcyclic).
     graph.acyclic(&V3GraphEdge::followAlwaysTrue);
+    if (v3Global.opt.subgraphSchedule()) markSubgraphInputRefreshes(graph);
     if (dumpGraphLevel()) graph.dumpDotFilePrefixed(tag + "_orderg_acyc");
 
     // Assign ranks so we know what to follow, then sort vertices and edges by that ordering

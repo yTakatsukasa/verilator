@@ -25,14 +25,17 @@
 
 namespace V3Sched {
 
+void appendSubgraphInputRefreshCalls(AstCFunc* funcp);
 AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::string& nameSuffix,
                                  bool slow);
 
-void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
+void clearSubgraphInputRefreshScopes() VL_MT_DISABLED;
 void clearSubgraphSnapshotProcedures() VL_MT_DISABLED;
 void lowerSubgraphLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                         const V3Order::TrigToSenMap& trigToSen, const string& tag, bool slow,
                         const V3Order::ExternalDomainsProvider& externalDomains);
+void rememberSubgraphInputRefreshScope(const AstScope* scopep) VL_MT_DISABLED;
+void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) VL_MT_DISABLED;
 
 }  // namespace V3Sched
 

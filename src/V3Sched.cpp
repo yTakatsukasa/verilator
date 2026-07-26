@@ -951,6 +951,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 // Top level entry-point to scheduling
 
 void schedule(AstNetlist* netlistp) {
+    if (v3Global.opt.subgraphSchedule()) clearSubgraphInputRefreshScopes();
     clearSubgraphScopeContracts();
     clearSubgraphSnapshotProcedures();
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
@@ -1195,6 +1196,7 @@ void schedule(AstNetlist* netlistp) {
     auto* const postponedFuncp = createPostponed(netlistp, logicClasses);
 
     // Step 14: Bolt it all together to create the '_eval' function
+    if (settleRefreshFuncp) appendSubgraphInputRefreshCalls(settleRefreshFuncp);
     createEval(netlistp, icoLoopp, settleRefreshFuncp, trigKit, actKit, nbaKit, obsKit, reactKit,
                postponedFuncp, timingKit);
 

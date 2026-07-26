@@ -85,8 +85,10 @@ struct SubgraphInstanceContract final {
 using SubgraphInstanceContractMap = std::unordered_map<const AstScope*, SubgraphInstanceContract>;
 
 struct SubgraphRegistry final {
+    std::unordered_set<const AstScope*> m_inputRefreshScopes;
     SubgraphInstanceContractMap m_scopeContracts;
     std::unordered_set<const AstNodeProcedure*> m_snapshotProcedures;
+    std::unordered_map<const AstScope*, std::vector<AstCFunc*>> m_stlSubgraphFuncs;
 };
 
 SubgraphRegistry& subgraphRegistry() {
@@ -118,6 +120,26 @@ AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::s
     return clonep;
 }
 
+void appendSubgraphInputRefreshCalls(AstCFunc* funcp) {
+    SubgraphRegistry& registry = subgraphRegistry();
+    std::vector<const AstScope*> scopes{registry.m_inputRefreshScopes.begin(),
+                                        registry.m_inputRefreshScopes.end()};
+    std::sort(scopes.begin(), scopes.end(), [](const AstScope* lhsp, const AstScope* rhsp) {
+        return lhsp->name() < rhsp->name();
+    });
+    uint64_t calls = 0;
+    for (const AstScope* const scopep : scopes) {
+        const auto it = registry.m_stlSubgraphFuncs.find(scopep);
+        if (it == registry.m_stlSubgraphFuncs.end()) continue;
+        for (AstCFunc* const tailFuncp : it->second) {
+            funcp->addStmtsp(util::callVoidFunc(tailFuncp));
+            ++calls;
+        }
+    }
+    V3Stats::addStat("Scheduling, Subgraph input refresh calls", calls);
+    V3Stats::addStat("Scheduling, Subgraph input refresh scopes", scopes.size());
+}
+
 const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep) {
     auto& scopeContracts = subgraphRegistry().m_scopeContracts;
     const auto it = scopeContracts.find(scopep);
@@ -142,6 +164,12 @@ const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep)
 }
 
 void clearSubgraphScopeContracts() { subgraphRegistry().m_scopeContracts.clear(); }
+
+void clearSubgraphInputRefreshScopes() { subgraphRegistry().m_inputRefreshScopes.clear(); }
+
+void rememberSubgraphInputRefreshScope(const AstScope* scopep) {
+    subgraphRegistry().m_inputRefreshScopes.insert(scopep);
+}
 
 void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {
     subgraphRegistry().m_snapshotProcedures.insert(procp);
@@ -1622,15 +1650,10 @@ struct SubgraphLoweringStats final {
 class SubgraphLoweringState final {
     static constexpr size_t MAX_SHARED_HELPER_REMAP_VARS = 64;
 
-    static std::unordered_map<AstScope*, std::vector<AstCFunc*>>& stlSubgraphFuncsStorage() {
-        static std::unordered_map<AstScope*, std::vector<AstCFunc*>> s_stlSubgraphFuncs;
-        return s_stlSubgraphFuncs;
-    }
-
 public:
     explicit SubgraphLoweringState(const string& tag)
         : m_snapshotCrossBoundaryReads{tag == "nba"}
-        , m_stlSubgraphFuncs{stlSubgraphFuncsStorage()} {
+        , m_stlSubgraphFuncs{subgraphRegistry().m_stlSubgraphFuncs} {
         if (tag == "stl") m_stlSubgraphFuncs.clear();
     }
 
@@ -3211,6 +3234,25 @@ public:
         return resultp;
     }
 
+    static bool appendContractBoundaryUse(SubgraphInstanceContract& contract, AstVarScope* vscp,
+                                          AstScope* boundaryScopep, VAccess access) {
+        if (vscp->scopep() != boundaryScopep || !vscp->varp()->isIO()) return false;
+        if (access.isReadOrRW() && vscp->varp()->direction().isNonOutput()) {
+            contract.addBoundaryRead(vscp, V3SubgraphSummary::isDerivedBoundaryInput(vscp));
+        }
+        if (access.isWriteOrRW()) {
+            const SubgraphInstanceContract* const summaryp
+                = getSubgraphScopeContract(boundaryScopep);
+            if (summaryp
+                && std::find(summaryp->m_boundaryWrites.begin(), summaryp->m_boundaryWrites.end(),
+                             vscp)
+                       != summaryp->m_boundaryWrites.end()) {
+                contract.addBoundaryWrite(vscp);
+            }
+        }
+        return true;
+    }
+
     void appendContractExternalUses(SubgraphInstanceContract& contract, AstCFunc* funcp,
                                     AstScope* boundaryScopep) {
         std::unordered_set<AstCFunc*> seen;
@@ -3221,6 +3263,9 @@ public:
                 if (vscp->varp()->isFuncLocal()) return;
                 if (0 == vscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
                     ++m_stats.m_contractExternalUseSnapshotSkips;
+                    return;
+                }
+                if (appendContractBoundaryUse(contract, vscp, boundaryScopep, refp->access())) {
                     return;
                 }
                 const bool externalToSubgraph
@@ -3262,12 +3307,7 @@ public:
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
                 if (vscp->varp()->isFuncLocal()) return;
-                if (vscp->scopep() == boundaryScopep && vscp->varp()->isIO()) {
-                    if (refp->access().isReadOrRW()) {
-                        contract.addBoundaryRead(vscp,
-                                                 V3SubgraphSummary::isDerivedBoundaryInput(vscp));
-                    }
-                    if (refp->access().isWriteOrRW()) contract.addBoundaryWrite(vscp);
+                if (appendContractBoundaryUse(contract, vscp, boundaryScopep, refp->access())) {
                     return;
                 }
                 if (isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) return;
@@ -3291,6 +3331,9 @@ public:
                 AstVarScope* const vscp = refp->varScopep();
                 if (0 == vscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
                     ++m_stats.m_contractExternalUseSnapshotSkips;
+                    return;
+                }
+                if (appendContractBoundaryUse(contract, vscp, boundaryScopep, refp->access())) {
                     return;
                 }
                 const bool externalToSubgraph
@@ -3831,7 +3874,7 @@ public:
     std::unordered_map<TailCloneKey, AstCFunc*, TailCloneKeyHash> m_tailCloneCache;
     std::unordered_set<AstVarScope*> m_parentConsumedSubgraphVars;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
-    std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
+    std::unordered_map<const AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
     SubgraphLoweringStats m_stats;
 };
 
@@ -3968,7 +4011,10 @@ SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
 SubgraphInstanceContract buildSubgraphSchedulePlanContract(AstScope* scopep) {
     SubgraphInstanceContract contract;
     const SubgraphInstanceContract* const summaryp = getSubgraphScopeContract(scopep);
-    if (summaryp) contract = *summaryp;
+    if (summaryp) {
+        contract.m_hasClockedState = summaryp->m_hasClockedState;
+        contract.m_hasPostPhase = summaryp->m_hasPostPhase;
+    }
     return contract;
 }
 
