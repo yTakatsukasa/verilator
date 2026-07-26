@@ -534,6 +534,11 @@ class OrderGraphBuilder final : public VNVisitor {
                                        true);
             }
         }
+        if (!m_inPre) {
+            for (AstVarScope* const vscp : nodep->coarseWrites()) {
+                addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, false, true);
+            }
+        }
     }
 
     void collectSubgraphExternalUse(AstSubgraphInstance* subgraphp,

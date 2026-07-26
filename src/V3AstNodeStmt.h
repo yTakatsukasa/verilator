@@ -1274,6 +1274,7 @@ public:
 private:
     std::vector<BoundaryReadContract> m_boundaryReads;
     std::vector<AstVarScope*> m_boundaryWrites;
+    std::vector<AstVarScope*> m_coarseWrites;
     std::vector<ExternalUseContract> m_externalUses;
     Phase m_phase = Phase::NONE;
     VAlwaysKwd m_keyword = VAlwaysKwd::ALWAYS;
@@ -1305,6 +1306,13 @@ public:
             if (scanp == vscp) return;
         }
         m_boundaryWrites.push_back(vscp);
+    }
+    const std::vector<AstVarScope*>& coarseWrites() const { return m_coarseWrites; }
+    void addCoarseWrite(AstVarScope* vscp) {
+        for (AstVarScope* const scanp : m_coarseWrites) {
+            if (scanp == vscp) return;
+        }
+        m_coarseWrites.push_back(vscp);
     }
     const std::vector<ExternalUseContract>& externalUses() const { return m_externalUses; }
     std::vector<ExternalUseContract>& externalUses() { return m_externalUses; }

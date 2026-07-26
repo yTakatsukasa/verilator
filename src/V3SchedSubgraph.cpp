@@ -32,6 +32,7 @@ namespace {
 struct SubgraphInstanceContract final {
     std::vector<AstSubgraphInstance::BoundaryReadContract> m_boundaryReads;
     std::vector<AstVarScope*> m_boundaryWrites;
+    std::vector<AstVarScope*> m_coarseWrites;
     std::vector<AstSubgraphInstance::ExternalUseContract> m_externalUses;
     bool m_hasClockedState = false;
     bool m_hasPostPhase = false;
@@ -44,11 +45,19 @@ struct SubgraphInstanceContract final {
         }
         m_boundaryReads.push_back({vscp, derived});
     }
-    void addBoundaryWrite(AstVarScope* vscp) {
+    bool addBoundaryWrite(AstVarScope* vscp) {
         for (AstVarScope* const scanp : m_boundaryWrites) {
-            if (scanp == vscp) return;
+            if (scanp == vscp) return false;
         }
         m_boundaryWrites.push_back(vscp);
+        return true;
+    }
+    bool addCoarseWrite(AstVarScope* vscp) {
+        for (AstVarScope* const scanp : m_coarseWrites) {
+            if (scanp == vscp) return false;
+        }
+        m_coarseWrites.push_back(vscp);
+        return true;
     }
     void addExternalUse(AstVarScope* vscp, bool read, bool write) {
         for (AstSubgraphInstance::ExternalUseContract& use : m_externalUses) {
@@ -66,6 +75,7 @@ struct SubgraphInstanceContract final {
             addBoundaryRead(read.m_varscp, read.m_derived);
         }
         for (AstVarScope* const vscp : other.m_boundaryWrites) addBoundaryWrite(vscp);
+        for (AstVarScope* const vscp : other.m_coarseWrites) addCoarseWrite(vscp);
         for (const AstSubgraphInstance::ExternalUseContract& use : other.m_externalUses) {
             addExternalUse(use.m_varscp, use.m_read, use.m_write);
         }
@@ -224,19 +234,23 @@ struct SubgraphActiveEntry final {
 
 struct SubgraphBatchKey final {
     LogicByScope* m_ownerp = nullptr;
+    AstScope* m_scopep = nullptr;
     AstSenTree* m_senTreep = nullptr;
     SubgraphWrapper m_wrapper;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
 
     bool operator==(const SubgraphBatchKey& other) const {
-        return m_ownerp == other.m_ownerp && m_senTreep == other.m_senTreep
-               && m_wrapper == other.m_wrapper && m_phase == other.m_phase;
+        return m_ownerp == other.m_ownerp && m_scopep == other.m_scopep
+               && m_senTreep == other.m_senTreep && m_wrapper == other.m_wrapper
+               && m_phase == other.m_phase;
     }
 };
 
 struct SubgraphBatchKeyHash final {
     size_t operator()(const SubgraphBatchKey& key) const {
         size_t hash = std::hash<const void*>{}(key.m_ownerp);
+        hash ^= std::hash<const void*>{}(key.m_scopep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
+                + (hash >> 2);
         hash ^= std::hash<const void*>{}(key.m_senTreep) + 0x9e3779b97f4a7c15ULL + (hash << 6)
                 + (hash >> 2);
         hash ^= std::hash<uint8_t>{}(static_cast<uint8_t>(key.m_wrapper.m_kind))
@@ -948,6 +962,8 @@ struct SubgraphLoweringStats final {
     uint64_t m_orderCacheVariantCandidates = 0;
     uint64_t m_orderCacheVariantMax = 0;
     uint64_t m_orderedFuncClones = 0;
+    uint64_t m_parentConsumedContractWrites = 0;
+    uint64_t m_parentConsumedSubgraphVars = 0;
     uint64_t m_schedulePlans = 0;
     uint64_t m_sharedHelperCallArgs = 0;
     uint64_t m_sharedHelperCallArgsMax = 0;
@@ -978,6 +994,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_sharedHelperRemapVariantVars = 0;
     uint64_t m_sharedHelperScopeIndexBuilds = 0;
     uint64_t m_sharedHelperScopeIndexHits = 0;
+    uint64_t m_sharedHelperStlArgumentSkips = 0;
     uint64_t m_sharedHelperVarIndexBuilds = 0;
     uint64_t m_sharedHelperVarIndexHits = 0;
     uint64_t m_snapshotBuckets = 0;
@@ -992,6 +1009,7 @@ struct SubgraphLoweringStats final {
     uint64_t m_snapshotSources = 0;
     uint64_t m_tailCloneReuses = 0;
     uint64_t m_tailClones = 0;
+    uint64_t m_tailWrappers = 0;
     uint64_t m_timeBuildContractUsecs = 0;
     uint64_t m_timeBuildLogicShapeUsecs = 0;
     uint64_t m_timeBuildLogicSigUsecs = 0;
@@ -1322,6 +1340,9 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "order cache variant candidates", m_orderCacheVariantCandidates);
         V3Stats::addStat(prefix + "order cache variant max", m_orderCacheVariantMax);
         V3Stats::addStat(prefix + "ordered function clones", m_orderedFuncClones);
+        V3Stats::addStat(prefix + "parent consumed contract writes",
+                         m_parentConsumedContractWrites);
+        V3Stats::addStat(prefix + "parent consumed subgraph vars", m_parentConsumedSubgraphVars);
         V3Stats::addStat(prefix + "schedule plans", m_schedulePlans);
         V3Stats::addStat(prefix + "shared helper call args", m_sharedHelperCallArgs);
         V3Stats::addStat(prefix + "shared helper call args max", m_sharedHelperCallArgsMax);
@@ -1372,6 +1393,8 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "shared helper scope index builds",
                          m_sharedHelperScopeIndexBuilds);
         V3Stats::addStat(prefix + "shared helper scope index hits", m_sharedHelperScopeIndexHits);
+        V3Stats::addStat(prefix + "shared helper stl argument skips",
+                         m_sharedHelperStlArgumentSkips);
         V3Stats::addStat(prefix + "shared helper var index builds", m_sharedHelperVarIndexBuilds);
         V3Stats::addStat(prefix + "shared helper var index hits", m_sharedHelperVarIndexHits);
         V3Stats::addStat(prefix + "snapshot buckets", m_snapshotBuckets);
@@ -1386,6 +1409,7 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "snapshot sources", m_snapshotSources);
         V3Stats::addStat(prefix + "tail clone reuses", m_tailCloneReuses);
         V3Stats::addStat(prefix + "tail clones", m_tailClones);
+        V3Stats::addStat(prefix + "tail wrappers", m_tailWrappers);
         V3Stats::addStat(prefix + "time build contract sec", seconds(m_timeBuildContractUsecs), 6);
         V3Stats::addStat(prefix + "time build logic shape sec",
                          seconds(m_timeBuildLogicShapeUsecs), 6);
@@ -1622,6 +1646,22 @@ public:
             if (scanp == boundaryScopep) return true;
         }
         return false;
+    }
+
+    void collectParentConsumedSubgraphVars(const std::vector<LogicByScope*>& logic) {
+        for (const LogicByScope* const lbsp : logic) {
+            for (const auto& pair : *lbsp) {
+                AstScope* const logicBoundaryp = boundaryScopeFor(pair.first);
+                pair.second->foreach([&](AstNodeVarRef* refp) {
+                    if (!refp->access().isReadOrRW()) return;
+                    AstVarScope* const vscp = refp->varScopep();
+                    AstScope* const varBoundaryp = boundaryScopeFor(vscp->scopep());
+                    if (!varBoundaryp || varBoundaryp == logicBoundaryp) return;
+                    m_parentConsumedSubgraphVars.insert(vscp);
+                });
+            }
+        }
+        m_stats.m_parentConsumedSubgraphVars = m_parentConsumedSubgraphVars.size();
     }
 
     void discardLogic(LogicByScope& logic) {
@@ -2127,6 +2167,7 @@ public:
             });
         };
         gatherFuncs(funcp);
+        for (AstCFunc* const scanFuncp : funcs) scanFuncp->noLife(true);
 
         std::unordered_set<const AstConst*> orderedConstps;
         for (AstCFunc* const scanFuncp : funcs) {
@@ -2266,6 +2307,62 @@ public:
         stats.m_sharedHelperParameterizedFuncs += funcs.size();
         ++stats.m_sharedHelperParameterizations;
         return true;
+    }
+
+    static bool sharedHelperNeedsArguments(AstCFunc* funcp, AstScope* boundaryScopep,
+                                           const SubgraphLogicSig& logicSig,
+                                           bool parameterizeInstanceLocal) {
+        std::unordered_set<const AstVarScope*> eligibleVscps;
+        for (const SubgraphLogicNodeSig& node : logicSig) {
+            for (const SubgraphLogicRefSig& ref : node.m_refs) {
+                const AstVarScope* const vscp = ref.m_vscp;
+                const bool remappableInstanceLocal
+                    = parameterizeInstanceLocal && isRemappableInstanceLocalVar(vscp)
+                      && (!vscp->varp()->isFuncLocal()
+                          || instanceLocalVarKind(vscp)
+                                 == SubgraphInstanceLocalVarKind::DELAYED_SHADOW);
+                if (!vscp->varp()->isFuncLocal() || remappableInstanceLocal) {
+                    eligibleVscps.insert(vscp);
+                }
+            }
+        }
+
+        std::vector<AstCFunc*> funcs;
+        std::unordered_set<AstCFunc*> seenFuncs;
+        std::function<void(AstCFunc*)> gatherFuncs = [&](AstCFunc* scanFuncp) {
+            if (!seenFuncs.insert(scanFuncp).second) return;
+            funcs.push_back(scanFuncp);
+            scanFuncp->foreach([&](AstCCall* callp) {
+                AstCFunc* const calledFuncp = callp->funcp();
+                if (calledFuncp->entryPoint() || calledFuncp->dpiImportPrototype()
+                    || calledFuncp->scopep() != funcp->scopep()) {
+                    return;
+                }
+                gatherFuncs(calledFuncp);
+            });
+        };
+        gatherFuncs(funcp);
+
+        bool needsArguments = false;
+        for (AstCFunc* const scanFuncp : funcs) {
+            scanFuncp->foreach([&](AstNodeVarRef* refp) {
+                if (needsArguments) return;
+                AstVarScope* const vscp = refp->varScopep();
+                const bool remappable
+                    = isRemappableInstanceLocalVar(vscp)
+                      && (!vscp->varp()->isFuncLocal()
+                          || instanceLocalVarKind(vscp)
+                                 == SubgraphInstanceLocalVarKind::DELAYED_SHADOW);
+                if (isUnderBoundaryScope(vscp->scopep(), boundaryScopep)
+                    && !eligibleVscps.count(vscp) && (!parameterizeInstanceLocal || !remappable)) {
+                    return;
+                }
+                if (!eligibleVscps.count(vscp) && !remappable) return;
+                needsArguments = vscp->scopep() != boundaryScopep;
+            });
+            if (needsArguments) return true;
+        }
+        return false;
     }
 
     static bool parameterizeSharedHelperImplicitVars(
@@ -3121,13 +3218,21 @@ public:
             if (!seen.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
+                if (vscp->varp()->isFuncLocal()) return;
                 if (0 == vscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) {
                     ++m_stats.m_contractExternalUseSnapshotSkips;
                     return;
                 }
                 const bool externalToSubgraph
                     = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
-                if (!externalToSubgraph) return;
+                if (!externalToSubgraph) {
+                    if (refp->access().isWriteOrRW() && m_parentConsumedSubgraphVars.count(vscp)) {
+                        if (contract.addCoarseWrite(vscp)) {
+                            ++m_stats.m_parentConsumedContractWrites;
+                        }
+                    }
+                    return;
+                }
                 contract.addExternalUse(vscp, refp->access().isReadOrRW(),
                                         refp->access().isWriteOrRW());
             });
@@ -3141,6 +3246,14 @@ public:
         ++m_stats.m_contractExternalUseScans;
     }
 
+    void appendContractHelperArgUses(SubgraphInstanceContract& contract,
+                                     const std::vector<SubgraphSharedHelperArg>& helperArgs) {
+        for (const SubgraphSharedHelperArg& arg : helperArgs) {
+            if (!arg.m_writes || !m_parentConsumedSubgraphVars.count(arg.m_vscp)) continue;
+            if (contract.addCoarseWrite(arg.m_vscp)) { ++m_stats.m_parentConsumedContractWrites; }
+        }
+    }
+
     void appendContractTailUses(SubgraphInstanceContract& contract, AstCFunc* funcp,
                                 AstScope* boundaryScopep) {
         std::unordered_set<AstCFunc*> seen;
@@ -3148,6 +3261,7 @@ public:
             if (!seen.insert(scanFuncp).second) return;
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
+                if (vscp->varp()->isFuncLocal()) return;
                 if (vscp->scopep() == boundaryScopep && vscp->varp()->isIO()) {
                     if (refp->access().isReadOrRW()) {
                         contract.addBoundaryRead(vscp,
@@ -3181,7 +3295,14 @@ public:
                 }
                 const bool externalToSubgraph
                     = !isUnderBoundaryScope(vscp->scopep(), boundaryScopep);
-                if (!externalToSubgraph) return;
+                if (!externalToSubgraph) {
+                    if (refp->access().isWriteOrRW() && m_parentConsumedSubgraphVars.count(vscp)) {
+                        if (contract.addCoarseWrite(vscp)) {
+                            ++m_stats.m_parentConsumedContractWrites;
+                        }
+                    }
+                    return;
+                }
                 contract.addExternalUse(vscp, refp->access().isReadOrRW(),
                                         refp->access().isWriteOrRW());
             });
@@ -3612,6 +3733,34 @@ public:
         });
     }
 
+    AstCFunc* makeStlTailWrapper(const SubgraphScheduleInstance& instance, bool slow) {
+        AstCFunc* const helperp = instance.m_callFuncp;
+        AstScope* const scopep = instance.m_scopep;
+        FileLine* const flp = helperp->fileline();
+        AstCFunc* const wrapperp = new AstCFunc{
+            flp, "__VsubgraphStlTailWrapper_" + cvtToStr(m_stlTailWrapperIndex++), scopep, ""};
+        wrapperp->declPrivate(true);
+        wrapperp->dontCombine(true);
+        wrapperp->isConst(false);
+        wrapperp->isLoose(true);
+        wrapperp->isStatic(false);
+        wrapperp->slow(slow);
+        scopep->addBlocksp(wrapperp);
+
+        AstCCall* const callp = new AstCCall{flp, helperp};
+        if (instance.m_sharedCall) {
+            callp->selfPointer(
+                VSelfPointerText{VSelfPointerText::VlSyms{}, instance.m_scopep->nameDotless()});
+        }
+        for (const SubgraphSharedHelperArg& arg : instance.m_helperArgs) {
+            callp->addArgsp(new AstVarRef{flp, arg.m_vscp, sharedHelperArgAccess(arg)});
+        }
+        callp->dtypeSetVoid();
+        wrapperp->addStmtsp(callp->makeStmt());
+        ++m_stats.m_tailWrappers;
+        return wrapperp;
+    }
+
     AstCFunc* cloneTailFuncForNba(AstCFunc* tailFuncp, AstScope* boundaryScopep,
                                   LogicByScope* ownerp, AstSenTree* senTreep, bool slow) {
         const TailCloneKey key{boundaryScopep, ownerp, senTreep, slow,
@@ -3659,6 +3808,7 @@ public:
     }
 
     bool m_snapshotCrossBoundaryReads = false;
+    unsigned m_stlTailWrapperIndex = 0;
     std::unordered_set<SubgraphScheduleArtifactCoarseKey, SubgraphScheduleArtifactCoarseKeyHash>
         m_subgraphArtifactCoarseCache;
     std::unordered_map<SubgraphScheduleArtifactKey, std::vector<SubgraphScheduleArtifact*>,
@@ -3679,6 +3829,7 @@ public:
     std::unordered_map<AstScope*, std::unordered_map<string, std::vector<AstVarScope*>>>
         m_sharedHelperVarsByScope;
     std::unordered_map<TailCloneKey, AstCFunc*, TailCloneKeyHash> m_tailCloneCache;
+    std::unordered_set<AstVarScope*> m_parentConsumedSubgraphVars;
     std::unordered_set<AstVarScope*> m_regionWrittenVars;
     std::unordered_map<AstScope*, std::vector<AstCFunc*>>& m_stlSubgraphFuncs;
     SubgraphLoweringStats m_stats;
@@ -3831,6 +3982,7 @@ void populateSubgraphInstanceContract(AstSubgraphInstance* subgraphp,
     for (AstVarScope* const vscp : contract.m_boundaryWrites) {
         subgraphp->addBoundaryWrite(vscp);
     }
+    for (AstVarScope* const vscp : contract.m_coarseWrites) { subgraphp->addCoarseWrite(vscp); }
     for (const auto& use : contract.m_externalUses) {
         subgraphp->addExternalUse(use.m_varscp, use.m_read, use.m_write);
     }
@@ -3848,6 +4000,7 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, instance.m_callFuncp, instance.m_scopep);
+    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
@@ -3860,6 +4013,7 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, logic, instance.m_scopep);
+    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
@@ -3874,6 +4028,7 @@ SubgraphTailContract buildSubgraphTailContract(const std::vector<AstCFunc*>& tai
         if (!seenFuncps.insert(funcp).second) return;
         funcp->foreach([&](AstNodeVarRef* refp) {
             AstVarScope* const vscp = refp->varScopep();
+            if (vscp->varp()->isFuncLocal()) return;
             bool* readp = nullptr;
             bool* writep = nullptr;
             if (vscp->scopep() != scopep) {
@@ -3922,7 +4077,7 @@ AstSubgraphInstance* getOrCreateSubgraphBatch(
     std::unordered_map<SubgraphBatchKey, AstSubgraphInstance*, SubgraphBatchKeyHash>& batches,
     SubgraphLoweringState& state) {
     const AstSubgraphInstance::Phase phase = subgraphPhaseFor(wrapper, isEarly);
-    const SubgraphBatchKey key{group.m_ownerp, group.m_senTreep, wrapper, phase};
+    const SubgraphBatchKey key{group.m_ownerp, group.m_scopep, group.m_senTreep, wrapper, phase};
     const auto it = batches.find(key);
     if (it != batches.end()) return it->second;
 
@@ -3973,7 +4128,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         logicShapeBuilt = true;
         ++state.m_stats.m_logicShapeBuilds;
     };
-    bool cacheableArtifact = canShare && tag != "stl";
+    bool cacheableArtifact = canShare;
     const SubgraphSharedHelperContext sharedContext{&bundleContext, phase};
     if (cacheableArtifact) {
         if (tailFuncps) ++state.m_stats.m_artifactTailReuseCandidates;
@@ -4050,7 +4205,6 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                                   reuse.m_remap.m_templateVarMap, state.m_stats)
                 && SubgraphLoweringState::sharedHelperConstantsMatch(*artifactp, subgraphLogic,
                                                                      false)) {
-                if (tag == "stl") state.m_stlSubgraphFuncs[group.m_scopep].push_back(callFuncp);
                 plan.m_artifactp = artifactp;
                 if (tailFuncps) {
                     for (AstCFunc* const tailFuncp : *tailFuncps) {
@@ -4080,6 +4234,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     AstCFunc* funcp = nullptr;
     SubgraphTriggeredRefInfo originalTriggeredInfo;
+    SubgraphTriggeredRefInfo scheduledTriggeredInfo;
+    AstCFunc* stlTailFuncp = nullptr;
     std::vector<SubgraphSharedHelperArg> helperArgs;
     SubgraphOrderCacheEntry* matchedOrderCacheEntryp = nullptr;
     std::unordered_map<const AstConst*, const AstConst*> orderCacheTemplateConstMap;
@@ -4266,7 +4422,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         ++state.m_stats.m_orderCacheSharedSkipVarMap;
                     }
                 }
-                if (replayCachedOrder(cacheEntry)) return plan;
+                if (tag != "stl" && replayCachedOrder(cacheEntry)) return plan;
                 if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
@@ -4392,7 +4548,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     } else {
                         state.noteOrderCacheSharedSkip(applyFail);
                         plan = SubgraphSchedulePlan{};
-                        if (replayCachedOrder(cacheEntry)) return plan;
+                        if (tag != "stl" && replayCachedOrder(cacheEntry)) return plan;
                     }
                 } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
                     if (SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
@@ -4400,7 +4556,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         && !orderCacheSharedHelperCovers && !orderCacheRemapVariantp) {
                         ++state.m_stats.m_orderCacheSharedSkipVarMap;
                     }
-                    if (replayCachedOrder(cacheEntry)) return plan;
+                    if (tag != "stl" && replayCachedOrder(cacheEntry)) return plan;
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap, {},
                         state.m_stats);
@@ -4466,26 +4622,39 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
             const uint64_t splitStartUsecs = statStartUsecs();
             util::splitCheck(funcp);
             addElapsedUsecs(state.m_stats.m_timeSplitOrderedFuncsUsecs, splitStartUsecs);
-            const SubgraphTriggeredRefInfo preParameterTriggeredInfo
-                = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(funcp, group.m_scopep,
-                                                                         state.m_stats);
-            originalTriggeredInfo = preParameterTriggeredInfo;
-            const bool parameterizeInstanceLocal
-                = preParameterTriggeredInfo.m_hasTriggered && preParameterTriggeredInfo.m_shareable
-                  && preParameterTriggeredInfo.m_writesInstanceLocal;
+            AstCFunc* scheduledFuncp = funcp;
+            if (tag == "stl") {
+                originalTriggeredInfo = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
+                    funcp, group.m_scopep, state.m_stats);
+                stlTailFuncp = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
+                scheduledFuncp = stlTailFuncp;
+            }
+            scheduledTriggeredInfo = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
+                scheduledFuncp, group.m_scopep, state.m_stats);
+            if (tag != "stl") originalTriggeredInfo = scheduledTriggeredInfo;
+            const bool parameterizeInstanceLocal = scheduledTriggeredInfo.m_hasTriggered
+                                                   && scheduledTriggeredInfo.m_shareable
+                                                   && scheduledTriggeredInfo.m_writesInstanceLocal;
+            if (cacheableArtifact && tag == "stl"
+                && SubgraphLoweringState::sharedHelperNeedsArguments(
+                    scheduledFuncp, group.m_scopep, logicSig, parameterizeInstanceLocal)) {
+                cacheableArtifact = false;
+                ++state.m_stats.m_sharedHelperStlArgumentSkips;
+            }
             if (cacheableArtifact) {
                 const uint64_t parameterizeStartUsecs = statStartUsecs();
                 const bool parameterized = SubgraphLoweringState::parameterizeSharedHelper(
-                    funcp, group.m_scopep, logicSig, parameterizeInstanceLocal, helperArgs,
-                    state.m_stats);
+                    scheduledFuncp, group.m_scopep, logicSig, parameterizeInstanceLocal,
+                    helperArgs, state.m_stats);
                 addElapsedUsecs(state.m_stats.m_timeParameterizeHelpersUsecs,
                                 parameterizeStartUsecs);
                 if (!parameterized) cacheableArtifact = false;
             }
             if (cacheableArtifact && !matchedOrderCacheEntryp) {
                 const SubgraphTriggeredRefInfo triggeredInfo
-                    = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(funcp, group.m_scopep,
-                                                                             state.m_stats, false);
+                    = tag == "stl" ? scheduledTriggeredInfo
+                                   : SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
+                                         scheduledFuncp, group.m_scopep, state.m_stats, false);
                 const bool triggeredShareable
                     = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
                 const bool triggeredCloneable
@@ -4493,7 +4662,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 SubgraphOrderCacheBucket& bucket = state.m_subgraphOrderCache[cacheKey];
                 if (bucket.m_entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
                 bucket.m_entries.push_back(SubgraphOrderCacheEntry{
-                    nullptr, domainShapes.m_exact, funcp, logicSig, orderRecipep,
+                    nullptr, domainShapes.m_exact, scheduledFuncp, logicSig, orderRecipep,
                     triggeredCloneable, triggeredShareable, triggeredInfo.m_writesDelayedShadow,
                     triggeredInfo.m_writesInstanceLocal, triggeredInfo.m_writesLocalTemp,
                     triggeredInfo.m_writesNonLocal, triggeredInfo.m_writesTriggerTemp,
@@ -4510,15 +4679,11 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     if (!funcp) return plan;
 
-    AstCFunc* callFuncp = funcp;
-    if (tag == "stl") {
-        AstCFunc* const tailFuncp = cloneUnguardedFuncBody(funcp, group.m_scopep, "__tail", slow);
-        state.m_stlSubgraphFuncs[group.m_scopep].push_back(tailFuncp);
-        callFuncp = tailFuncp;
-    }
+    AstCFunc* const callFuncp = stlTailFuncp ? stlTailFuncp : funcp;
     const SubgraphTriggeredRefInfo triggeredInfo
-        = SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(callFuncp, group.m_scopep,
-                                                                 state.m_stats, false);
+        = tag == "stl" ? scheduledTriggeredInfo
+                       : SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
+                             callFuncp, group.m_scopep, state.m_stats, false);
     const bool cloneableArtifact
         = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
     const bool triggeredShareableArtifact
@@ -4577,6 +4742,13 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     return plan;
 }
 
+void finalizeStlSchedulePlan(SubgraphSchedulePlan& plan, SubgraphLoweringState& state, bool slow) {
+    if (!plan.m_artifactp) return;
+    const SubgraphScheduleInstance& instance = plan.m_instance;
+    AstCFunc* const wrapperp = state.makeStlTailWrapper(instance, slow);
+    state.m_stlSubgraphFuncs[instance.m_scopep].push_back(wrapperp);
+}
+
 void appendSubgraphScheduleBundlePlan(
     SubgraphScheduleBundle& bundle, AstNetlist* netlistp, LogicByScope& subgraphLogic,
     const SubgraphWrapper& wrapper, bool isEarly, const std::vector<AstCFunc*>* tailFuncps,
@@ -4588,6 +4760,7 @@ void appendSubgraphScheduleBundlePlan(
     SubgraphSchedulePlan plan = buildSubgraphSchedulePlan(
         netlistp, subgraphLogic, wrapper, isEarly, tailFuncps, group, bundleContext, state,
         trigToSen, tag, slow, externalDomains, subgraphIndex);
+    if (tag == "stl") finalizeStlSchedulePlan(plan, state, slow);
     addElapsedUsecs(state.m_stats.m_timeBuildPlansUsecs, buildPlanStartUsecs);
     if (plan.m_artifactp) {
         bundle.m_plans.push_back(std::move(plan));
@@ -4991,6 +5164,7 @@ public:
         setSubgraphInputStatsBefore(m_state.m_stats, collectSubgraphLogicInputStats(m_logic));
         addElapsedUsecs(m_state.m_stats.m_timeCollectInputStatsUsecs, startUsecs);
         startUsecs = statStartUsecs();
+        if (m_tag == "stl") m_state.collectParentConsumedSubgraphVars(m_logic);
         collectSubgraphGroups(m_logic, m_groups);
         addElapsedUsecs(m_state.m_stats.m_timeCollectGroupsUsecs, startUsecs);
         m_state.m_stats.m_groups = m_groups.size();
