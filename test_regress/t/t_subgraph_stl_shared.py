@@ -20,12 +20,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph stl, groups\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph stl, internal order aggregate calls\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph stl, order cache entries\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph stl, order cache misses\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph stl, parent consumed contract writes\s+(\d+)",
-               5)
+test.file_grep(test.stats, r"Scheduling, Subgraph stl, parent consumed contract writes\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph stl, parent consumed subgraph vars\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph stl, shared helper parameterizations\s+(\d+)",
-               2)
-test.file_grep(test.stats, r"Scheduling, Subgraph stl, shared helper stl argument skips\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph stl, shared helper parameterizations\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph stl, shared helper stl argument skips\s+(\d+)",
+               0)
 test.file_grep(test.stats, r"Scheduling, Subgraph stl, tail wrappers\s+(\d+)", 5)
 
 test.passes()
