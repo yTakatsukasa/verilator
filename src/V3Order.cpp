@@ -215,7 +215,7 @@ void markSubgraphInputRefreshes(OrderGraph& graph) {
         if (!subgraphp) continue;
         for (const V3GraphEdge& edge : vertex.inEdges()) {
             if (vertex.color() && edge.cutable() && edge.fromp()->color() == vertex.color()) {
-                V3Sched::rememberSubgraphInputRefreshScope(subgraphp->scopep());
+                V3Sched::rememberSubgraphInputRefreshInstance(subgraphp);
                 break;
             }
         }
