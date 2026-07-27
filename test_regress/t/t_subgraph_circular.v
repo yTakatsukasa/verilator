@@ -21,22 +21,27 @@ module t (
 );
 
   int cyc;
+  logic [6:0] aux0;
+  logic [6:0] aux_ref0;
   logic [14:0] out0;
   logic [14:0] ref0;
 
-  sg_circular i_sg0 (clk, out0, out0);
-  sg_circular_ref i_ref0 (clk, ref0, ref0);
+  sg_circular i_sg0 (clk, out0, out0, aux0);
+  sg_circular_ref i_ref0 (clk, ref0, ref0, aux_ref0);
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
-    if (cyc > 2) `checkh(out0, ref0);
+    if (cyc > 2) begin
+      `checkh(aux0, aux_ref0);
+      `checkh(out0, ref0);
+    end
     if (cyc == 30) begin
       $write("*-* All Finished *-*\n");
       $finish;
     end
   end
 
-  assign sink = ^{out0, ref0};
+  assign sink = ^{aux0, aux_ref0, out0, ref0};
 
 endmodule
 
@@ -45,17 +50,23 @@ module sg_circular #(
 ) (
   input logic clk,
   input logic [14:0] in,
-  output logic [14:0] out
+  output logic [14:0] out,
+  output logic [6:0] aux_out
 ); `SUBGRAPH_BOUNDARY
 
+  logic [6:0] aux_q = 7'h35;
   logic [44:0] child_out;
   logic [44:0] next_q;
   logic [44:0] q = RESET_VALUE;
 
   sg_circular_leaf i_leaf (q, child_out);
 
+  always @(aux_q or clk) aux_out = {aux_q[3:0], aux_q[6:4]} ^ 7'h19;
   always_comb next_q = ({q[28:0], q[44:29]} ^ {30'b0, in}) | {next_q[43:0], 1'b0};
-  always_ff @(posedge clk) q <= next_q;
+  always_ff @(posedge clk) begin
+    aux_q <= {aux_q[4:0], aux_q[6:5]} ^ 7'h2d;
+    q <= next_q;
+  end
   assign out = child_out[14:0] ^ child_out[44:30];
 
 endmodule
@@ -65,17 +76,23 @@ module sg_circular_ref #(
 ) (
   input logic clk,
   input logic [14:0] in,
-  output logic [14:0] out
+  output logic [14:0] out,
+  output logic [6:0] aux_out
 );
 
+  logic [6:0] aux_q = 7'h35;
   logic [44:0] child_out;
   logic [44:0] next_q;
   logic [44:0] q = RESET_VALUE;
 
   sg_circular_leaf i_leaf (q, child_out);
 
+  always @(aux_q or clk) aux_out = {aux_q[3:0], aux_q[6:4]} ^ 7'h19;
   always_comb next_q = ({q[28:0], q[44:29]} ^ {30'b0, in}) | {next_q[43:0], 1'b0};
-  always_ff @(posedge clk) q <= next_q;
+  always_ff @(posedge clk) begin
+    aux_q <= {aux_q[4:0], aux_q[6:5]} ^ 7'h2d;
+    q <= next_q;
+  end
   assign out = child_out[14:0] ^ child_out[44:30];
 
 endmodule

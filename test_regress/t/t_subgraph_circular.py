@@ -17,8 +17,12 @@ common_flags = [
 ]
 
 test.compile(verilator_flags2=["--stats", "--subgraph-schedule"] + common_flags)
+test.file_grep(test.stats, r"Scheduling, Subgraph input refresh candidate targets\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph input refresh calls\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph input refresh fallback instances\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph input refresh inputs\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph input refresh instances\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph input refresh selected targets\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph input refresh scopes\s+(\d+)", 1)
 test.execute()
 

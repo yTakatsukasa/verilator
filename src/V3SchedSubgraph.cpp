@@ -84,7 +84,14 @@ struct SubgraphInstanceContract final {
 
 using SubgraphInstanceContractMap = std::unordered_map<const AstScope*, SubgraphInstanceContract>;
 
+struct SubgraphInputRefreshTarget final {
+    AstCFunc* m_funcp = nullptr;
+    std::vector<const AstVarScope*> m_inputps;
+};
+
 struct SubgraphRegistry final {
+    std::unordered_map<const AstSubgraphInstance*, std::vector<SubgraphInputRefreshTarget>>
+        m_inputRefreshTargets;
     std::unordered_map<const AstSubgraphInstance*, std::unordered_set<const AstVarScope*>>
         m_inputRefreshes;
     SubgraphInstanceContractMap m_scopeContracts;
@@ -124,29 +131,44 @@ AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::s
 void appendSubgraphInputRefreshCalls(AstCFunc* funcp) {
     SubgraphRegistry& registry = subgraphRegistry();
     std::unordered_set<const AstScope*> scopeSet;
+    std::unordered_set<AstCFunc*> selectedSet;
+    uint64_t candidateTargets = 0;
+    uint64_t fallbackInstances = 0;
     uint64_t inputs = 0;
     for (const auto& pair : registry.m_inputRefreshes) {
-        scopeSet.insert(pair.first->scopep());
+        const AstSubgraphInstance* const instancep = pair.first;
+        scopeSet.insert(instancep->scopep());
         inputs += pair.second.size();
+        const auto targetIt = registry.m_inputRefreshTargets.find(instancep);
+        if (targetIt != registry.m_inputRefreshTargets.end()) {
+            candidateTargets += targetIt->second.size();
+            for (const SubgraphInputRefreshTarget& target : targetIt->second) {
+                for (const AstVarScope* const inputp : target.m_inputps) {
+                    if (!pair.second.count(inputp)) continue;
+                    selectedSet.insert(target.m_funcp);
+                    break;
+                }
+            }
+            continue;
+        }
+        ++fallbackInstances;
+        const auto funcsIt = registry.m_stlSubgraphFuncs.find(instancep->scopep());
+        if (funcsIt == registry.m_stlSubgraphFuncs.end()) continue;
+        selectedSet.insert(funcsIt->second.begin(), funcsIt->second.end());
     }
-    std::vector<const AstScope*> scopes{scopeSet.begin(), scopeSet.end()};
-    std::sort(scopes.begin(), scopes.end(), [](const AstScope* lhsp, const AstScope* rhsp) {
+    std::vector<AstCFunc*> selected{selectedSet.begin(), selectedSet.end()};
+    std::sort(selected.begin(), selected.end(), [](const AstCFunc* lhsp, const AstCFunc* rhsp) {
         return lhsp->name() < rhsp->name();
     });
-    uint64_t calls = 0;
-    for (const AstScope* const scopep : scopes) {
-        const auto it = registry.m_stlSubgraphFuncs.find(scopep);
-        if (it == registry.m_stlSubgraphFuncs.end()) continue;
-        for (AstCFunc* const tailFuncp : it->second) {
-            funcp->addStmtsp(util::callVoidFunc(tailFuncp));
-            ++calls;
-        }
-    }
-    V3Stats::addStat("Scheduling, Subgraph input refresh calls", calls);
+    for (AstCFunc* const tailFuncp : selected) { funcp->addStmtsp(util::callVoidFunc(tailFuncp)); }
+    V3Stats::addStat("Scheduling, Subgraph input refresh candidate targets", candidateTargets);
+    V3Stats::addStat("Scheduling, Subgraph input refresh calls", selected.size());
+    V3Stats::addStat("Scheduling, Subgraph input refresh fallback instances", fallbackInstances);
     V3Stats::addStat("Scheduling, Subgraph input refresh inputs", inputs);
     V3Stats::addStat("Scheduling, Subgraph input refresh instances",
                      registry.m_inputRefreshes.size());
-    V3Stats::addStat("Scheduling, Subgraph input refresh scopes", scopes.size());
+    V3Stats::addStat("Scheduling, Subgraph input refresh scopes", scopeSet.size());
+    V3Stats::addStat("Scheduling, Subgraph input refresh selected targets", selected.size());
 }
 
 const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep) {
@@ -174,7 +196,11 @@ const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep)
 
 void clearSubgraphScopeContracts() { subgraphRegistry().m_scopeContracts.clear(); }
 
-void clearSubgraphInputRefreshRequests() { subgraphRegistry().m_inputRefreshes.clear(); }
+void clearSubgraphInputRefreshRequests() {
+    SubgraphRegistry& registry = subgraphRegistry();
+    registry.m_inputRefreshes.clear();
+    registry.m_inputRefreshTargets.clear();
+}
 
 void rememberSubgraphInputRefreshRequest(const AstSubgraphInstance* instancep,
                                          const AstVarScope* inputp) {
@@ -654,6 +680,7 @@ struct SubgraphSchedulePlan final {
     SubgraphScheduleArtifact* m_artifactp = nullptr;
     SubgraphScheduleInstance m_instance;
     AstSubgraphInstance::Phase m_phase = AstSubgraphInstance::Phase::NONE;
+    AstCFunc* m_stlTailWrapperp = nullptr;
     SubgraphWrapper m_wrapper;
 };
 
@@ -4802,6 +4829,7 @@ void finalizeStlSchedulePlan(SubgraphSchedulePlan& plan, SubgraphLoweringState& 
     if (!plan.m_artifactp) return;
     const SubgraphScheduleInstance& instance = plan.m_instance;
     AstCFunc* const wrapperp = state.makeStlTailWrapper(instance, slow);
+    plan.m_stlTailWrapperp = wrapperp;
     state.m_stlSubgraphFuncs[instance.m_scopep].push_back(wrapperp);
 }
 
@@ -4857,6 +4885,19 @@ AstSubgraphInstance* materializeSubgraphSchedulePlan(
         group, plan.m_wrapper, plan.m_phase == AstSubgraphInstance::Phase::PRE, subgraphActivep,
         batches, state);
     subgraphp->addStmtsp(stmtsp);
+    if (plan.m_stlTailWrapperp) {
+        SubgraphInputRefreshTarget target;
+        target.m_funcp = plan.m_stlTailWrapperp;
+        for (const AstSubgraphInstance::BoundaryReadContract& read :
+             instance.m_contract.m_boundaryReads) {
+            target.m_inputps.push_back(read.m_varscp);
+        }
+        for (const AstSubgraphInstance::ExternalUseContract& use :
+             instance.m_contract.m_externalUses) {
+            if (use.m_read) target.m_inputps.push_back(use.m_varscp);
+        }
+        subgraphRegistry().m_inputRefreshTargets[subgraphp].push_back(std::move(target));
+    }
     return subgraphp;
 }
 
