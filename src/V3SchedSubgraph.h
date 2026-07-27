@@ -26,6 +26,8 @@
 namespace V3Sched {
 
 void appendSubgraphInputRefreshCalls(AstCFunc* funcp);
+bool canRefreshSubgraphInput(const AstSubgraphInstance* instancep, const AstVarScope* inputp,
+                             const AstSenTree* senTreep);
 AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::string& nameSuffix,
                                  bool slow);
 

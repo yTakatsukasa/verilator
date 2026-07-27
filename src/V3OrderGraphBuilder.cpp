@@ -25,6 +25,7 @@
 #include "V3OrderGraph.h"
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
+#include "V3SchedSubgraph.h"
 #include "V3Stats.h"
 
 #include <unordered_map>
@@ -90,6 +91,7 @@ class OrderGraphBuilder final : public VNVisitor {
         uint64_t m_contractUsesNormal = 0;
         uint64_t m_contractUsesRaw = 0;
         uint64_t m_contractUsesSoft = 0;
+        uint64_t m_contractUsesSoftUnavailable = 0;
         uint64_t m_delayedShadowIndexVars = 0;
         uint64_t m_delayedShadowLookups = 0;
         uint64_t m_nestedContractUses = 0;
@@ -130,6 +132,7 @@ class OrderGraphBuilder final : public VNVisitor {
     const V3Order::TrigToSenMap& m_trigToSen;
     const std::string& m_tag;
 
+    AstSenTree* m_activeSenTreep = nullptr;
     // Current AstScope being processed
     AstScope* m_scopep = nullptr;
     // Sensitivity list for clocked logic, nullptr for combinational and hybrid logic
@@ -550,14 +553,18 @@ class OrderGraphBuilder final : public VNVisitor {
                                       std::vector<SubgraphContractUse>& uses) {
         const bool hideClockedBoundaryContract = m_inClocked && nodep->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !nodep->boundaryWrites().empty();
-        const bool softNonFeedthroughRead = !m_inClocked && nodep->hasClockedState()
-                                            && nodep->phase() == AstSubgraphInstance::Phase::POST;
+        const bool preferSoftRead = !m_inClocked && nodep->hasClockedState()
+                                    && nodep->phase() == AstSubgraphInstance::Phase::POST;
         if (!hideClockedBoundaryContract) {
             for (const auto& read : nodep->boundaryReads()) {
                 AstVarScope* const vscp = read.m_varscp;
-                if (softNonFeedthroughRead) {
+                if (preferSoftRead
+                    && V3Sched::canRefreshSubgraphInput(nodep, vscp, m_activeSenTreep)) {
                     addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::SOFT, true, false);
-                } else if (read.m_derived) {
+                    continue;
+                }
+                if (preferSoftRead) ++m_subgraphStats.m_contractUsesSoftUnavailable;
+                if (read.m_derived) {
                     addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::COARSE, true,
                                            false);
                 } else {
@@ -590,9 +597,8 @@ class OrderGraphBuilder final : public VNVisitor {
         AstScope* const sourceBoundaryp = subgraphBoundaryScope(vscp->scopep());
         const bool hideClockedBoundaryContract = m_inClocked && subgraphp->hasClockedState();
         const bool publishBoundaryWrites = !m_inPre && !subgraphp->boundaryWrites().empty();
-        const bool softNonFeedthroughRead
-            = !m_inClocked && subgraphp->hasClockedState()
-              && subgraphp->phase() == AstSubgraphInstance::Phase::POST;
+        const bool preferSoftRead = !m_inClocked && subgraphp->hasClockedState()
+                                    && subgraphp->phase() == AstSubgraphInstance::Phase::POST;
         if (hideClockedBoundaryContract && sourceBoundaryp == scopep && vscp->scopep() == scopep
             && vscp->varp()->isIO() && vscp->varp()->direction().isNonOutput()) {
             return;
@@ -600,10 +606,15 @@ class OrderGraphBuilder final : public VNVisitor {
         if (hideClockedBoundaryContract && externalToSubgraph && use.m_read && !use.m_write) {
             return;
         }
-        if (softNonFeedthroughRead && use.m_read) {
+        const bool softRead
+            = preferSoftRead && use.m_read
+              && V3Sched::canRefreshSubgraphInput(subgraphp, vscp, m_activeSenTreep);
+        if (softRead) {
             addSubgraphContractUse(uses, vscp, SubgraphContractUseMode::SOFT, true, false);
+        } else if (preferSoftRead && use.m_read) {
+            ++m_subgraphStats.m_contractUsesSoftUnavailable;
         }
-        const bool hardRead = use.m_read && !softNonFeedthroughRead;
+        const bool hardRead = use.m_read && !softRead;
         if (sourceBoundaryp && sourceBoundaryp != scopep) {
             const bool coarseRead = hardRead;
             const bool coarseWrite = publishBoundaryWrites && use.m_write;
@@ -654,6 +665,8 @@ class OrderGraphBuilder final : public VNVisitor {
         V3Stats::addStat(prefix + "contract uses normal", m_subgraphStats.m_contractUsesNormal);
         V3Stats::addStat(prefix + "contract uses raw", m_subgraphStats.m_contractUsesRaw);
         V3Stats::addStat(prefix + "contract uses soft", m_subgraphStats.m_contractUsesSoft);
+        V3Stats::addStat(prefix + "contract uses soft unavailable",
+                         m_subgraphStats.m_contractUsesSoftUnavailable);
         V3Stats::addStat(prefix + "delayed shadow index vars",
                          m_subgraphStats.m_delayedShadowIndexVars);
         V3Stats::addStat(prefix + "delayed shadow lookups",
@@ -704,12 +717,16 @@ class OrderGraphBuilder final : public VNVisitor {
                     "AstSenTrees should have been made global in V3ActiveTop");
         UASSERT_OBJ(m_scopep, nodep, "AstActive not under AstScope");
         UASSERT_OBJ(!m_logicVxp, nodep, "AstActive under logic");
-        UASSERT_OBJ(!m_inClocked && !m_domainp && !m_hybridp, nodep, "Should not nest");
+        UASSERT_OBJ(!m_activeSenTreep && !m_inClocked && !m_domainp && !m_hybridp, nodep,
+                    "Should not nest");
 
+        VL_RESTORER(m_activeSenTreep);
         VL_RESTORER(m_domainp);
         VL_RESTORER(m_hybridp);
         VL_RESTORER(m_inClocked);
         VL_RESTORER(m_subgraphBarrierp);
+
+        m_activeSenTreep = nodep->sentreep();
 
         // This is the original sensitivity of the block (i.e.: not the ref into the trigger vec)
 
