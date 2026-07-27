@@ -85,7 +85,8 @@ struct SubgraphInstanceContract final {
 using SubgraphInstanceContractMap = std::unordered_map<const AstScope*, SubgraphInstanceContract>;
 
 struct SubgraphRegistry final {
-    std::unordered_set<const AstSubgraphInstance*> m_inputRefreshInstances;
+    std::unordered_map<const AstSubgraphInstance*, std::unordered_set<const AstVarScope*>>
+        m_inputRefreshes;
     SubgraphInstanceContractMap m_scopeContracts;
     std::unordered_set<const AstNodeProcedure*> m_snapshotProcedures;
     std::unordered_map<const AstScope*, std::vector<AstCFunc*>> m_stlSubgraphFuncs;
@@ -123,8 +124,10 @@ AstCFunc* cloneUnguardedFuncBody(AstCFunc* funcp, AstScope* scopep, const std::s
 void appendSubgraphInputRefreshCalls(AstCFunc* funcp) {
     SubgraphRegistry& registry = subgraphRegistry();
     std::unordered_set<const AstScope*> scopeSet;
-    for (const AstSubgraphInstance* const instancep : registry.m_inputRefreshInstances) {
-        scopeSet.insert(instancep->scopep());
+    uint64_t inputs = 0;
+    for (const auto& pair : registry.m_inputRefreshes) {
+        scopeSet.insert(pair.first->scopep());
+        inputs += pair.second.size();
     }
     std::vector<const AstScope*> scopes{scopeSet.begin(), scopeSet.end()};
     std::sort(scopes.begin(), scopes.end(), [](const AstScope* lhsp, const AstScope* rhsp) {
@@ -140,8 +143,9 @@ void appendSubgraphInputRefreshCalls(AstCFunc* funcp) {
         }
     }
     V3Stats::addStat("Scheduling, Subgraph input refresh calls", calls);
+    V3Stats::addStat("Scheduling, Subgraph input refresh inputs", inputs);
     V3Stats::addStat("Scheduling, Subgraph input refresh instances",
-                     registry.m_inputRefreshInstances.size());
+                     registry.m_inputRefreshes.size());
     V3Stats::addStat("Scheduling, Subgraph input refresh scopes", scopes.size());
 }
 
@@ -170,10 +174,11 @@ const SubgraphInstanceContract* getSubgraphScopeContract(const AstScope* scopep)
 
 void clearSubgraphScopeContracts() { subgraphRegistry().m_scopeContracts.clear(); }
 
-void clearSubgraphInputRefreshInstances() { subgraphRegistry().m_inputRefreshInstances.clear(); }
+void clearSubgraphInputRefreshRequests() { subgraphRegistry().m_inputRefreshes.clear(); }
 
-void rememberSubgraphInputRefreshInstance(const AstSubgraphInstance* instancep) {
-    subgraphRegistry().m_inputRefreshInstances.insert(instancep);
+void rememberSubgraphInputRefreshRequest(const AstSubgraphInstance* instancep,
+                                         const AstVarScope* inputp) {
+    subgraphRegistry().m_inputRefreshes[instancep].insert(inputp);
 }
 
 void rememberSubgraphSnapshotProcedure(const AstNodeProcedure* procp) {

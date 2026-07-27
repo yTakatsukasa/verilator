@@ -105,7 +105,7 @@ grep_stats "Subgraph input hiding" \
     'Scheduling, Subgraph [^,]+, input (nodes|parent visible nodes|parent visible reduction|hidden body nodes|direct statements|direct subgraph instances|direct snapshot instances|subgraph instances|subgraph instance body nodes|snapshot procedure body nodes|snapshot instance body nodes) (before|after|reduced|permille)'
 
 grep_stats "Subgraph input refresh" \
-    'Scheduling, Subgraph input refresh (calls|instances|scopes)'
+    'Scheduling, Subgraph input refresh (calls|inputs|instances|scopes)'
 
 grep_stats "Subgraph grouping and artifacts" \
     'Scheduling, Subgraph [^,]+, (groups|instances|schedule plans|artifacts|artifact key unique full|artifact key unique modules|artifact key unique domain shapes|artifact key max entries per full key|bundle builds|bundle plans|bundle materialized|snapshot helpers|snapshot helper reuses|tail clones|tail clone reuses)'

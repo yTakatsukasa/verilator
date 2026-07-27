@@ -214,10 +214,13 @@ void markSubgraphInputRefreshes(OrderGraph& graph) {
         AstSubgraphInstance* const subgraphp = VN_CAST(logicp->nodep(), SubgraphInstance);
         if (!subgraphp) continue;
         for (const V3GraphEdge& edge : vertex.inEdges()) {
-            if (vertex.color() && edge.cutable() && edge.fromp()->color() == vertex.color()) {
-                V3Sched::rememberSubgraphInputRefreshInstance(subgraphp);
-                break;
+            if (!vertex.color() || !edge.cutable() || edge.fromp()->color() != vertex.color()) {
+                continue;
             }
+            const OrderVarVertex* const varp = dynamic_cast<const OrderVarVertex*>(edge.fromp());
+            UASSERT_OBJ(varp && varp->vscp(), subgraphp,
+                        "Subgraph soft input edge must have a variable");
+            V3Sched::rememberSubgraphInputRefreshRequest(subgraphp, varp->vscp());
         }
     }
 }
