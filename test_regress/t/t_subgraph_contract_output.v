@@ -45,6 +45,7 @@ module t (
   sg_contract_output i_sg_b (clk, direct_b, summary_only_b);
   sg_contract_output_ref i_ref (clk, direct_ref, summary_only_ref);
   sg_contract_output_ref i_ref_b (clk, direct_ref_b, summary_only_ref_b);
+  sg_contract_empty i_sg_empty (clk);
 
   always_comb parent_comb = {direct[5:0], direct[14:6]} ^ 15'h421;
   always_comb parent_comb_b = {direct_b[5:0], direct_b[14:6]} ^ 15'h124;
@@ -80,6 +81,18 @@ module t (
       $write("*-* All Finished *-*\n");
       $finish;
     end
+  end
+
+endmodule
+
+module sg_contract_empty (
+  input logic clk
+); `SUBGRAPH_BOUNDARY
+
+  logic [14:0] state = 15'h3210;
+
+  always_ff @(posedge clk) begin
+    state <= {state[11:0], state[14:12]} ^ 15'h1423;
   end
 
 endmodule

@@ -68,6 +68,13 @@ struct SubgraphInstanceContract final {
         }
         m_externalUses.push_back({vscp, read, write});
     }
+    bool hasWrites() const {
+        if (!m_boundaryWrites.empty() || !m_coarseWrites.empty()) return true;
+        for (const AstSubgraphInstance::ExternalUseContract& use : m_externalUses) {
+            if (use.m_write) return true;
+        }
+        return false;
+    }
     void mergeFrom(const SubgraphInstanceContract& other) {
         m_hasClockedState |= other.m_hasClockedState;
         m_hasPostPhase |= other.m_hasPostPhase;
@@ -960,6 +967,13 @@ struct SubgraphLoweringStats final {
     uint64_t m_bundlePlans = 0;
     uint64_t m_contractExternalUseScans = 0;
     uint64_t m_contractExternalUseSnapshotSkips = 0;
+    uint64_t m_contractPostBoundaryReads = 0;
+    uint64_t m_contractPostBoundaryWrites = 0;
+    uint64_t m_contractPostEmptyWriteInstances = 0;
+    uint64_t m_contractPostInstances = 0;
+    uint64_t m_contractPreBoundaryReads = 0;
+    uint64_t m_contractPreBoundaryWrites = 0;
+    uint64_t m_contractPreInstances = 0;
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
     uint64_t m_inputActivesBefore = 0;
@@ -1273,6 +1287,14 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "contract external use scans", m_contractExternalUseScans);
         V3Stats::addStat(prefix + "contract external use snapshot skips",
                          m_contractExternalUseSnapshotSkips);
+        V3Stats::addStat(prefix + "contract post boundary reads", m_contractPostBoundaryReads);
+        V3Stats::addStat(prefix + "contract post boundary writes", m_contractPostBoundaryWrites);
+        V3Stats::addStat(prefix + "contract post empty write instances",
+                         m_contractPostEmptyWriteInstances);
+        V3Stats::addStat(prefix + "contract post instances", m_contractPostInstances);
+        V3Stats::addStat(prefix + "contract pre boundary reads", m_contractPreBoundaryReads);
+        V3Stats::addStat(prefix + "contract pre boundary writes", m_contractPreBoundaryWrites);
+        V3Stats::addStat(prefix + "contract pre instances", m_contractPreInstances);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
         V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
@@ -1608,6 +1630,26 @@ struct SubgraphLoweringStats final {
         if (m_orderCacheCloneFailNames.size() >= 16 && !m_orderCacheCloneFailNames.count(name))
             return;
         ++m_orderCacheCloneFailNames[name];
+    }
+
+    void noteMaterializedContract(AstSubgraphInstance::Phase phase,
+                                  const SubgraphInstanceContract& contract) {
+        switch (phase) {
+        case AstSubgraphInstance::Phase::POST:
+            m_contractPostBoundaryReads += contract.m_boundaryReads.size();
+            m_contractPostBoundaryWrites += contract.m_boundaryWrites.size();
+            if (!contract.hasWrites()) ++m_contractPostEmptyWriteInstances;
+            ++m_contractPostInstances;
+            return;
+        case AstSubgraphInstance::Phase::PRE:
+            m_contractPreBoundaryReads += contract.m_boundaryReads.size();
+            m_contractPreBoundaryWrites += contract.m_boundaryWrites.size();
+            ++m_contractPreInstances;
+            return;
+        case AstSubgraphInstance::Phase::NONE:
+        case AstSubgraphInstance::Phase::SNAPSHOT: return;
+        }
+        VL_UNREACHABLE;
     }
 
     void noteArtifactTemplateMapFail(SubgraphTemplateMapFailReason reason) {
@@ -4958,6 +5000,7 @@ void materializeSubgraphScheduleBundle(
         contractBySubgraph[subgraphp].mergeFrom(plan.m_instance.m_contract);
     }
     for (const auto& pair : contractBySubgraph) {
+        state.m_stats.noteMaterializedContract(pair.first->phase(), pair.second);
         populateSubgraphInstanceContract(pair.first, pair.second);
     }
     addElapsedUsecs(state.m_stats.m_timeMaterializeUsecs, materializeStartUsecs);
