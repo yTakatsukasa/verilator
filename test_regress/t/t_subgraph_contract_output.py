@@ -16,7 +16,7 @@ test.execute()
 
 test.file_grep(
     test.stats,
-    r"Scheduling, Subgraph order graph nba, contract uses force post\s+(\d+)", 2)
+    r"Scheduling, Subgraph order graph nba, contract uses force post\s+(\d+)", 4)
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph nba, artifact reuse shared calls\s+([1-9]\d*)")

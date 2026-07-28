@@ -4073,12 +4073,18 @@ SubgraphWrapper lateWrapperForGroup(const SubgraphGroup& group) {
     return wrapperFromLogic(group.m_lateLogic.front().second->stmtsp());
 }
 
-SubgraphInstanceContract buildSubgraphSchedulePlanContract(AstScope* scopep) {
+SubgraphInstanceContract buildSubgraphSchedulePlanContract(AstScope* scopep,
+                                                           AstSubgraphInstance::Phase phase) {
     SubgraphInstanceContract contract;
     const SubgraphInstanceContract* const summaryp = getSubgraphScopeContract(scopep);
     if (summaryp) {
         contract.m_hasClockedState = summaryp->m_hasClockedState;
         contract.m_hasPostPhase = summaryp->m_hasPostPhase;
+        if (phase == AstSubgraphInstance::Phase::POST) {
+            for (AstVarScope* const vscp : summaryp->m_boundaryWrites) {
+                contract.addBoundaryWrite(vscp);
+            }
+        }
     }
     return contract;
 }
@@ -4107,9 +4113,10 @@ AstSubgraphInstance::Phase subgraphPhaseFor(const SubgraphWrapper& wrapper, bool
 }
 
 void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
-                                              SubgraphLoweringState& state) {
+                                              SubgraphLoweringState& state,
+                                              AstSubgraphInstance::Phase phase) {
     const uint64_t startUsecs = statStartUsecs();
-    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
+    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep, phase);
     state.appendContractExternalUses(instance.m_contract, instance.m_callFuncp, instance.m_scopep);
     state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs,
                                       instance.m_scopep);
@@ -4121,9 +4128,10 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
 
 void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance,
                                               SubgraphLoweringState& state,
-                                              const LogicByScope& logic) {
+                                              const LogicByScope& logic,
+                                              AstSubgraphInstance::Phase phase) {
     const uint64_t startUsecs = statStartUsecs();
-    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
+    instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep, phase);
     state.appendContractExternalUses(instance.m_contract, logic, instance.m_scopep);
     state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs,
                                       instance.m_scopep);
@@ -4325,10 +4333,10 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     }
                 }
                 if (sharedCall) {
-                    populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                             subgraphLogic);
+                    populateSubgraphScheduleInstanceContract(plan.m_instance, state, subgraphLogic,
+                                                             phase);
                 } else {
-                    populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                    populateSubgraphScheduleInstanceContract(plan.m_instance, state, phase);
                 }
                 state.discardLogic(subgraphLogic);
                 plan.m_phase = phase;
@@ -4371,7 +4379,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         plan.m_artifactp = cacheEntry.m_artifactp;
         plan.m_instance.m_callFuncp = replayedFuncp;
         plan.m_instance.m_scopep = group.m_scopep;
-        populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+        populateSubgraphScheduleInstanceContract(plan.m_instance, state, phase);
         plan.m_phase = phase;
         plan.m_wrapper = wrapper;
         ++state.m_stats.m_logicSigBuildsAvoided;
@@ -4516,7 +4524,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         }
                         if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                             populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                                     subgraphLogic);
+                                                                     subgraphLogic, phase);
                             state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
@@ -4557,7 +4565,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                               && SubgraphLoweringState::sharedHelperConstantsMatch(
                                   *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
-                            populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                            populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                     phase);
                             state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
@@ -4619,7 +4628,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                                 = populateOrderCacheSharedHelper(false);
                             if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                                 populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                                         subgraphLogic);
+                                                                         subgraphLogic, phase);
                                 state.discardLogic(subgraphLogic);
                                 plan.m_phase = phase;
                                 plan.m_wrapper = wrapper;
@@ -4648,7 +4657,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         = populateOrderCacheSharedHelper(false);
                     if (applyFail == SubgraphSharedHelperApplyFailReason::NONE) {
                         populateSubgraphScheduleInstanceContract(plan.m_instance, state,
-                                                                 subgraphLogic);
+                                                                 subgraphLogic, phase);
                         state.discardLogic(subgraphLogic);
                         plan.m_phase = phase;
                         plan.m_wrapper = wrapper;
@@ -4690,7 +4699,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                               && SubgraphLoweringState::sharedHelperConstantsMatch(
                                   *cacheEntry.m_artifactp, subgraphLogic, false);
                         if (populatedConstants) {
-                            populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+                            populateSubgraphScheduleInstanceContract(plan.m_instance, state,
+                                                                     phase);
                             state.discardLogic(subgraphLogic);
                             plan.m_phase = phase;
                             plan.m_wrapper = wrapper;
@@ -4848,7 +4858,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     plan.m_instance.m_scopep = group.m_scopep;
     state.populateSharedHelperArgs(plan.m_instance, *plan.m_artifactp, group.m_scopep, {},
                                    state.m_stats);
-    populateSubgraphScheduleInstanceContract(plan.m_instance, state);
+    populateSubgraphScheduleInstanceContract(plan.m_instance, state, phase);
     plan.m_phase = phase;
     plan.m_wrapper = wrapper;
     ++state.m_stats.m_schedulePlans;
