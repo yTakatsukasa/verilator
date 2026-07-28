@@ -21,34 +21,54 @@ module t (
 
   int cyc;
   logic [14:0] consumed;
+  logic [14:0] consumed_b;
   logic [14:0] consumed_ref;
+  logic [14:0] consumed_ref_b;
   logic [14:0] direct;
+  logic [14:0] direct_b;
   logic [14:0] direct_ref;
+  logic [14:0] direct_ref_b;
   logic [14:0] parent_comb;
+  logic [14:0] parent_comb_b;
   logic [14:0] parent_comb_ref;
+  logic [14:0] parent_comb_ref_b;
   logic [14:0] sampled;
+  logic [14:0] sampled_b;
   logic [14:0] sampled_ref;
+  logic [14:0] sampled_ref_b;
 
   sg_contract_output i_sg (clk, direct);
+  sg_contract_output i_sg_b (clk, direct_b);
   sg_contract_output_ref i_ref (clk, direct_ref);
+  sg_contract_output_ref i_ref_b (clk, direct_ref_b);
 
   always_comb parent_comb = {direct[5:0], direct[14:6]} ^ 15'h421;
+  always_comb parent_comb_b = {direct_b[5:0], direct_b[14:6]} ^ 15'h124;
   always_comb parent_comb_ref = {direct_ref[5:0], direct_ref[14:6]} ^ 15'h421;
+  always_comb parent_comb_ref_b = {direct_ref_b[5:0], direct_ref_b[14:6]} ^ 15'h124;
 
   always_ff @(posedge clk) begin
     consumed <= parent_comb + 15'h123;
+    consumed_b <= parent_comb_b + 15'h321;
     consumed_ref <= parent_comb_ref + 15'h123;
+    consumed_ref_b <= parent_comb_ref_b + 15'h321;
     sampled <= direct;
+    sampled_b <= direct_b;
     sampled_ref <= direct_ref;
+    sampled_ref_b <= direct_ref_b;
   end
 
   always_ff @(negedge clk) begin
     cyc <= cyc + 1;
     if (cyc > 2) begin
       `checkh(consumed, consumed_ref);
+      `checkh(consumed_b, consumed_ref_b);
       `checkh(direct, direct_ref);
+      `checkh(direct_b, direct_ref_b);
       `checkh(parent_comb, parent_comb_ref);
+      `checkh(parent_comb_b, parent_comb_ref_b);
       `checkh(sampled, sampled_ref);
+      `checkh(sampled_b, sampled_ref_b);
     end
     if (cyc == 30) begin
       $write("*-* All Finished *-*\n");
@@ -58,9 +78,11 @@ module t (
 
 endmodule
 
-module sg_contract_output (
+module sg_contract_output #(
+  parameter logic [14:0] RESET_VALUE = 15'h1234
+) (
   input logic clk,
-  output logic [14:0] direct = 15'h1234
+  output logic [14:0] direct = RESET_VALUE
 ); `SUBGRAPH_BOUNDARY
 
   always_ff @(posedge clk) begin
@@ -69,9 +91,11 @@ module sg_contract_output (
 
 endmodule
 
-module sg_contract_output_ref (
+module sg_contract_output_ref #(
+  parameter logic [14:0] RESET_VALUE = 15'h1234
+) (
   input logic clk,
-  output logic [14:0] direct = 15'h1234
+  output logic [14:0] direct = RESET_VALUE
 );
 
   always_ff @(posedge clk) begin

@@ -3352,9 +3352,14 @@ public:
     }
 
     void appendContractHelperArgUses(SubgraphInstanceContract& contract,
-                                     const std::vector<SubgraphSharedHelperArg>& helperArgs) {
+                                     const std::vector<SubgraphSharedHelperArg>& helperArgs,
+                                     AstScope* boundaryScopep) {
         for (const SubgraphSharedHelperArg& arg : helperArgs) {
-            if (!arg.m_writes || !m_parentConsumedSubgraphVars.count(arg.m_vscp)) continue;
+            if (!arg.m_writes) continue;
+            if (appendContractBoundaryUse(contract, arg.m_vscp, boundaryScopep, VAccess::WRITE)) {
+                continue;
+            }
+            if (!m_parentConsumedSubgraphVars.count(arg.m_vscp)) continue;
             if (contract.addCoarseWrite(arg.m_vscp)) { ++m_stats.m_parentConsumedContractWrites; }
         }
     }
@@ -4106,7 +4111,8 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, instance.m_callFuncp, instance.m_scopep);
-    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs);
+    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs,
+                                      instance.m_scopep);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
@@ -4119,7 +4125,8 @@ void populateSubgraphScheduleInstanceContract(SubgraphScheduleInstance& instance
     const uint64_t startUsecs = statStartUsecs();
     instance.m_contract = buildSubgraphSchedulePlanContract(instance.m_scopep);
     state.appendContractExternalUses(instance.m_contract, logic, instance.m_scopep);
-    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs);
+    state.appendContractHelperArgUses(instance.m_contract, instance.m_helperArgs,
+                                      instance.m_scopep);
     for (AstCFunc* const tailFuncp : instance.m_tailFuncps) {
         state.appendContractTailUses(instance.m_contract, tailFuncp, instance.m_scopep);
     }
