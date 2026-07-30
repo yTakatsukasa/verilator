@@ -89,7 +89,7 @@ module sg_contract_empty (
   input logic clk
 ); `SUBGRAPH_BOUNDARY
 
-  logic [14:0] state = 15'h3210;
+  logic [14:0] state /*verilator public_flat_rd*/ = 15'h3210;
 
   always_ff @(posedge clk) begin
     state <= {state[11:0], state[14:12]} ^ 15'h1423;

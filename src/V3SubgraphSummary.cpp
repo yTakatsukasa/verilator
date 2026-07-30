@@ -32,16 +32,18 @@ using ScopeSummaryMap = std::unordered_map<const AstScope*, V3SubgraphSummary::S
 ModuleSummaryMap s_moduleSummaries;
 ScopeSummaryMap s_scopeSummaries;
 std::unordered_set<const AstVarScope*> s_derivedBoundaryInputs;
-std::unordered_set<std::string> s_externallyConsumedBoundaryVars;
+std::unordered_map<const AstScope*, std::unordered_set<std::string>>
+    s_externallyConsumedBoundaryVarNames;
 uint64_t s_boundaryWriteCandidates = 0;
 uint64_t s_boundaryWritesPruned = 0;
 bool s_externalConsumersCaptured = false;
 
 bool isCompileTimeConstant(const AstVar* varp) { return varp->isParam() || varp->isGenVar(); }
 
-std::string boundaryVarKey(const AstVarScope* vscp) {
-    const std::string scopeName = vscp->scopep()->name();
-    return cvtToStr(scopeName.size()) + ":" + scopeName + vscp->varp()->name();
+bool isExternallyConsumedBoundaryVar(const AstVarScope* vscp) {
+    const auto scopeIt = s_externallyConsumedBoundaryVarNames.find(vscp->scopep());
+    return scopeIt != s_externallyConsumedBoundaryVarNames.end()
+           && scopeIt->second.count(vscp->varp()->origName());
 }
 
 const AstScope* subgraphBoundaryScope(const AstScope* scopep) {
@@ -71,7 +73,7 @@ class SubgraphExternalConsumptionVisitor final : public VNVisitorConst {
         AstVarScope* const vscp = nodep->varScopep();
         const AstScope* const boundaryp = subgraphBoundaryScope(vscp->scopep());
         if (boundaryp && !isUnderScope(m_scopep, boundaryp)) {
-            s_externallyConsumedBoundaryVars.insert(boundaryVarKey(vscp));
+            s_externallyConsumedBoundaryVarNames[vscp->scopep()].insert(vscp->varp()->origName());
         }
     }
     void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
@@ -190,8 +192,8 @@ class SubgraphScopeSummaryBinder final : public VNVisitorConst {
             AstVarScope* const vscp = varsIt->second;
             ++s_boundaryWriteCandidates;
             AstVar* const varp = vscp->varp();
-            if (s_externallyConsumedBoundaryVars.count(boundaryVarKey(vscp)) || varp->isPrimaryIO()
-                || varp->isSigPublic() || varp->isTrace()) {
+            if (isExternallyConsumedBoundaryVar(vscp) || varp->isPrimaryIO() || varp->isSigPublic()
+                || varp->isTrace()) {
                 scopeSummary.m_parentStub.m_boundaryWrites.push_back(vscp);
             } else {
                 ++s_boundaryWritesPruned;
@@ -231,7 +233,7 @@ void V3SubgraphSummary::buildModules(AstNetlist* nodep) {
 }
 
 void V3SubgraphSummary::captureExternalConsumers(AstNetlist* nodep) {
-    s_externallyConsumedBoundaryVars.clear();
+    s_externallyConsumedBoundaryVarNames.clear();
     s_externalConsumersCaptured = false;
     if (!v3Global.opt.subgraphSchedule()) return;
     SubgraphExternalConsumptionVisitor{nodep};
@@ -257,7 +259,7 @@ void V3SubgraphSummary::clear() {
     s_moduleSummaries.clear();
     s_scopeSummaries.clear();
     s_derivedBoundaryInputs.clear();
-    s_externallyConsumedBoundaryVars.clear();
+    s_externallyConsumedBoundaryVarNames.clear();
     s_boundaryWriteCandidates = 0;
     s_boundaryWritesPruned = 0;
     s_externalConsumersCaptured = false;
