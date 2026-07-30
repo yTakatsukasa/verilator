@@ -11,7 +11,7 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(verilator_flags2=["--stats", "--subgraph-schedule", "--trace"])
+test.compile(verilator_flags2=["--stats", "--subgraph-schedule"])
 test.execute()
 
 test.file_grep(test.stats,
