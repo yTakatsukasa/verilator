@@ -110,6 +110,9 @@ grep_stats "Subgraph input refresh" \
 grep_stats "Subgraph grouping and artifacts" \
     'Scheduling, Subgraph [^,]+, (groups|instances|schedule plans|artifacts|artifact key unique full|artifact key unique modules|artifact key unique domain shapes|artifact key max entries per full key|bundle builds|bundle plans|bundle materialized|snapshot helpers|snapshot helper reuses|tail clones|tail clone reuses)'
 
+grep_stats "Subgraph parent contracts" \
+    'Scheduling, Subgraph parent contracts, (boundary write candidates|boundary writes pruned)'
+
 grep_stats "Subgraph materialized contracts" \
     'Scheduling, Subgraph [^,]+, contract (pre|post) (boundary reads|boundary writes|empty write instances|instances)'
 
