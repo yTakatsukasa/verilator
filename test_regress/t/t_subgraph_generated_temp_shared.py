@@ -16,10 +16,15 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 76)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 15)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)",
+               15)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
+               17)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact writes local temp\s+([1-9]\d*)")
 test.file_grep(test.stats,

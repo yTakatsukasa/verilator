@@ -50,8 +50,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic shape builds\s+(\d+
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds avoided\s+(\d+)", 11)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, shared helper implicit context vars\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+0")
+               r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
+               27)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use cache hits\s+0")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use scans\s+(\d+)", 0)

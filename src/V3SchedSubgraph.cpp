@@ -2307,7 +2307,6 @@ public:
 
         std::unordered_map<AstVarScope*, size_t> argIndex;
         std::unordered_set<AstVarScope*> baselineArgs;
-        std::unordered_set<AstVarScope*> implicitContextVscps;
         std::unordered_set<AstVarScope*> instanceLocalArgs;
         for (AstCFunc* const scanFuncp : funcs) {
             scanFuncp->foreach([&](AstNodeVarRef* refp) {
@@ -2326,11 +2325,6 @@ public:
                     eligibleVscps.insert(vscp);
                 }
                 baselineArgs.insert(vscp);
-                if (vscp->scopep() == boundaryScopep) {
-                    implicitContextVscps.insert(vscp);
-                    refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
-                    return;
-                }
                 if (isUnderBoundaryScope(vscp->scopep(), boundaryScopep)) {
                     instanceLocalArgs.insert(vscp);
                 }
@@ -2343,7 +2337,6 @@ public:
         }
         stats.m_sharedHelperFormalArgsBefore
             += funcs.size() * (baselineArgs.size() + parameterizableConstCount);
-        stats.m_sharedHelperImplicitContextVars += implicitContextVscps.size();
         if (helperArgs.empty()) {
             stats.m_sharedHelperParameterizedFuncs += funcs.size();
             ++stats.m_sharedHelperParameterizations;
@@ -4811,22 +4804,26 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 if (!parameterized) cacheableArtifact = false;
             }
             if (cacheableArtifact && !matchedOrderCacheEntryp) {
-                const SubgraphTriggeredRefInfo triggeredInfo
+                const SubgraphTriggeredRefInfo parameterizedTriggeredInfo
                     = tag == "stl" ? scheduledTriggeredInfo
                                    : SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
                                          scheduledFuncp, group.m_scopep, state.m_stats, false);
                 const bool triggeredShareable
-                    = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
+                    = SubgraphLoweringState::canShareTriggeredArtifact(scheduledTriggeredInfo);
                 const bool triggeredCloneable
-                    = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
+                    = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(
+                        parameterizedTriggeredInfo);
                 SubgraphOrderCacheBucket& bucket = state.m_subgraphOrderCache[cacheKey];
                 if (bucket.m_entries.empty()) ++state.m_stats.m_orderCacheVariantBuckets;
                 bucket.m_entries.push_back(SubgraphOrderCacheEntry{
                     nullptr, domainShapes.m_exact, scheduledFuncp, logicSig, orderRecipep,
-                    triggeredCloneable, triggeredShareable, triggeredInfo.m_writesDelayedShadow,
-                    triggeredInfo.m_writesInstanceLocal, triggeredInfo.m_writesLocalTemp,
-                    triggeredInfo.m_writesNonLocal, triggeredInfo.m_writesTriggerTemp,
-                    triggeredInfo.m_writesVlemTemp});
+                    triggeredCloneable, triggeredShareable,
+                    scheduledTriggeredInfo.m_writesDelayedShadow,
+                    scheduledTriggeredInfo.m_writesInstanceLocal,
+                    scheduledTriggeredInfo.m_writesLocalTemp,
+                    scheduledTriggeredInfo.m_writesNonLocal,
+                    scheduledTriggeredInfo.m_writesTriggerTemp,
+                    scheduledTriggeredInfo.m_writesVlemTemp});
                 if (orderRecipep && bucket.m_recipeIndex == std::numeric_limits<size_t>::max()) {
                     bucket.m_recipeIndex = bucket.m_entries.size() - 1;
                 }
@@ -4840,15 +4837,15 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     if (!funcp) return plan;
 
     AstCFunc* const callFuncp = stlTailFuncp ? stlTailFuncp : funcp;
-    const SubgraphTriggeredRefInfo triggeredInfo
+    const SubgraphTriggeredRefInfo parameterizedTriggeredInfo
         = tag == "stl" ? scheduledTriggeredInfo
                        : SubgraphLoweringState::analyzeOrderedFuncTriggeredRefs(
                              callFuncp, group.m_scopep, state.m_stats, false);
     const bool cloneableArtifact
-        = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(triggeredInfo);
+        = SubgraphLoweringState::canCloneTriggeredOrderCacheEntry(parameterizedTriggeredInfo);
     const bool triggeredShareableArtifact
-        = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
-    if (triggeredInfo.m_hasTriggered) {
+        = SubgraphLoweringState::canShareTriggeredArtifact(scheduledTriggeredInfo);
+    if (scheduledTriggeredInfo.m_hasTriggered) {
         ++state.m_stats.m_triggeredArtifactCandidates;
         if (!triggeredShareableArtifact) ++state.m_stats.m_triggeredArtifactUnshareable;
         if (originalTriggeredInfo.m_writesInstanceLocal) {
@@ -4860,16 +4857,18 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         if (originalTriggeredInfo.m_writesLocalTemp) {
             ++state.m_stats.m_triggeredArtifactWritesLocalTemp;
         }
-        if (triggeredInfo.m_writesNonLocal) ++state.m_stats.m_triggeredArtifactWritesNonLocal;
+        if (scheduledTriggeredInfo.m_writesNonLocal) {
+            ++state.m_stats.m_triggeredArtifactWritesNonLocal;
+        }
         if (originalTriggeredInfo.m_writesTriggerTemp) {
             ++state.m_stats.m_triggeredArtifactWritesTriggerTemp;
         }
         if (originalTriggeredInfo.m_writesVlemTemp) {
             ++state.m_stats.m_triggeredArtifactWritesVlemTemp;
         }
-        if (!triggeredInfo.m_writesNonLocal) {
+        if (!scheduledTriggeredInfo.m_writesNonLocal) {
             ++state.m_stats.m_triggeredArtifactNoNonLocalWrites;
-            if (triggeredInfo.m_writesInstanceLocal) {
+            if (scheduledTriggeredInfo.m_writesInstanceLocal) {
                 ++state.m_stats.m_triggeredArtifactNoNonLocalInstanceLocalWrites;
             }
         }
@@ -4888,8 +4887,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     }
     plan.m_artifactp = state.makeSubgraphScheduleArtifact(
         artifactKey, group.m_scopep, callFuncp, std::move(helperArgs), std::move(logicSig),
-        bundleContext.m_currentScopeTailContract, cloneableArtifact, triggeredInfo.m_hasTriggered,
-        triggeredShareableArtifact, cacheableArtifact);
+        bundleContext.m_currentScopeTailContract, cloneableArtifact,
+        scheduledTriggeredInfo.m_hasTriggered, triggeredShareableArtifact, cacheableArtifact);
     if (insertedOrderCacheEntryp) insertedOrderCacheEntryp->m_artifactp = plan.m_artifactp;
     plan.m_instance.m_callFuncp = callFuncp;
     plan.m_instance.m_scopep = group.m_scopep;
