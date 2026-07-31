@@ -56,8 +56,7 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper remap variant oversize skips\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant vars\s+(\d+)",
                0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time build contract sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time clone ordered funcs sec\s+\d+\.\d+")
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, time discard logic sec\s+\d+\.\d+")

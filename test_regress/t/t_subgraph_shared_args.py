@@ -20,12 +20,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args
                392)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 144)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)",
-               16)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 16)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)",
-               16)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)", 16)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
                32)
 test.file_grep(test.stats, r"Output, C\+\+ max file bytes\s+([1-9]\d*)")

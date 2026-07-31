@@ -25,13 +25,11 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper contract implicit context vars\s+(\d+)",
                0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 16)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args after\s+(\d+)",
-               8)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args after\s+(\d+)", 8)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
                4)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)", 2)
 
 test.passes()

@@ -68,8 +68,7 @@ test.file_grep(test.stats,
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact input tail shareable\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)",
-               7)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)", 7)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph parent contracts, boundary writes pruned\s+(\d+)", 3)

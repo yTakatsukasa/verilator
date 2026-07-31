@@ -19,8 +19,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared cal
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 76)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 15)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)",
-               15)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args max\s+(\d+)", 15)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
@@ -29,7 +28,6 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact writes local temp\s+([1-9]\d*)")
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, triggered artifact writes vlem temp\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)", 2)
 
 test.passes()
