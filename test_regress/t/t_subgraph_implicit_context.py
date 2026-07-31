@@ -14,7 +14,7 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
                0)

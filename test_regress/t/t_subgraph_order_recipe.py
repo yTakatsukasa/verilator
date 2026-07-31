@@ -27,11 +27,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index hits\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache direct index lookups\s+(\d+)",
                2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe clones\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe constant remaps\s+(\d+)",
-               0)
+               4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe hits\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip arguments\s+(\d+)",
@@ -41,7 +41,7 @@ test.file_grep(test.stats,
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
                0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip other\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper constant args\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper remap variant builds\s+(\d+)",
                0)

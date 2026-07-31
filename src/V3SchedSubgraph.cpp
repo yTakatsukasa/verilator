@@ -4400,6 +4400,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     bool orderCacheConstantsDiffer = false;
     bool orderCacheDomainsDiffer = false;
     const auto replayCachedOrder = [&](const SubgraphOrderCacheEntry& cacheEntry) {
+        if (tag == "nba") return false;
         if (!cacheEntry.m_recipep || !cacheEntry.m_artifactp) return false;
         const std::string replayTag = tag + "_subgraph_recipe_" + cvtToStr(subgraphIndex++);
         const uint64_t replayStartUsecs = statStartUsecs();
