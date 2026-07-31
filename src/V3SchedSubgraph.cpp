@@ -689,11 +689,6 @@ struct SubgraphTriggeredRefInfo final {
     bool m_writesNonLocal = false;
     bool m_writesTriggerTemp = false;
     bool m_writesVlemTemp = false;
-
-    bool writesOnlySharedHelperSafeInstanceLocal() const {
-        return m_writesInstanceLocal && m_writesDelayedShadow && !m_writesLocalTemp
-               && !m_writesTriggerTemp && !m_writesVlemTemp;
-    }
 };
 
 struct SubgraphScheduleInstance final {
@@ -2138,8 +2133,7 @@ public:
 
     static bool canShareTriggeredArtifact(const SubgraphTriggeredRefInfo& info) {
         if (!info.m_hasTriggered || !info.m_shareable) return false;
-        if (info.m_writesNonLocal) return true;
-        return !info.m_writesInstanceLocal || info.writesOnlySharedHelperSafeInstanceLocal();
+        return !info.m_writesInstanceLocal && !info.m_writesDelayedShadow;
     }
 
     static bool canCloneTriggeredOrderCacheEntry(const SubgraphTriggeredRefInfo& info) {
@@ -4855,7 +4849,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         = SubgraphLoweringState::canShareTriggeredArtifact(triggeredInfo);
     if (triggeredInfo.m_hasTriggered) {
         ++state.m_stats.m_triggeredArtifactCandidates;
-        if (!triggeredInfo.m_shareable) ++state.m_stats.m_triggeredArtifactUnshareable;
+        if (!triggeredShareableArtifact) ++state.m_stats.m_triggeredArtifactUnshareable;
         if (originalTriggeredInfo.m_writesInstanceLocal) {
             ++state.m_stats.m_triggeredArtifactWritesInstanceLocal;
         }
