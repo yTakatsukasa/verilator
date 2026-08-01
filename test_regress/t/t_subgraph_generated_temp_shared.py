@@ -16,6 +16,7 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post external reads\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 76)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 15)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+(\d+)", 2)

@@ -25,16 +25,23 @@ module t (
   logic [14:0] ref_a;
   logic [14:0] ref_b;
   logic [14:0] ref_c;
+  logic [3:0] step_a;
+  logic [3:0] step_b;
+  logic [3:0] step_c;
   logic [14:0] y_a;
   logic [14:0] y_b;
   logic [14:0] y_c;
 
-  sg_implicit_context i_sg_a (clk, 4'd1, y_a);
-  sg_implicit_context i_sg_b (aux_clk_a, 4'd5, y_b);
-  sg_implicit_context i_sg_c (aux_clk_b, 4'd9, y_c);
-  sg_implicit_context_ref i_ref_a (clk, 4'd1, ref_a);
-  sg_implicit_context_ref i_ref_b (aux_clk_a, 4'd5, ref_b);
-  sg_implicit_context_ref i_ref_c (aux_clk_b, 4'd9, ref_c);
+  assign step_a = cyc[3:0] ^ 4'd1;
+  assign step_b = cyc[3:0] ^ 4'd5;
+  assign step_c = cyc[3:0] ^ 4'd9;
+
+  sg_implicit_context i_sg_a (clk, step_a, y_a);
+  sg_implicit_context i_sg_b (aux_clk_a, step_b, y_b);
+  sg_implicit_context i_sg_c (aux_clk_b, step_c, y_c);
+  sg_implicit_context_ref i_ref_a (clk, step_a, ref_a);
+  sg_implicit_context_ref i_ref_b (aux_clk_a, step_b, ref_b);
+  sg_implicit_context_ref i_ref_c (aux_clk_b, step_c, ref_c);
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;

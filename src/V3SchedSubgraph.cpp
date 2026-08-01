@@ -965,9 +965,13 @@ struct SubgraphLoweringStats final {
     uint64_t m_contractPostBoundaryReads = 0;
     uint64_t m_contractPostBoundaryWrites = 0;
     uint64_t m_contractPostEmptyWriteInstances = 0;
+    uint64_t m_contractPostExternalReads = 0;
+    uint64_t m_contractPostExternalWrites = 0;
     uint64_t m_contractPostInstances = 0;
     uint64_t m_contractPreBoundaryReads = 0;
     uint64_t m_contractPreBoundaryWrites = 0;
+    uint64_t m_contractPreExternalReads = 0;
+    uint64_t m_contractPreExternalWrites = 0;
     uint64_t m_contractPreInstances = 0;
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
@@ -1286,9 +1290,13 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "contract post boundary writes", m_contractPostBoundaryWrites);
         V3Stats::addStat(prefix + "contract post empty write instances",
                          m_contractPostEmptyWriteInstances);
+        V3Stats::addStat(prefix + "contract post external reads", m_contractPostExternalReads);
+        V3Stats::addStat(prefix + "contract post external writes", m_contractPostExternalWrites);
         V3Stats::addStat(prefix + "contract post instances", m_contractPostInstances);
         V3Stats::addStat(prefix + "contract pre boundary reads", m_contractPreBoundaryReads);
         V3Stats::addStat(prefix + "contract pre boundary writes", m_contractPreBoundaryWrites);
+        V3Stats::addStat(prefix + "contract pre external reads", m_contractPreExternalReads);
+        V3Stats::addStat(prefix + "contract pre external writes", m_contractPreExternalWrites);
         V3Stats::addStat(prefix + "contract pre instances", m_contractPreInstances);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
@@ -1633,12 +1641,20 @@ struct SubgraphLoweringStats final {
         case AstSubgraphInstance::Phase::POST:
             m_contractPostBoundaryReads += contract.m_boundaryReads.size();
             m_contractPostBoundaryWrites += contract.m_boundaryWrites.size();
+            for (const AstSubgraphInstance::ExternalUseContract& use : contract.m_externalUses) {
+                m_contractPostExternalReads += use.m_read;
+                m_contractPostExternalWrites += use.m_write;
+            }
             if (!contract.hasWrites()) ++m_contractPostEmptyWriteInstances;
             ++m_contractPostInstances;
             return;
         case AstSubgraphInstance::Phase::PRE:
             m_contractPreBoundaryReads += contract.m_boundaryReads.size();
             m_contractPreBoundaryWrites += contract.m_boundaryWrites.size();
+            for (const AstSubgraphInstance::ExternalUseContract& use : contract.m_externalUses) {
+                m_contractPreExternalReads += use.m_read;
+                m_contractPreExternalWrites += use.m_write;
+            }
             ++m_contractPreInstances;
             return;
         case AstSubgraphInstance::Phase::NONE:
@@ -3384,10 +3400,16 @@ public:
                                      const std::vector<SubgraphSharedHelperArg>& helperArgs,
                                      AstScope* boundaryScopep) {
         for (const SubgraphSharedHelperArg& arg : helperArgs) {
-            if (!arg.m_writes) continue;
-            if (appendContractBoundaryUse(contract, arg.m_vscp, boundaryScopep, VAccess::WRITE)) {
+            if (!arg.m_reads && !arg.m_writes) continue;
+            if (appendContractBoundaryUse(contract, arg.m_vscp, boundaryScopep,
+                                          sharedHelperArgAccess(arg))) {
                 continue;
             }
+            if (!isUnderBoundaryScope(arg.m_vscp->scopep(), boundaryScopep)) {
+                contract.addExternalUse(arg.m_vscp, arg.m_reads, arg.m_writes);
+                continue;
+            }
+            if (!arg.m_writes) continue;
             if (!m_parentConsumedSubgraphVars.count(arg.m_vscp)) continue;
             if (contract.addCoarseWrite(arg.m_vscp)) { ++m_stats.m_parentConsumedContractWrites; }
         }

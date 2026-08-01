@@ -14,18 +14,20 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post external reads\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
                0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip var map\s+(\d+)", 0)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, shared helper contract argument vars\s+(\d+)", 8)
+               r"Scheduling, Subgraph nba, shared helper contract argument vars\s+(\d+)", 9)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper contract implicit context vars\s+(\d+)",
                0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 16)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args after\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 20)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper formal args after\s+(\d+)",
+               10)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
