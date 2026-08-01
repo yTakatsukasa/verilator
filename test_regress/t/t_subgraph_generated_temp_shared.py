@@ -17,6 +17,24 @@ test.execute()
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post external reads\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract validation checks\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing boundary reads\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing boundary writes\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing coarse writes\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing external reads\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing external writes\s+(\d+)",
+               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract validation unmapped refs\s+(\d+)",
+               0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args\s+(\d+)", 76)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper call args max\s+(\d+)", 15)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper external args\s+(\d+)", 2)

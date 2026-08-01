@@ -695,6 +695,7 @@ struct SubgraphScheduleInstance final {
     AstCFunc* m_callFuncp = nullptr;
     SubgraphInstanceContract m_contract;
     std::vector<SubgraphSharedHelperArg> m_helperArgs;
+    std::vector<const AstVarScope*> m_helperArgSourceVscps;
     AstScope* m_scopep = nullptr;
     bool m_sharedCall = false;
     std::vector<AstCFunc*> m_tailFuncps;
@@ -973,6 +974,13 @@ struct SubgraphLoweringStats final {
     uint64_t m_contractPreExternalReads = 0;
     uint64_t m_contractPreExternalWrites = 0;
     uint64_t m_contractPreInstances = 0;
+    uint64_t m_contractValidationChecks = 0;
+    uint64_t m_contractValidationMissingBoundaryReads = 0;
+    uint64_t m_contractValidationMissingBoundaryWrites = 0;
+    uint64_t m_contractValidationMissingCoarseWrites = 0;
+    uint64_t m_contractValidationMissingExternalReads = 0;
+    uint64_t m_contractValidationMissingExternalWrites = 0;
+    uint64_t m_contractValidationUnmappedRefs = 0;
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
     uint64_t m_inputActivesBefore = 0;
@@ -1298,6 +1306,19 @@ struct SubgraphLoweringStats final {
         V3Stats::addStat(prefix + "contract pre external reads", m_contractPreExternalReads);
         V3Stats::addStat(prefix + "contract pre external writes", m_contractPreExternalWrites);
         V3Stats::addStat(prefix + "contract pre instances", m_contractPreInstances);
+        V3Stats::addStat(prefix + "contract validation checks", m_contractValidationChecks);
+        V3Stats::addStat(prefix + "contract validation missing boundary reads",
+                         m_contractValidationMissingBoundaryReads);
+        V3Stats::addStat(prefix + "contract validation missing boundary writes",
+                         m_contractValidationMissingBoundaryWrites);
+        V3Stats::addStat(prefix + "contract validation missing coarse writes",
+                         m_contractValidationMissingCoarseWrites);
+        V3Stats::addStat(prefix + "contract validation missing external reads",
+                         m_contractValidationMissingExternalReads);
+        V3Stats::addStat(prefix + "contract validation missing external writes",
+                         m_contractValidationMissingExternalWrites);
+        V3Stats::addStat(prefix + "contract validation unmapped refs",
+                         m_contractValidationUnmappedRefs);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
         V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
@@ -2602,6 +2623,8 @@ public:
         const uint64_t startUsecs = statStartUsecs();
         instance.m_helperArgs.clear();
         instance.m_helperArgs.reserve(helperArgs.size());
+        instance.m_helperArgSourceVscps.clear();
+        if (v3Global.opt.stats()) instance.m_helperArgSourceVscps.reserve(helperArgs.size());
         if (artifact.m_scopep != currentScopep) {
             for (AstVarScope* vscp = currentScopep->varsp(); vscp;
                  vscp = VN_AS(vscp->nextp(), VarScope)) {
@@ -2643,17 +2666,20 @@ public:
                 }
                 if (!currentVscp) {
                     instance.m_helperArgs.clear();
+                    instance.m_helperArgSourceVscps.clear();
                     addElapsedUsecs(stats.m_timePopulateHelperArgsUsecs, startUsecs);
                     return false;
                 }
             } else if (artifact.m_scopep != currentScopep) {
                 instance.m_helperArgs.clear();
+                instance.m_helperArgSourceVscps.clear();
                 addElapsedUsecs(stats.m_timePopulateHelperArgsUsecs, startUsecs);
                 return false;
             }
             if (arg.m_writes) currentVscp->optimizeLifePost(false);
             instance.m_helperArgs.push_back(
                 SubgraphSharedHelperArg{currentVscp, arg.m_reads, arg.m_writes});
+            if (v3Global.opt.stats()) instance.m_helperArgSourceVscps.push_back(arg.m_vscp);
         }
         if (instance.m_sharedCall) {
             markSharedHelperHiddenUses(artifact.m_callFuncp, artifact.m_scopep, currentScopep);
@@ -3412,6 +3438,110 @@ public:
             if (!arg.m_writes) continue;
             if (!m_parentConsumedSubgraphVars.count(arg.m_vscp)) continue;
             if (contract.addCoarseWrite(arg.m_vscp)) { ++m_stats.m_parentConsumedContractWrites; }
+        }
+    }
+
+    void validateScheduleInstanceContract(const SubgraphScheduleArtifact& artifact,
+                                          const SubgraphScheduleInstance& instance) {
+        if (!v3Global.opt.stats()) return;
+        ++m_stats.m_contractValidationChecks;
+        UASSERT_OBJ(instance.m_helperArgs.size() == instance.m_helperArgSourceVscps.size(),
+                    instance.m_callFuncp, "Mismatched shared helper source arguments");
+
+        std::unordered_map<const AstVarScope*, AstVarScope*> sourceToCurrent;
+        sourceToCurrent.reserve(instance.m_helperArgs.size());
+        for (size_t i = 0; i < instance.m_helperArgs.size(); ++i) {
+            sourceToCurrent.emplace(instance.m_helperArgSourceVscps[i],
+                                    instance.m_helperArgs[i].m_vscp);
+        }
+
+        struct ExpectedAccess final {
+            bool m_read = false;
+            bool m_write = false;
+        };
+        std::unordered_map<const AstVarScope*, ExpectedAccess> expectedBySource;
+        for (const SubgraphLogicNodeSig& node : artifact.m_logicSig) {
+            for (const SubgraphLogicRefSig& ref : node.m_refs) {
+                const AstVarScope* const sourceVscp = ref.m_vscp;
+                if (sourceVscp->varp()->isFuncLocal()) continue;
+                if (0 == sourceVscp->varp()->name().rfind("__VsubgraphSnapshot__", 0)) continue;
+                const VAccess access{static_cast<int>(ref.m_access)};
+                ExpectedAccess& expected = expectedBySource[sourceVscp];
+                expected.m_read |= access.isReadOrRW();
+                expected.m_write |= access.isWriteOrRW();
+            }
+        }
+
+        for (const auto& pair : expectedBySource) {
+            const AstVarScope* const sourceVscp = pair.first;
+            const ExpectedAccess& expected = pair.second;
+            AstVarScope* currentVscp = nullptr;
+            const auto mapIt = sourceToCurrent.find(sourceVscp);
+            if (mapIt != sourceToCurrent.end()) {
+                currentVscp = mapIt->second;
+            } else if (artifact.m_scopep == instance.m_scopep
+                       || !isUnderBoundaryScope(sourceVscp->scopep(), artifact.m_scopep)) {
+                currentVscp = const_cast<AstVarScope*>(sourceVscp);
+            } else if (sourceVscp->scopep() == artifact.m_scopep) {
+                currentVscp = findScopeCloneVarByVar(instance.m_scopep, sourceVscp->varp());
+            }
+            if (!currentVscp) {
+                ++m_stats.m_contractValidationUnmappedRefs;
+                continue;
+            }
+
+            if (currentVscp->scopep() == instance.m_scopep && currentVscp->varp()->isIO()) {
+                if (expected.m_read && currentVscp->varp()->direction().isNonOutput()) {
+                    const bool found
+                        = std::any_of(instance.m_contract.m_boundaryReads.begin(),
+                                      instance.m_contract.m_boundaryReads.end(),
+                                      [&](const AstSubgraphInstance::BoundaryReadContract& read) {
+                                          return read.m_varscp == currentVscp;
+                                      });
+                    if (!found) ++m_stats.m_contractValidationMissingBoundaryReads;
+                }
+                if (expected.m_write) {
+                    const SubgraphInstanceContract* const summaryp
+                        = getSubgraphScopeContract(instance.m_scopep);
+                    const bool isPublicWrite
+                        = summaryp
+                          && std::find(summaryp->m_boundaryWrites.begin(),
+                                       summaryp->m_boundaryWrites.end(), currentVscp)
+                                 != summaryp->m_boundaryWrites.end();
+                    if (isPublicWrite
+                        && std::find(instance.m_contract.m_boundaryWrites.begin(),
+                                     instance.m_contract.m_boundaryWrites.end(), currentVscp)
+                               == instance.m_contract.m_boundaryWrites.end()) {
+                        ++m_stats.m_contractValidationMissingBoundaryWrites;
+                    }
+                }
+                continue;
+            }
+
+            if (!isUnderBoundaryScope(currentVscp->scopep(), instance.m_scopep)) {
+                const auto useIt
+                    = std::find_if(instance.m_contract.m_externalUses.begin(),
+                                   instance.m_contract.m_externalUses.end(),
+                                   [&](const AstSubgraphInstance::ExternalUseContract& use) {
+                                       return use.m_varscp == currentVscp;
+                                   });
+                if (expected.m_read
+                    && (useIt == instance.m_contract.m_externalUses.end() || !useIt->m_read)) {
+                    ++m_stats.m_contractValidationMissingExternalReads;
+                }
+                if (expected.m_write
+                    && (useIt == instance.m_contract.m_externalUses.end() || !useIt->m_write)) {
+                    ++m_stats.m_contractValidationMissingExternalWrites;
+                }
+                continue;
+            }
+
+            if (expected.m_write && m_parentConsumedSubgraphVars.count(currentVscp)
+                && std::find(instance.m_contract.m_coarseWrites.begin(),
+                             instance.m_contract.m_coarseWrites.end(), currentVscp)
+                       == instance.m_contract.m_coarseWrites.end()) {
+                ++m_stats.m_contractValidationMissingCoarseWrites;
+            }
         }
     }
 
@@ -4945,6 +5075,7 @@ void appendSubgraphScheduleBundlePlan(
     if (tag == "stl") finalizeStlSchedulePlan(plan, state, slow);
     addElapsedUsecs(state.m_stats.m_timeBuildPlansUsecs, buildPlanStartUsecs);
     if (plan.m_artifactp) {
+        state.validateScheduleInstanceContract(*plan.m_artifactp, plan.m_instance);
         bundle.m_plans.push_back(std::move(plan));
         ++state.m_stats.m_bundlePlans;
     }

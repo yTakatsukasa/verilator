@@ -15,6 +15,24 @@ test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post external reads\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract validation checks\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing boundary reads\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing boundary writes\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing coarse writes\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing external reads\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph nba, contract validation missing external writes\s+(\d+)",
+               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract validation unmapped refs\s+(\d+)",
+               0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe replays\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache recipe shared hits\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache shared skip constants\s+(\d+)",
