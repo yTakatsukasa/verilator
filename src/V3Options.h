@@ -245,6 +245,10 @@ private:
     bool m_debugProtect = false;    // main switch: --debug-protect
     bool m_debugSelfTest = false;   // main switch: --debug-self-test
     bool m_debugStackCheck = false;  // main switch: --debug-stack-check
+    bool m_debugSubgraphFreshOrder = false;  // main switch: --debug-subgraph-fresh-order
+    bool m_debugSubgraphNoArtifactScopeClone = false;  // --debug-subgraph-no-artifact-scope-clone
+    bool m_debugSubgraphNoArtifactShared = false;  // --debug-subgraph-no-artifact-shared
+    bool m_debugSubgraphNoOrderCacheClone = false;  // --debug-subgraph-no-order-cache-clone
     int m_debugRuntimeTimeout = 0;  // main switch: --debug-runtime-timeout <n>
     bool m_debugWidth = false;      // main switch: --debug-width
     bool m_decoration = true;       // main switch: --decoration
@@ -549,6 +553,10 @@ public:
     int debugRuntimeTimeout() const { return m_debugRuntimeTimeout; }
     bool debugSelfTest() const { return m_debugSelfTest; }
     bool debugStackCheck() const { return m_debugStackCheck; }
+    bool debugSubgraphFreshOrder() const { return m_debugSubgraphFreshOrder; }
+    bool debugSubgraphNoArtifactScopeClone() const { return m_debugSubgraphNoArtifactScopeClone; }
+    bool debugSubgraphNoArtifactShared() const { return m_debugSubgraphNoArtifactShared; }
+    bool debugSubgraphNoOrderCacheClone() const { return m_debugSubgraphNoOrderCacheClone; }
     bool debugWidth() const VL_PURE { return m_debugWidth; }
     bool decoration() const VL_MT_SAFE { return m_decoration; }
     bool decorationNodes() const VL_MT_SAFE { return m_decorationNodes; }

@@ -981,6 +981,10 @@ struct SubgraphLoweringStats final {
     uint64_t m_contractValidationMissingExternalReads = 0;
     uint64_t m_contractValidationMissingExternalWrites = 0;
     uint64_t m_contractValidationUnmappedRefs = 0;
+    uint64_t m_diagnosticArtifactScopeCloneGroups = 0;
+    uint64_t m_diagnosticArtifactSharedGroups = 0;
+    uint64_t m_diagnosticFreshOrderGroups = 0;
+    uint64_t m_diagnosticOrderCacheCloneGroups = 0;
     uint64_t m_groups = 0;
     uint64_t m_inputActivesAfter = 0;
     uint64_t m_inputActivesBefore = 0;
@@ -1319,6 +1323,13 @@ struct SubgraphLoweringStats final {
                          m_contractValidationMissingExternalWrites);
         V3Stats::addStat(prefix + "contract validation unmapped refs",
                          m_contractValidationUnmappedRefs);
+        V3Stats::addStat(prefix + "diagnostic artifact scope clone groups",
+                         m_diagnosticArtifactScopeCloneGroups);
+        V3Stats::addStat(prefix + "diagnostic artifact shared groups",
+                         m_diagnosticArtifactSharedGroups);
+        V3Stats::addStat(prefix + "diagnostic fresh order groups", m_diagnosticFreshOrderGroups);
+        V3Stats::addStat(prefix + "diagnostic order cache clone groups",
+                         m_diagnosticOrderCacheCloneGroups);
         V3Stats::addStat(prefix + "groups", m_groups);
         V3Stats::addStat(prefix + "input actives after", m_inputActivesAfter);
         V3Stats::addStat(prefix + "input actives before", m_inputActivesBefore);
@@ -3646,6 +3657,10 @@ public:
 
     static bool canUseSharedHelper(SubgraphScheduleArtifact* artifactp,
                                    const SubgraphSharedHelperContext& context) {
+        if (v3Global.opt.debugSubgraphFreshOrder()
+            || v3Global.opt.debugSubgraphNoArtifactShared()) {
+            return false;
+        }
         return classifySharedHelperUse(artifactp, context) == SubgraphSharedHelperSkipReason::NONE;
     }
 
@@ -4402,8 +4417,20 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     const V3Order::ExternalDomainsProvider& externalDomains, unsigned& subgraphIndex) {
     SubgraphSchedulePlan plan;
     if (subgraphLogic.empty()) return plan;
+    const bool diagnosticFreshOrder = v3Global.opt.debugSubgraphFreshOrder();
+    if (v3Global.opt.debugSubgraphNoArtifactScopeClone()) {
+        ++state.m_stats.m_diagnosticArtifactScopeCloneGroups;
+    }
+    if (v3Global.opt.debugSubgraphNoArtifactShared()) {
+        ++state.m_stats.m_diagnosticArtifactSharedGroups;
+    }
+    if (diagnosticFreshOrder) ++state.m_stats.m_diagnosticFreshOrderGroups;
+    if (v3Global.opt.debugSubgraphNoOrderCacheClone()) {
+        ++state.m_stats.m_diagnosticOrderCacheCloneGroups;
+    }
     const bool canShare
-        = SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
+        = !diagnosticFreshOrder
+          && SubgraphLoweringState::canShareSubgraphLogic(subgraphLogic, group.m_scopep);
     SubgraphOrderCacheKey cacheKey;
     const uint64_t domainShapeStartUsecs = statStartUsecs();
     const SubgraphDomainShapes domainShapes = SubgraphLoweringState::computeDomainShapes(
@@ -4450,6 +4477,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
         SubgraphScheduleArtifact* const artifactp = reuse.m_artifactp;
         if (artifactp) {
             AstCFunc* callFuncp = nullptr;
+            bool diagnosticReuseDisabled = false;
             bool sharedCall = false;
             bool identityVarMap = true;
             for (const auto& pair : reuse.m_remap.m_templateVarMap) {
@@ -4473,28 +4501,36 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 sharedCall = sharedFuncp->scopep() != group.m_scopep;
                 ++state.m_stats.m_artifactReuseSharedCalls;
             } else if (artifactp->m_scopep == group.m_scopep) {
-                callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                    artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap, {},
-                    state.m_stats, group.m_senTreep);
-                if (callFuncp) {
-                    ++state.m_stats.m_artifactReuseScopeClones;
-                    ++state.m_stats.m_orderedFuncClones;
+                if (v3Global.opt.debugSubgraphNoArtifactScopeClone()) {
+                    diagnosticReuseDisabled = true;
+                } else {
+                    callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap, {},
+                        state.m_stats, group.m_senTreep);
+                    if (callFuncp) {
+                        ++state.m_stats.m_artifactReuseScopeClones;
+                        ++state.m_stats.m_orderedFuncClones;
+                    }
                 }
             } else {
                 state.noteSharedReuseSkip(
                     SubgraphLoweringState::classifySharedHelperUse(artifactp, sharedContext));
-                const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
-                if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
-                    callFuncp = cloneIt->second;
-                    ++state.m_stats.m_artifactReuseScopeCloneHits;
+                if (v3Global.opt.debugSubgraphNoArtifactScopeClone()) {
+                    diagnosticReuseDisabled = true;
                 } else {
-                    callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
-                        artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap, {},
-                        state.m_stats);
-                    if (callFuncp) {
-                        artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
-                        ++state.m_stats.m_artifactReuseScopeClones;
-                        ++state.m_stats.m_orderedFuncClones;
+                    const auto cloneIt = artifactp->m_scopeCloneFuncps.find(group.m_scopep);
+                    if (cloneIt != artifactp->m_scopeCloneFuncps.end()) {
+                        callFuncp = cloneIt->second;
+                        ++state.m_stats.m_artifactReuseScopeCloneHits;
+                    } else {
+                        callFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
+                            artifactp->m_callFuncp, group.m_scopep, reuse.m_remap.m_templateVarMap,
+                            {}, state.m_stats);
+                        if (callFuncp) {
+                            artifactp->m_scopeCloneFuncps.emplace(group.m_scopep, callFuncp);
+                            ++state.m_stats.m_artifactReuseScopeClones;
+                            ++state.m_stats.m_orderedFuncClones;
+                        }
                     }
                 }
             }
@@ -4528,10 +4564,12 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                 ++state.m_stats.m_schedulePlans;
                 return plan;
             }
-            artifactp->m_cloneable = false;
-            artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::CLONE_FAIL;
-            ++state.m_stats.m_artifactReuseCloneFails;
-            if (tailFuncps) ++state.m_stats.m_artifactTailCloneFails;
+            if (!diagnosticReuseDisabled) {
+                artifactp->m_cloneable = false;
+                artifactp->m_uncloneableReason = SubgraphArtifactUncloneableReason::CLONE_FAIL;
+                ++state.m_stats.m_artifactReuseCloneFails;
+                if (tailFuncps) ++state.m_stats.m_artifactTailCloneFails;
+            }
         }
     }
     AstCFunc* funcp = nullptr;
@@ -4546,6 +4584,7 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
     bool orderCacheDomainsDiffer = false;
     const auto replayCachedOrder = [&](const SubgraphOrderCacheEntry& cacheEntry) {
         if (tag == "nba") return false;
+        if (v3Global.opt.debugSubgraphNoOrderCacheClone()) return false;
         if (!cacheEntry.m_recipep || !cacheEntry.m_artifactp) return false;
         const std::string replayTag = tag + "_subgraph_recipe_" + cvtToStr(subgraphIndex++);
         const uint64_t replayStartUsecs = statStartUsecs();
@@ -4726,7 +4765,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                     }
                 }
                 if (tag != "stl" && replayCachedOrder(cacheEntry)) return plan;
-                if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
+                if (cacheEntry.m_cloneable && cacheEntry.m_artifactp
+                    && !v3Global.opt.debugSubgraphNoOrderCacheClone()) {
                     AstCFunc* const clonedFuncp = SubgraphLoweringState::cloneOrderedFuncGraph(
                         cacheEntry.m_funcp, group.m_scopep, orderCacheTemplateVarMap,
                         orderCacheTemplateConstMap, state.m_stats, group.m_senTreep);
@@ -4854,7 +4894,8 @@ SubgraphSchedulePlan buildSubgraphSchedulePlan(
                         plan = SubgraphSchedulePlan{};
                         if (tag != "stl" && replayCachedOrder(cacheEntry)) return plan;
                     }
-                } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp) {
+                } else if (cacheEntry.m_cloneable && cacheEntry.m_artifactp
+                           && !v3Global.opt.debugSubgraphNoOrderCacheClone()) {
                     if (SubgraphLoweringState::canUseSharedHelper(cacheEntry.m_artifactp,
                                                                   sharedContext)
                         && !orderCacheSharedHelperCovers && !orderCacheRemapVariantp) {
