@@ -290,6 +290,7 @@ private:
     bool m_stdPackage = true;       // main switch: --std-package
     bool m_stdWaiver = true;        // main switch: --std-waiver
     bool m_structsPacked = false;   // main switch: --structs-packed
+    bool m_subgraphSchedule = false;  // main switch: --subgraph-schedule
     bool m_systemC = false;         // main switch: --sc: System C instead of simple C++
     bool m_stats = false;           // main switch: --stats
     bool m_statsVars = false;       // main switch: --stats-vars
@@ -505,6 +506,7 @@ public:
     bool stdPackage() const { return m_stdPackage; }
     bool stdWaiver() const { return m_stdWaiver; }
     bool structsPacked() const { return m_structsPacked; }
+    bool subgraphSchedule() const { return m_subgraphSchedule; }
     bool assertOn() const { return m_assert; }  // assertOn as __FILE__ may be defined
     bool assertCase() const { return m_assertCase; }
     bool autoflush() const { return m_autoflush; }

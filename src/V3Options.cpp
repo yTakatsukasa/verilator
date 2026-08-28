@@ -1777,6 +1777,8 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
         m_structsPacked = flag;
         fl->v3warn(DEPRECATED, "Option --structs-packed is deprecated, avoid use");
     }).undocumented();
+    DECL_OPTION("-subgraph-schedule", OnOff, &m_subgraphSchedule);
+    DECL_OPTION("-subgraph_schedule", OnOff, &m_subgraphSchedule).undocumented();
     DECL_OPTION("-sv", CbCall, [this]() { m_defaultLanguage = V3LangCode::L1800_2023; });
 
     DECL_OPTION("-no-threads", CbCall, [this, fl]() {
