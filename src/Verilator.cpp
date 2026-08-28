@@ -101,6 +101,7 @@
 #include "V3SplitVar.h"
 #include "V3Stats.h"
 #include "V3String.h"
+#include "V3SubgraphCheck.h"
 #include "V3Subst.h"
 #include "V3Table.h"
 #include "V3Task.h"
@@ -222,6 +223,12 @@ static void process() {
         V3WidthCommit::widthCommit(v3Global.rootp());
         v3Global.assertDTypesResolved(true);
         v3Global.widthMinUsage(VWidthMinUsage::MATCHES_WIDTH);
+
+        // Validate subgraph boundaries after elaboration and width resolution
+        if (v3Global.opt.subgraphSchedule()) {
+            V3SubgraphCheck::check(v3Global.rootp());
+            V3Error::abortIfErrors();
+        }
 
         // End of elaboration
         V3Stats::addStatPerf(V3Stats::STAT_WALLTIME_ELAB, elabWallTime.deltaTime());
