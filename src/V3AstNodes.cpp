@@ -3066,6 +3066,7 @@ void AstNodeModule::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, dead);
     dumpJsonBoolFuncIf(str, recursiveClone);
     dumpJsonBoolFuncIf(str, recursive);
+    dumpJsonBoolFuncIf(str, subgraphBoundary);
     dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonStr(str, "timeunit", timeunit().ascii());
     if (libname() != "work") dumpJsonStr(str, "libname=", libname());
