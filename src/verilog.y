@@ -261,6 +261,7 @@ BISONPRE_VERSION(3.7,%define api.header.include {"V3ParseBison.h"})
 %token<fl>              yVLT_SC_BV                  "sc_bv"
 %token<fl>              yVLT_SFORMAT                "sformat"
 %token<fl>              yVLT_SPLIT_VAR              "split_var"
+%token<fl>              yVLT_SUBGRAPH_BOUNDARY      "subgraph_boundary"
 %token<fl>              yVLT_TIMING_OFF             "timing_off"
 %token<fl>              yVLT_TIMING_ON              "timing_on"
 %token<fl>              yVLT_TRACING_OFF            "tracing_off"
@@ -8480,6 +8481,8 @@ vltItem:
                         { V3Control::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
         |       yVLT_HIER_WORKERS vltDHierDpi vltDWorkers
                         { V3Control::addHierWorkers($<fl>1, *$2, $3->toSInt()); }
+        |       yVLT_SUBGRAPH_BOUNDARY vltDModuleE
+                        { V3Control::addModulePragma(*$2, VPragmaType::SUBGRAPH_BOUNDARY); }
         |       yVLT_PARALLEL_CASE vltDFile
                         { V3Control::addCaseParallel(*$2, 0); }
         |       yVLT_PARALLEL_CASE vltDFile yVLT_D_LINES yaINTNUM
