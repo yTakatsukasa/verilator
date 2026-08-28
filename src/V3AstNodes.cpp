@@ -3051,6 +3051,7 @@ void AstNodeModule::dump(std::ostream& str) const {
         str << " [RECURSIVE]";
     }
     if (parameterizedTemplate()) str << " [PAR-TEMPL]";
+    if (subgraphBoundary()) str << " [SUBGRAPH-BOUNDARY]";
     if (verilatorLib()) str << " [VERILATOR-LIB]";
     str << " [" << timeunit() << "]";
     if (libname() != "work") str << " libname=" << libname();
