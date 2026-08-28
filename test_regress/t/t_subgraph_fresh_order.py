@@ -11,12 +11,11 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(
-    verilator_flags2=[
-        "--debug-subgraph-fresh-order",
-        "--stats",
-        "--subgraph-schedule",
-    ])
+test.compile(verilator_flags2=[
+    "--debug-subgraph-fresh-order",
+    "--stats",
+    "--subgraph-schedule",
+])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse lookups\s+(\d+)", 0)

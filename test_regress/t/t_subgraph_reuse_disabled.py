@@ -11,22 +11,21 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(
-    verilator_flags2=[
-        "--debug-subgraph-no-artifact-scope-clone",
-        "--debug-subgraph-no-artifact-shared",
-        "--debug-subgraph-no-order-cache-clone",
-        "--stats",
-        "--subgraph-schedule",
-    ])
+test.compile(verilator_flags2=[
+    "--debug-subgraph-no-artifact-scope-clone",
+    "--debug-subgraph-no-artifact-shared",
+    "--debug-subgraph-no-order-cache-clone",
+    "--stats",
+    "--subgraph-schedule",
+])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, diagnostic artifact scope clone groups\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, diagnostic artifact shared groups\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph nba, diagnostic artifact shared groups\s+(\d+)",
+               6)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph nba, diagnostic order cache clone groups\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph nba, internal order aggregate calls\s+(\d+)", 6)
