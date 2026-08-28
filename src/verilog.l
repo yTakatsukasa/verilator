@@ -855,6 +855,7 @@ vnum    {vnum1}|{vnum2}|{vnum3}|{vnum4}|{vnum5}
   "/*verilator sc_clock*/"              { FL; yylval.fl->v3warn(DEPRECATED, "sc_clock is ignored"); FL_BRK; }
   "/*verilator sformat*/"               { FL; return yVL_SFORMAT; }
   "/*verilator split_var*/"             { FL; return yVL_SPLIT_VAR; }
+  "/*verilator subgraph_boundary*/"     { FL; return yVL_SUBGRAPH_BOUNDARY; }
   /* Experimental Verilator-specific FSM coverage controls. These names were
    * chosen to match the current extractor behavior, not a published synthesis
    * or simulator pragma standard, so they may evolve as we settle on longer-
