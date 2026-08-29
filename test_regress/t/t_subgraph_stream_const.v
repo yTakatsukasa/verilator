@@ -42,10 +42,11 @@ module sg_stream (
   output logic [30:0] value
 ); `SUBGRAPH_BOUNDARY
 
-  logic [30:0] state = 31'h1234_5678;
+  typedef logic [30:0] state_t;
+  state_t state = 31'h1234_5678;
 
   assign value = state;
-  always_ff @(posedge clk) state <= {<<8{state}} ^ 31'h1020_4081;
+  always_ff @(posedge clk) state <= state_t'({<<8{state}}) ^ 31'h1020_4081;
 
 endmodule
 
@@ -54,9 +55,10 @@ module sg_stream_ref (
   output logic [30:0] value
 );
 
-  logic [30:0] state = 31'h1234_5678;
+  typedef logic [30:0] state_t;
+  state_t state = 31'h1234_5678;
 
   assign value = state;
-  always_ff @(posedge clk) state <= {<<8{state}} ^ 31'h1020_4081;
+  always_ff @(posedge clk) state <= state_t'({<<8{state}}) ^ 31'h1020_4081;
 
 endmodule
