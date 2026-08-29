@@ -46,6 +46,7 @@
 #include "V3EmitCBase.h"
 #include "V3EmitV.h"
 #include "V3Order.h"
+#include "V3SchedSubgraph.h"
 #include "V3SenExprBuilder.h"
 #include "V3Stats.h"
 
@@ -1034,18 +1035,25 @@ void schedule(AstNetlist* netlistp) {
             = virtIfaceTriggers.makeVscpToSensMap(trigKit, firstVifTriggerIndex, trigVscp);
 
         const auto& timingDomains = timingKit.remapDomains(trigMap);
-        AstCFunc* const funcp = V3Order::order(
-            netlistp, logic, trigToSen, name, name == "nba" && v3Global.opt.mtasks(), false,
-            [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
-                auto it = timingDomains.find(vscp);
-                if (it != timingDomains.end()) out = it->second;
-                if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-                if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
-                    const auto& ifaceTriggered
-                        = findTriggeredIface(vscp, vifVscpToSens, virtIfaceTriggers);
-                    out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
-                }
-            });
+        const V3Order::ExternalDomainsProvider externalDomains
+            = [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+                  auto it = timingDomains.find(vscp);
+                  if (it != timingDomains.end()) out = it->second;
+                  if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
+                  if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
+                      const auto& ifaceTriggered
+                          = findTriggeredIface(vscp, vifVscpToSens, virtIfaceTriggers);
+                      out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
+                  }
+              };
+
+        if (name == "nba") {
+            lowerSubgraphNbaLogic(netlistp, logic, trigToSen, false, externalDomains);
+        }
+
+        AstCFunc* const funcp
+            = V3Order::order(netlistp, logic, trigToSen, name,
+                             name == "nba" && v3Global.opt.mtasks(), false, externalDomains);
 
         return {trigVscp, funcp};
     };

@@ -1,0 +1,137 @@
+// -*- mode: C++; c-file-style: "cc-mode" -*-
+//*************************************************************************
+// DESCRIPTION: Verilator: Scheduling subgraph helpers
+//
+// Code available from: https://verilator.org
+//
+//*************************************************************************
+//
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
+// SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+//
+//*************************************************************************
+
+#include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
+
+#include "V3SchedSubgraph.h"
+
+#include "V3Stats.h"
+
+VL_DEFINE_DEBUG_FUNCTIONS;
+
+namespace V3Sched {
+
+namespace {
+
+struct SubgraphGroup final {
+    AstScope* m_boundaryScopep = nullptr;
+    AstSenTree* m_senTreep = nullptr;
+    FileLine* m_filelinep = nullptr;
+    LogicByScope* m_ownerp = nullptr;
+    LogicByScope m_preLogic;
+    LogicByScope m_postLogic;
+};
+
+AstScope* findBoundaryScope(AstScope* scopep) {
+    for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp->modp()->subgraphBoundary()) return scanp;
+    }
+    return nullptr;
+}
+
+SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups, LogicByScope* ownerp,
+                                 AstScope* boundaryScopep, FileLine* filelinep) {
+    for (SubgraphGroup& group : groups) {
+        if (group.m_boundaryScopep == boundaryScopep) return group;
+    }
+    groups.emplace_back();
+    SubgraphGroup& group = groups.back();
+    group.m_boundaryScopep = boundaryScopep;
+    group.m_filelinep = filelinep;
+    group.m_ownerp = ownerp;
+    return group;
+}
+
+void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep) {
+    AstSenTree* const senTreep = activep->sentreep();
+    const bool combinational = senTreep->hasCombo();
+    if (!combinational && !group.m_senTreep) group.m_senTreep = senTreep;
+
+    for (AstNode *nodep = activep->stmtsp(), *nextp; nodep; nodep = nextp) {
+        nextp = nodep->nextp();
+        nodep->unlinkFrBack();
+        LogicByScope& phaseLogic
+            = combinational || VN_IS(nodep, AlwaysPost) ? group.m_postLogic : group.m_preLogic;
+        phaseLogic.add(scopep, senTreep, nodep);
+    }
+    if (activep->backp()) activep->unlinkFrBack();
+    activep->deleteTree();
+}
+
+}  // namespace
+
+void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                           const V3Order::TrigToSenMap& trigToSen, bool slow,
+                           const V3Order::ExternalDomainsProvider& externalDomains) {
+    if (!v3Global.opt.subgraphSchedule()) return;
+
+    std::vector<SubgraphGroup> groups;
+    for (LogicByScope* const lbsp : logic) {
+        LogicByScope parentLogic;
+        parentLogic.reserve(lbsp->size());
+        for (const auto& pair : *lbsp) {
+            AstScope* const scopep = pair.first;
+            AstActive* const activep = pair.second;
+            AstScope* const boundaryScopep = findBoundaryScope(scopep);
+            if (!boundaryScopep) {
+                parentLogic.emplace_back(pair);
+                continue;
+            }
+            SubgraphGroup& group
+                = findOrCreateGroup(groups, lbsp, boundaryScopep, activep->fileline());
+            addSubgraphLogic(group, scopep, activep);
+        }
+        *lbsp = std::move(parentLogic);
+    }
+
+    uint64_t orderedLogic = 0;
+    unsigned groupIndex = 0;
+    for (SubgraphGroup& group : groups) {
+        orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
+        UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep,
+                    "Subgraph NBA logic has no clocked sensitivity");
+
+        const auto orderPhase = [&](LogicByScope& logic, const string& phase, bool post) {
+            if (logic.empty()) return;
+            const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
+            AstCFunc* const funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
+                                                   externalDomains, group.m_boundaryScopep);
+            if (!funcp) return;
+            util::splitCheck(funcp);
+
+            AstActive* const wrapperp
+                = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
+            AstNode* const callp = util::callVoidFunc(funcp);
+            if (post) {
+                AstAlwaysPost* const postp = new AstAlwaysPost{group.m_filelinep};
+                postp->addStmtsp(callp);
+                wrapperp->addStmtsp(postp);
+            } else {
+                wrapperp->addStmtsp(callp);
+            }
+            group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
+        };
+
+        orderPhase(group.m_preLogic, "pre", false);
+        orderPhase(group.m_postLogic, "post", true);
+        ++groupIndex;
+    }
+
+    V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
+    V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
+}
+
+}  // namespace V3Sched
