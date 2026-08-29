@@ -57,14 +57,12 @@ SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups, LogicByScop
 
 void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep) {
     AstSenTree* const senTreep = activep->sentreep();
-    const bool combinational = senTreep->hasCombo();
-    if (!combinational && !group.m_senTreep) group.m_senTreep = senTreep;
+    if (!group.m_senTreep) group.m_senTreep = senTreep;
 
     for (AstNode *nodep = activep->stmtsp(), *nextp; nodep; nodep = nextp) {
         nextp = nodep->nextp();
         nodep->unlinkFrBack();
-        LogicByScope& phaseLogic
-            = combinational || VN_IS(nodep, AlwaysPost) ? group.m_postLogic : group.m_preLogic;
+        LogicByScope& phaseLogic = VN_IS(nodep, AlwaysPost) ? group.m_postLogic : group.m_preLogic;
         phaseLogic.add(scopep, senTreep, nodep);
     }
     if (activep->backp()) activep->unlinkFrBack();
@@ -86,7 +84,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             AstScope* const scopep = pair.first;
             AstActive* const activep = pair.second;
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
-            if (!boundaryScopep) {
+            // Keep combinational replicas in the parent scheduler. They need to observe all
+            // parent and subgraph NBA commits before refreshing their outputs and next-state
+            // values. Moving them into the POST helper would use stale parent inputs.
+            if (!boundaryScopep || activep->sentreep()->hasCombo()) {
                 parentLogic.emplace_back(pair);
                 continue;
             }
