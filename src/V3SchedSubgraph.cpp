@@ -19,6 +19,7 @@
 #include "V3SchedSubgraph.h"
 
 #include "V3Stats.h"
+#include "V3SubgraphContract.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
@@ -99,6 +100,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     }
 
     uint64_t orderedLogic = 0;
+    uint64_t contractBoundaryUses = 0;
+    uint64_t contractExternalUses = 0;
+    uint64_t contractInternalUses = 0;
+    uint64_t contracts = 0;
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
@@ -112,6 +117,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                                                    externalDomains, group.m_boundaryScopep);
             if (!funcp) return;
             util::splitCheck(funcp);
+
+            const V3SubgraphContract contract
+                = V3SubgraphContract::make(funcp, group.m_boundaryScopep, group.m_senTreep, post);
+            contractBoundaryUses += contract.boundaryUses().size();
+            contractExternalUses += contract.externalUses().size();
+            contractInternalUses += contract.internalUses().size();
+            ++contracts;
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
@@ -133,6 +145,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
 
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract boundary uses", contractBoundaryUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract external uses", contractExternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract internal uses", contractInternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA contracts", contracts);
 }
 
 }  // namespace V3Sched
