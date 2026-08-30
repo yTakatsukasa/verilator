@@ -3736,6 +3736,74 @@ void AstStop::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isFatal);
     dumpJsonGen(str);
 }
+void AstSubgraphInstance::dump(std::ostream& str) const {
+    this->AstNodeStmt::dump(str);
+    str << " boundary=" << boundaryName() << " phase=" << phase().ascii()
+        << " logical=" << logicalUseCount() << " materialized=" << materializedUseCount();
+}
+void AstSubgraphInstance::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "boundary", boundaryName());
+    dumpJsonStr(str, "phase", phase().ascii());
+    dumpJsonNum(str, "logicalUses", logicalUseCount());
+    dumpJsonNum(str, "materializedUses", materializedUseCount());
+    dumpJsonGen(str);
+}
+void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool write) {
+    for (AstSubgraphUse* usep = logicalsp(); usep; usep = VN_AS(usep->nextp(), SubgraphUse)) {
+        if (usep->logicalName() != name) continue;
+        usep->read(usep->read() || read);
+        usep->write(usep->write() || write);
+        return;
+    }
+    addLogicalsp(new AstSubgraphUse{fileline(), name, read, write});
+}
+void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
+                                             bool write) {
+    for (AstSubgraphUse* usep = materializedsp(); usep; usep = VN_AS(usep->nextp(), SubgraphUse)) {
+        if (usep->varScopep() != vscp || usep->kind() != kind) continue;
+        usep->read(usep->read() || read);
+        usep->write(usep->write() || write);
+        return;
+    }
+    addMaterializedsp(new AstSubgraphUse{fileline(), vscp, kind, read, write});
+}
+void AstSubgraphInstance::sealSchedulingMetadata() {
+    m_logicalUseCount = logicalUseCount();
+    m_materializedUseCount = materializedUseCount();
+    if (logicalsp()) logicalsp()->unlinkFrBackWithNext()->deleteTree();
+    if (materializedsp()) materializedsp()->unlinkFrBackWithNext()->deleteTree();
+    m_scopep = nullptr;
+}
+size_t AstSubgraphInstance::logicalUseCount() const {
+    if (!logicalsp()) return m_logicalUseCount;
+    size_t count = 0;
+    for (const AstSubgraphUse* usep = logicalsp(); usep;
+         usep = VN_AS(usep->nextp(), SubgraphUse)) {
+        ++count;
+    }
+    return count;
+}
+size_t AstSubgraphInstance::materializedUseCount() const {
+    if (!materializedsp()) return m_materializedUseCount;
+    size_t count = 0;
+    for (const AstSubgraphUse* usep = materializedsp(); usep;
+         usep = VN_AS(usep->nextp(), SubgraphUse)) {
+        ++count;
+    }
+    return count;
+}
+void AstSubgraphUse::dump(std::ostream& str) const {
+    this->AstNodeStmt::dump(str);
+    if (!logicalName().empty()) str << " name=" << logicalName();
+    str << " kind=" << kind().ascii() << " access=" << (read() ? "R" : "") << (write() ? "W" : "");
+}
+void AstSubgraphUse::dumpJson(std::ostream& str) const {
+    if (!logicalName().empty()) dumpJsonStr(str, "logicalName", logicalName());
+    dumpJsonStr(str, "kind", kind().ascii());
+    dumpJsonBoolFuncIf(str, read);
+    dumpJsonBoolFuncIf(str, write);
+    dumpJsonGen(str);
+}
 void AstTraceDecl::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
     if (codeAssigned()) str << " [code=" << code() << "]";

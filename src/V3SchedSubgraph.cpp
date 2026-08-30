@@ -21,6 +21,8 @@
 #include "V3Stats.h"
 #include "V3SubgraphContract.h"
 
+#include <unordered_set>
+
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 namespace V3Sched {
@@ -70,7 +72,34 @@ void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep
     activep->deleteTree();
 }
 
+class SealSubgraphMetadataVisitor final : public VNVisitor {
+    std::unordered_set<const AstCFunc*> m_visitedFuncps;
+
+    void visit(AstCFunc* nodep) override {
+        if (!m_visitedFuncps.emplace(nodep).second) return;
+        iterateChildren(nodep);
+    }
+    void visit(AstCCall* nodep) override {
+        iterateChildren(nodep);
+        if (!nodep->funcp()->entryPoint()) iterate(nodep->funcp());
+    }
+    void visit(AstSubgraphInstance* nodep) override {
+        nodep->sealSchedulingMetadata();
+        iterateChildren(nodep);
+    }
+    void visit(AstNode* nodep) override { iterateChildren(nodep); }
+
+public:
+    explicit SealSubgraphMetadataVisitor(AstCFunc* funcp) { iterate(funcp); }
+    ~SealSubgraphMetadataVisitor() override = default;
+};
+
 }  // namespace
+
+void sealSubgraphSchedulingMetadata(AstCFunc* funcp) {
+    if (!funcp) return;
+    SealSubgraphMetadataVisitor{funcp};
+}
 
 void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                            const V3Order::TrigToSenMap& trigToSen, bool slow,
@@ -104,6 +133,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t contractExternalUses = 0;
     uint64_t contractInternalUses = 0;
     uint64_t contracts = 0;
+    uint64_t coarseNodes = 0;
+    uint64_t logicalUses = 0;
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
@@ -128,12 +159,30 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
             AstNode* const callp = util::callVoidFunc(funcp);
+            AstSubgraphInstance* const instancep = new AstSubgraphInstance{
+                group.m_filelinep, group.m_boundaryScopep,
+                post ? VSubgraphPhase::POST : VSubgraphPhase::PRE, callp};
+            for (const V3SubgraphContract::LogicalUse& use :
+                 V3SubgraphContract::makeLogicalBoundaryUses(group.m_boundaryScopep)) {
+                instancep->addLogicalUse(use.m_name, use.m_read, use.m_write);
+            }
+            const auto addMaterializedUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
+                                                 VSubgraphUseKind kind) {
+                for (const V3SubgraphContract::Use& use : uses) {
+                    instancep->addMaterializedUse(use.m_varScopep, kind, use.m_read, use.m_write);
+                }
+            };
+            addMaterializedUses(contract.boundaryUses(), VSubgraphUseKind::BOUNDARY);
+            addMaterializedUses(contract.externalUses(), VSubgraphUseKind::EXTERNAL);
+            addMaterializedUses(contract.internalUses(), VSubgraphUseKind::INTERNAL);
+            logicalUses += instancep->logicalUseCount();
+            ++coarseNodes;
             if (post) {
                 AstAlwaysPost* const postp = new AstAlwaysPost{group.m_filelinep};
-                postp->addStmtsp(callp);
+                postp->addStmtsp(instancep);
                 wrapperp->addStmtsp(postp);
             } else {
-                wrapperp->addStmtsp(callp);
+                wrapperp->addStmtsp(instancep);
             }
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
         };
@@ -149,6 +198,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA contract external uses", contractExternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA contract internal uses", contractInternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA contracts", contracts);
+    V3Stats::addStat("Scheduling, Subgraph NBA coarse nodes", coarseNodes);
+    V3Stats::addStat("Scheduling, Subgraph NBA logical uses", logicalUses);
 }
 
 }  // namespace V3Sched

@@ -217,6 +217,12 @@ class DescopeVisitor final : public VNVisitor {
         m_scopep = nodep;
         iterateChildren(nodep);
     }
+    void visit(AstSubgraphInstance* nodep) override {
+        // Contracts are consumed by scheduling and contain AstVarScope links, which cease to
+        // exist in this pass. Keep only the executable helper call for later code generation.
+        nodep->sealSchedulingMetadata();
+        iterateChildren(nodep);
+    }
     void visit(AstVarScope* nodep) override {
         // Delete the varscope when we're finished
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);

@@ -2039,6 +2039,48 @@ inline std::ostream& operator<<(std::ostream& os, const VStrength& rhs) {
 }
 
 // ######################################################################
+
+class VSubgraphPhase final {
+public:
+    enum en : uint8_t { NONE, POST, PRE, REFRESH, SNAPSHOT };
+    enum en m_e;
+    VSubgraphPhase()
+        : m_e{NONE} {}
+    // cppcheck-suppress noExplicitConstructor
+    constexpr VSubgraphPhase(en _e)
+        : m_e{_e} {}
+    constexpr operator en() const { return m_e; }
+    const char* ascii() const {
+        static const char* const names[] = {"none", "post", "pre", "refresh", "snapshot"};
+        return names[m_e];
+    }
+};
+constexpr bool operator==(VSubgraphPhase lhs, VSubgraphPhase rhs) { return lhs.m_e == rhs.m_e; }
+constexpr bool operator!=(VSubgraphPhase lhs, VSubgraphPhase rhs) { return !(lhs == rhs); }
+
+// ######################################################################
+
+class VSubgraphUseKind final {
+public:
+    enum en : uint8_t { BOUNDARY, EXTERNAL, INTERNAL };
+    enum en m_e;
+    VSubgraphUseKind()
+        : m_e{BOUNDARY} {}
+    // cppcheck-suppress noExplicitConstructor
+    constexpr VSubgraphUseKind(en _e)
+        : m_e{_e} {}
+    constexpr operator en() const { return m_e; }
+    const char* ascii() const {
+        static const char* const names[] = {"boundary", "external", "internal"};
+        return names[m_e];
+    }
+};
+constexpr bool operator==(VSubgraphUseKind lhs, VSubgraphUseKind rhs) {
+    return lhs.m_e == rhs.m_e;
+}
+constexpr bool operator!=(VSubgraphUseKind lhs, VSubgraphUseKind rhs) { return !(lhs == rhs); }
+
+// ######################################################################
 //  VSystemCSectionType - Represents the type of a `systemc_* block (Verilator specific extension)
 
 class VSystemCSectionType final {

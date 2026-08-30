@@ -25,6 +25,8 @@
 
 namespace V3Sched {
 
+void sealSubgraphSchedulingMetadata(AstCFunc* funcp);
+
 void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                            const V3Order::TrigToSenMap& trigToSen, bool slow,
                            const V3Order::ExternalDomainsProvider& externalDomains);

@@ -1927,6 +1927,10 @@ public:
         // invoke the graph and wait for it to complete. Emitting the children does just that.
         iterateChildrenConst(nodep);
     }
+    void visit(AstSubgraphInstance* nodep) override {
+        // Scheduling metadata is removed by V3Descope; emit the wrapped helper call.
+        iterateChildrenConst(nodep);
+    }
 
     // Default
     void visit(AstNode* nodep) override {  // LCOV_EXCL_START

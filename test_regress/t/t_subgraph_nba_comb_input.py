@@ -11,12 +11,24 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(verilator_flags2=["--stats", "--subgraph-schedule"])
+test.compile(verilator_flags2=["--dump-tree-json", "--stats", "--subgraph-schedule"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract boundary uses\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract external uses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract internal uses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 8)
+
+sched_tree = test.glob_one(test.obj_dir + "/*_sched.tree.json")
+test.file_grep(
+    sched_tree,
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"pre".*"logicalUses":4.*"materializedUses":5',
+)
+test.file_grep(
+    sched_tree,
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"post".*"logicalUses":4.*"materializedUses":3',
+)
 
 test.passes()

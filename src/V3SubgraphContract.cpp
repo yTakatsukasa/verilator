@@ -123,3 +123,18 @@ V3SubgraphContract V3SubgraphContract::make(AstCFunc* funcp, AstScope* boundaryS
         boundaryScopep,         domainp, post, std::move(boundaryUses), std::move(externalUses),
         std::move(internalUses)};
 }
+
+std::vector<V3SubgraphContract::LogicalUse>
+V3SubgraphContract::makeLogicalBoundaryUses(AstScope* boundaryScopep) {
+    std::vector<LogicalUse> uses;
+    for (AstNode* memberp = boundaryScopep->modp()->stmtsp(); memberp;
+         memberp = memberp->nextp()) {
+        AstVar* const varp = VN_CAST(memberp, Var);
+        if (!varp) continue;
+        if (!varp->isIO()) continue;
+        const bool read = varp->direction().isNonOutput();
+        const bool write = varp->direction().isWritable();
+        if (read || write) uses.push_back(LogicalUse{varp->origName(), read, write});
+    }
+    return uses;
+}

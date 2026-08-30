@@ -1054,6 +1054,7 @@ void schedule(AstNetlist* netlistp) {
         AstCFunc* const funcp
             = V3Order::order(netlistp, logic, trigToSen, name,
                              name == "nba" && v3Global.opt.mtasks(), false, externalDomains);
+        sealSubgraphSchedulingMetadata(funcp);
 
         return {trigVscp, funcp};
     };

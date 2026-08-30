@@ -1267,6 +1267,89 @@ public:
     string emitVerilog() const { return m_isFatal ? "$fatal" : "$stop"; }
     bool isFatal() const { return m_isFatal; }
 };
+class AstSubgraphInstance final : public AstNodeStmt {
+    // Coarse subgraph wrapper carrying logical and materialized parent contracts.
+    // @astgen op1 := stmtsp : List[AstNode]
+    // @astgen op2 := logicalsp : List[AstSubgraphUse]
+    // @astgen op3 := materializedsp : List[AstSubgraphUse]
+    // @astgen ptr := m_scopep : Optional[AstScope]
+private:
+    string m_boundaryName;  // Stable boundary identity after AstScope deletion
+    uint32_t m_logicalUseCount = 0;  // Preserved after scheduling metadata is consumed
+    uint32_t m_materializedUseCount = 0;  // Preserved after scheduling metadata is consumed
+    VSubgraphPhase m_phase;  // Evaluation phase represented by this wrapper
+
+public:
+    AstSubgraphInstance(FileLine* fl, AstScope* scopep, VSubgraphPhase phase, AstNode* stmtsp)
+        : ASTGEN_SUPER_SubgraphInstance(fl)
+        , m_boundaryName{scopep->name()}
+        , m_phase{phase} {
+        m_scopep = scopep;
+        addStmtsp(stmtsp);
+    }
+    ASTGEN_MEMBERS_AstSubgraphInstance;
+    void dump(std::ostream& str) const override;
+    void dumpJson(std::ostream& str) const override;
+    AstScope* scopep() const { return m_scopep; }
+    const string& boundaryName() const { return m_boundaryName; }
+    VSubgraphPhase phase() const { return m_phase; }
+    void addLogicalUse(const string& name, bool read, bool write);
+    void addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write);
+    void sealSchedulingMetadata();
+    size_t logicalUseCount() const;
+    size_t materializedUseCount() const;
+    bool maybePointedTo() const override VL_MT_SAFE { return true; }
+    bool isGateOptimizable() const override { return false; }
+    bool isPredictOptimizable() const override { return false; }
+    int instrCount() const override { return 1; }
+    bool sameNode(const AstNode* samep) const override {
+        const AstSubgraphInstance* const asamep = VN_DBG_AS(samep, SubgraphInstance);
+        return boundaryName() == asamep->boundaryName() && phase() == asamep->phase();
+    }
+};
+class AstSubgraphUse final : public AstNodeStmt {
+    // One variable access in a coarse subgraph contract.
+    // @astgen ptr := m_varScopep : Optional[AstVarScope]
+    string m_logicalName;  // Port name for logical boundary uses
+    VSubgraphUseKind m_kind;  // Relationship of the variable to the boundary scope
+    bool m_read : 1;  // Contract consumes the variable
+    bool m_write : 1;  // Contract produces the variable
+
+public:
+    AstSubgraphUse(FileLine* fl, AstVarScope* varScopep, VSubgraphUseKind kind, bool read,
+                   bool write)
+        : ASTGEN_SUPER_SubgraphUse(fl)
+        , m_kind{kind}
+        , m_read{read}
+        , m_write{write} {
+        m_varScopep = varScopep;
+    }
+    AstSubgraphUse(FileLine* fl, const string& logicalName, bool read, bool write)
+        : ASTGEN_SUPER_SubgraphUse(fl)
+        , m_logicalName{logicalName}
+        , m_kind{VSubgraphUseKind::BOUNDARY}
+        , m_read{read}
+        , m_write{write} {}
+    ASTGEN_MEMBERS_AstSubgraphUse;
+    void dump(std::ostream& str) const override;
+    void dumpJson(std::ostream& str) const override;
+    AstVarScope* varScopep() const { return m_varScopep; }
+    const string& logicalName() const { return m_logicalName; }
+    VSubgraphUseKind kind() const { return m_kind; }
+    bool read() const { return m_read; }
+    void read(bool flag) { m_read = flag; }
+    bool write() const { return m_write; }
+    void write(bool flag) { m_write = flag; }
+    bool isGateOptimizable() const override { return false; }
+    bool isPredictOptimizable() const override { return false; }
+    int instrCount() const override { return 0; }
+    bool sameNode(const AstNode* samep) const override {
+        const AstSubgraphUse* const asamep = VN_DBG_AS(samep, SubgraphUse);
+        return varScopep() == asamep->varScopep() && logicalName() == asamep->logicalName()
+               && kind() == asamep->kind() && read() == asamep->read()
+               && write() == asamep->write();
+    }
+};
 class AstSystemT final : public AstNodeStmt {
     // $system used as task
     // @astgen op1 := lhsp : AstNodeExpr
