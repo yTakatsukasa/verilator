@@ -22,8 +22,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 20)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot instances\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot sources\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 7)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 25)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
 

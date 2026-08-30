@@ -357,6 +357,25 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         }
     }
+    void addSnapshotSourceUsage(AstSubgraphUse* nodep, AstVarScope* varscp) {
+        UASSERT_OBJ(m_scopep, nodep, "Snapshot source not under scope");
+        UASSERT_OBJ(m_logicVxp, nodep, "Snapshot source not under logic");
+        UASSERT_OBJ(nodep->read() && !nodep->write(), nodep,
+                    "Snapshot source should be read-only");
+
+        if (m_parallel && !varscp->user4Or(VA_READ)) m_accessedVscps.push_back(varscp);
+        if (varscp->user2() & VU_CON) return;
+        varscp->user2Or(VU_CON);
+
+        // A snapshot samples the value before any clocked writer commits it. Clocked writers
+        // depend on the variable's PORD vertex, and NBA commits depend on the POST vertex, so
+        // publish the sample before both. Using the normal AstAlwaysPre read edge would impose
+        // the opposite ordering.
+        OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
+        m_graphp->addHardEdge(m_logicVxp, ordVxp, WEIGHT_NORMAL);
+        OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
+        m_graphp->addHardEdge(m_logicVxp, postVxp, WEIGHT_POST);
+    }
     void visit(AstNodeVarRef* nodep) override {
         addVarUsage(nodep, nodep->varScopep(), nodep->access().isReadOrRW(),
                     nodep->access().isWriteOrRW());
@@ -365,6 +384,8 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ(m_logicVxp, nodep, "Subgraph contract not under logic");
         UASSERT_OBJ((nodep->phase() == VSubgraphPhase{VSubgraphPhase::POST}) == m_inPost, nodep,
                     "Subgraph phase does not match its parent procedure");
+        UASSERT_OBJ((nodep->phase() == VSubgraphPhase{VSubgraphPhase::SNAPSHOT}) == m_inPre, nodep,
+                    "Subgraph snapshot phase does not match its parent procedure");
         ++m_subgraphContractNodes;
         const bool refresh = nodep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
         for (AstSubgraphUse* usep = nodep->materializedsp(); usep;
@@ -385,7 +406,17 @@ class OrderGraphBuilder final : public VNVisitor {
             VL_RESTORER(m_softSubgraphRead);
             m_softSubgraphRead = usep->cuttable() && usep->read() && !delayedState;
             if (m_softSubgraphRead) ++m_subgraphContractCuttableUses;
-            addVarUsage(usep, vscp, usep->read(), usep->write());
+            if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_SOURCE}) {
+                addSnapshotSourceUsage(usep, vscp);
+            } else if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}) {
+                VL_RESTORER(m_inClocked);
+                VL_RESTORER(m_inPre);
+                m_inClocked = false;
+                m_inPre = false;
+                addVarUsage(usep, vscp, usep->read(), usep->write());
+            } else {
+                addVarUsage(usep, vscp, usep->read(), usep->write());
+            }
         }
         // Do not visit stmtsp(): the helper body is deliberately opaque to the parent graph.
     }

@@ -2062,7 +2062,7 @@ constexpr bool operator!=(VSubgraphPhase lhs, VSubgraphPhase rhs) { return !(lhs
 
 class VSubgraphUseKind final {
 public:
-    enum en : uint8_t { BOUNDARY, EXTERNAL, INTERNAL };
+    enum en : uint8_t { BOUNDARY, EXTERNAL, INTERNAL, SNAPSHOT_SOURCE, SNAPSHOT_STORAGE };
     enum en m_e;
     VSubgraphUseKind()
         : m_e{BOUNDARY} {}
@@ -2071,7 +2071,8 @@ public:
         : m_e{_e} {}
     constexpr operator en() const { return m_e; }
     const char* ascii() const {
-        static const char* const names[] = {"boundary", "external", "internal"};
+        static const char* const names[]
+            = {"boundary", "external", "internal", "snapshot-source", "snapshot-storage"};
         return names[m_e];
     }
 };

@@ -21,6 +21,7 @@
 #include "V3Stats.h"
 #include "V3SubgraphContract.h"
 
+#include <unordered_map>
 #include <unordered_set>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -28,6 +29,11 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 namespace V3Sched {
 
 namespace {
+
+struct SubgraphSnapshot final {
+    AstVarScope* m_sourceVscp = nullptr;
+    AstVarScope* m_storageVscp = nullptr;
+};
 
 struct SubgraphGroup final {
     AstScope* m_boundaryScopep = nullptr;
@@ -38,6 +44,30 @@ struct SubgraphGroup final {
     LogicByScope m_preLogic;
     LogicByScope m_postLogic;
     LogicByScope m_refreshLogic;
+    std::vector<SubgraphSnapshot> m_snapshots;
+};
+
+class SnapshotNameAllocator final {
+    std::unordered_map<AstScope*, std::unordered_set<string>> m_usedNames;
+
+    std::unordered_set<string>& usedNamesFor(AstScope* scopep) {
+        std::unordered_set<string>& usedNames = m_usedNames[scopep];
+        if (!usedNames.empty()) return usedNames;
+        for (AstVarScope* vscp = scopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            usedNames.insert(vscp->varp()->name());
+        }
+        return usedNames;
+    }
+
+public:
+    string get(AstScope* scopep, const string& base) {
+        std::unordered_set<string>& usedNames = usedNamesFor(scopep);
+        if (usedNames.insert(base).second) return base;
+        for (unsigned index = 1;; ++index) {
+            const string name = base + "__" + cvtToStr(index);
+            if (usedNames.insert(name).second) return name;
+        }
+    }
 };
 
 AstScope* findBoundaryScope(AstScope* scopep) {
@@ -45,6 +75,13 @@ AstScope* findBoundaryScope(AstScope* scopep) {
         if (scanp->modp()->subgraphBoundary()) return scanp;
     }
     return nullptr;
+}
+
+bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
+    for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp == basep) return true;
+    }
+    return false;
 }
 
 SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups, LogicByScope* ownerp,
@@ -89,6 +126,94 @@ void removeSingleDomainGuard(AstCFunc* funcp) {
     funcp->addStmtsp(bodyp);
 }
 
+void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups,
+                              const std::unordered_set<AstVarScope*>& regionWrittenVscps,
+                              uint64_t& snapshotInstances, uint64_t& snapshotSources) {
+    SnapshotNameAllocator nameAllocator;
+    unsigned domainIndex = 0;
+    for (SubgraphGroup& group : groups) {
+        std::vector<AstVarScope*> sourceVscps;
+        std::unordered_set<AstVarScope*> seenSourceVscps;
+        group.m_preLogic.foreachLogic([&](AstNode* logicp) {
+            logicp->foreach([&](AstVarRef* refp) {
+                if (refp->access() != VAccess::READ) return;
+                AstVarScope* const sourceVscp = refp->varScopep();
+                if (isUnderScope(sourceVscp->scopep(), group.m_boundaryScopep)) return;
+                if (!regionWrittenVscps.count(sourceVscp)) return;
+                if (seenSourceVscps.insert(sourceVscp).second) sourceVscps.push_back(sourceVscp);
+            });
+        });
+        if (sourceVscps.empty()) {
+            ++domainIndex;
+            continue;
+        }
+
+        std::sort(sourceVscps.begin(), sourceVscps.end(),
+                  [](AstVarScope* lhsp, AstVarScope* rhsp) {
+                      if (lhsp->scopep()->name() != rhsp->scopep()->name()) {
+                          return lhsp->scopep()->name() < rhsp->scopep()->name();
+                      }
+                      if (lhsp->varp()->name() != rhsp->varp()->name()) {
+                          return lhsp->varp()->name() < rhsp->varp()->name();
+                      }
+                      return lhsp < rhsp;
+                  });
+
+        AstNode* assignmentsp = nullptr;
+        for (AstVarScope* const sourceVscp : sourceVscps) {
+            AstScope* const storageScopep = sourceVscp->scopep();
+            const string baseName = "__VsubgraphSnapshot__" + group.m_boundaryScopep->nameDotless()
+                                    + "__d" + cvtToStr(domainIndex) + "__"
+                                    + sourceVscp->varp()->shortName();
+            const string name = nameAllocator.get(storageScopep, baseName);
+            AstVarScope* const storageVscp = storageScopep->createTempLike(name, sourceVscp);
+            group.m_snapshots.push_back(SubgraphSnapshot{sourceVscp, storageVscp});
+            AstAssign* const assignp
+                = new AstAssign{sourceVscp->fileline(),
+                                new AstVarRef{sourceVscp->fileline(), storageVscp, VAccess::WRITE},
+                                new AstVarRef{sourceVscp->fileline(), sourceVscp, VAccess::READ}};
+            if (assignmentsp) {
+                assignmentsp->addNext(assignp);
+            } else {
+                assignmentsp = assignp;
+            }
+        }
+
+        group.m_preLogic.foreachLogic([&](AstNode* logicp) {
+            logicp->foreach([&](AstVarRef* refp) {
+                if (refp->access() != VAccess::READ) return;
+                const auto it = std::find_if(group.m_snapshots.begin(), group.m_snapshots.end(),
+                                             [&](const auto& snapshot) {
+                                                 return snapshot.m_sourceVscp == refp->varScopep();
+                                             });
+                if (it == group.m_snapshots.end()) return;
+                AstVarRef* const replacementp
+                    = new AstVarRef{refp->fileline(), it->m_storageVscp, VAccess::READ};
+                refp->replaceWith(replacementp);
+                VL_DO_DANGLING(refp->deleteTree(), refp);
+            });
+        });
+
+        FileLine* const flp = sourceVscps.front()->fileline();
+        AstSubgraphInstance* const instancep = new AstSubgraphInstance{
+            flp, group.m_boundaryScopep, VSubgraphPhase::SNAPSHOT, assignmentsp};
+        for (const SubgraphSnapshot& snapshot : group.m_snapshots) {
+            instancep->addMaterializedUse(snapshot.m_sourceVscp, VSubgraphUseKind::SNAPSHOT_SOURCE,
+                                          true, false, false);
+            instancep->addMaterializedUse(snapshot.m_storageVscp,
+                                          VSubgraphUseKind::SNAPSHOT_STORAGE, false, true, false);
+        }
+        AstAlwaysPre* const prep = new AstAlwaysPre{flp};
+        prep->addStmtsp(instancep);
+        AstActive* const wrapperp = new AstActive{flp, "subgraph-snapshot", group.m_senTreep};
+        wrapperp->addStmtsp(prep);
+        group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
+        ++snapshotInstances;
+        snapshotSources += group.m_snapshots.size();
+        ++domainIndex;
+    }
+}
+
 class SealSubgraphMetadataVisitor final : public VNVisitor {
     std::unordered_set<const AstCFunc*> m_visitedFuncps;
 
@@ -123,6 +248,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                            const V3Order::ExternalDomainsProvider& externalDomains) {
     if (!v3Global.opt.subgraphSchedule()) return;
 
+    std::unordered_set<AstVarScope*> regionWrittenVscps;
+    for (LogicByScope* const lbsp : logic) {
+        for (const auto& pair : *lbsp) {
+            AstActive* const activep = pair.second;
+            activep->foreach([&](AstNodeVarRef* refp) {
+                if (!refp->access().isWriteOrRW()) return;
+                regionWrittenVscps.insert(refp->varScopep());
+            });
+        }
+    }
+
     std::vector<SubgraphGroup> groups;
     for (LogicByScope* const lbsp : logic) {
         LogicByScope parentLogic;
@@ -144,6 +280,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         }
         *lbsp = std::move(parentLogic);
     }
+
+    uint64_t snapshotInstances = 0;
+    uint64_t snapshotSources = 0;
+    prepareSubgraphSnapshots(groups, regionWrittenVscps, snapshotInstances, snapshotSources);
 
     uint64_t orderedLogic = 0;
     uint64_t contractBoundaryUses = 0;
@@ -214,13 +354,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                  V3SubgraphContract::makeLogicalBoundaryUses(group.m_boundaryScopep)) {
                 instancep->addLogicalUse(use.m_name, use.m_read, use.m_write);
             }
-            const auto addMaterializedUses
-                = [&](const std::vector<V3SubgraphContract::Use>& uses, VSubgraphUseKind kind) {
-                      for (const V3SubgraphContract::Use& use : uses) {
-                          instancep->addMaterializedUse(use.m_varScopep, kind, use.m_read,
-                                                        use.m_write, use.m_cuttable);
-                      }
-                  };
+            const auto addMaterializedUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
+                                                 VSubgraphUseKind kind) {
+                for (const V3SubgraphContract::Use& use : uses) {
+                    const bool snapshotStorage
+                        = kind == VSubgraphUseKind{VSubgraphUseKind::EXTERNAL}
+                          && std::any_of(group.m_snapshots.begin(), group.m_snapshots.end(),
+                                         [&](const auto& snapshot) {
+                                             return snapshot.m_storageVscp == use.m_varScopep;
+                                         });
+                    instancep->addMaterializedUse(
+                        use.m_varScopep,
+                        snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
+                                        : kind,
+                        use.m_read, use.m_write, use.m_cuttable);
+                }
+            };
             addMaterializedUses(contract.boundaryUses(), VSubgraphUseKind::BOUNDARY);
             addMaterializedUses(contract.externalUses(), VSubgraphUseKind::EXTERNAL);
             addMaterializedUses(contract.internalUses(), VSubgraphUseKind::INTERNAL);
@@ -252,6 +401,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA coarse nodes", coarseNodes);
     V3Stats::addStat("Scheduling, Subgraph NBA logical uses", logicalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
+    V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
+    V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);
 }
 
 }  // namespace V3Sched
