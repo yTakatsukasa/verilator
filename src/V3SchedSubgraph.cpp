@@ -47,6 +47,107 @@ struct SubgraphGroup final {
     std::vector<SubgraphSnapshot> m_snapshots;
 };
 
+bool isUnderScope(const AstScope* scopep, const AstScope* basep);
+
+struct SharedHelperAbiAnalysis final {
+    uint64_t m_constants = 0;
+    uint64_t m_dpiCalls = 0;
+    uint64_t m_externalVars = 0;
+    uint64_t m_generatedTemps = 0;
+    uint64_t m_hiddenUses = 0;
+    uint64_t m_inputVars = 0;
+    uint64_t m_outputVars = 0;
+    uint64_t m_stateVars = 0;
+    bool m_eligible = true;
+};
+
+class SharedHelperAbiAnalyzer final : public VNVisitor {
+    AstScope* const m_boundaryScopep;
+    const std::unordered_set<AstVarScope*> m_contractVscps;
+    std::unordered_set<const AstCFunc*> m_visitedFuncps;
+    std::unordered_map<AstVarScope*, std::pair<bool, bool>> m_accesses;
+    std::unordered_set<AstVarScope*> m_hiddenVscps;
+    SharedHelperAbiAnalysis m_result;
+
+    void visit(AstCFunc* nodep) override {
+        if (!m_visitedFuncps.emplace(nodep).second) return;
+        if (!nodep->isLoose() || nodep->entryPoint() || nodep->needProcess() || nodep->recursive()
+            || nodep->isCoroutine()) {
+            m_result.m_eligible = false;
+        }
+        iterateChildren(nodep);
+    }
+    void visit(AstCCall* nodep) override {
+        iterateChildren(nodep);
+        AstCFunc* const funcp = nodep->funcp();
+        if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiContext()) {
+            ++m_result.m_dpiCalls;
+            m_result.m_eligible = false;
+            return;
+        }
+        if (funcp->entryPoint()) {
+            m_result.m_eligible = false;
+            return;
+        }
+        iterate(funcp);
+    }
+    void visit(AstConst* nodep) override {
+        ++m_result.m_constants;
+        iterateChildren(nodep);
+    }
+    void visit(AstNodeVarRef* nodep) override {
+        AstVarScope* const vscp = nodep->varScopep();
+        if (!vscp) {
+            m_result.m_eligible = false;
+            return;
+        }
+        auto& access = m_accesses[vscp];
+        access.first |= nodep->access().isReadOrRW();
+        access.second |= nodep->access().isWriteOrRW();
+        if (!vscp->varp()->isFuncLocal() && !m_contractVscps.count(vscp)) {
+            m_hiddenVscps.insert(vscp);
+        }
+        iterateChildren(nodep);
+    }
+    void visit(AstNode* nodep) override { iterateChildren(nodep); }
+
+public:
+    SharedHelperAbiAnalyzer(AstCFunc* funcp, AstScope* boundaryScopep,
+                            const V3SubgraphContract& contract)
+        : m_boundaryScopep{boundaryScopep}
+        , m_contractVscps{[&]() {
+            std::unordered_set<AstVarScope*> result;
+            const auto addUses = [&](const std::vector<V3SubgraphContract::Use>& uses) {
+                for (const V3SubgraphContract::Use& use : uses) result.insert(use.m_varScopep);
+            };
+            addUses(contract.boundaryUses());
+            addUses(contract.externalUses());
+            addUses(contract.internalUses());
+            return result;
+        }()} {
+        iterate(funcp);
+        m_result.m_hiddenUses = m_hiddenVscps.size();
+        if (m_result.m_hiddenUses) m_result.m_eligible = false;
+        for (const auto& pair : m_accesses) {
+            AstVarScope* const vscp = pair.first;
+            if (vscp->varp()->isFuncLocal()) {
+                ++m_result.m_generatedTemps;
+                continue;
+            }
+            if (isUnderScope(vscp->scopep(), m_boundaryScopep)) {
+                ++m_result.m_stateVars;
+            } else {
+                ++m_result.m_externalVars;
+            }
+            if (pair.second.first) ++m_result.m_inputVars;
+            if (pair.second.second) ++m_result.m_outputVars;
+        }
+    }
+    ~SharedHelperAbiAnalyzer() override = default;
+
+    const SharedHelperAbiAnalysis& result() const { return m_result; }
+};
+
 class SnapshotNameAllocator final {
     std::unordered_map<AstScope*, std::unordered_set<string>> m_usedNames;
 
@@ -293,6 +394,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t coarseNodes = 0;
     uint64_t logicalUses = 0;
     uint64_t refreshHelpers = 0;
+    uint64_t sharedAbiAnalyses = 0;
+    uint64_t sharedAbiConstants = 0;
+    uint64_t sharedAbiDpiCalls = 0;
+    uint64_t sharedAbiEligibleHelpers = 0;
+    uint64_t sharedAbiExternalVars = 0;
+    uint64_t sharedAbiGeneratedTemps = 0;
+    uint64_t sharedAbiHiddenUses = 0;
+    uint64_t sharedAbiInputVars = 0;
+    uint64_t sharedAbiModulePhaseCandidates = 0;
+    uint64_t sharedAbiOutputVars = 0;
+    uint64_t sharedAbiStateVars = 0;
+    struct EligibleModulePhase final {
+        AstNodeModule* m_modp;
+        VSubgraphPhase m_phase;
+    };
+    std::vector<EligibleModulePhase> eligibleModulePhases;
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic
@@ -344,6 +461,32 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
             ++contracts;
+
+            const SharedHelperAbiAnalysis abi
+                = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, contract}.result();
+            ++sharedAbiAnalyses;
+            sharedAbiConstants += abi.m_constants;
+            sharedAbiDpiCalls += abi.m_dpiCalls;
+            sharedAbiExternalVars += abi.m_externalVars;
+            sharedAbiGeneratedTemps += abi.m_generatedTemps;
+            sharedAbiHiddenUses += abi.m_hiddenUses;
+            sharedAbiInputVars += abi.m_inputVars;
+            sharedAbiOutputVars += abi.m_outputVars;
+            sharedAbiStateVars += abi.m_stateVars;
+            if (abi.m_eligible) {
+                ++sharedAbiEligibleHelpers;
+                AstNodeModule* const modp = group.m_boundaryScopep->modp();
+                const auto it
+                    = std::find_if(eligibleModulePhases.begin(), eligibleModulePhases.end(),
+                                   [&](const EligibleModulePhase& key) {
+                                       return key.m_modp == modp && key.m_phase == subgraphPhase;
+                                   });
+                if (it == eligibleModulePhases.end()) {
+                    eligibleModulePhases.push_back(EligibleModulePhase{modp, subgraphPhase});
+                } else {
+                    ++sharedAbiModulePhaseCandidates;
+                }
+            }
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
@@ -403,6 +546,18 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI analyses", sharedAbiAnalyses);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI constants", sharedAbiConstants);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI DPI calls", sharedAbiDpiCalls);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI eligible helpers", sharedAbiEligibleHelpers);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI external vars", sharedAbiExternalVars);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI generated temps", sharedAbiGeneratedTemps);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI hidden uses", sharedAbiHiddenUses);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI input vars", sharedAbiInputVars);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI module-phase candidates",
+                     sharedAbiModulePhaseCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI output vars", sharedAbiOutputVars);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI state vars", sharedAbiStateVars);
 }
 
 }  // namespace V3Sched
