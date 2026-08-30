@@ -32,10 +32,12 @@ namespace {
 struct SubgraphGroup final {
     AstScope* m_boundaryScopep = nullptr;
     AstSenTree* m_senTreep = nullptr;
+    const AstSenTree* m_domainKeyp = nullptr;  // Original, unremapped event domain
     FileLine* m_filelinep = nullptr;
     LogicByScope* m_ownerp = nullptr;
     LogicByScope m_preLogic;
     LogicByScope m_postLogic;
+    LogicByScope m_refreshLogic;
 };
 
 AstScope* findBoundaryScope(AstScope* scopep) {
@@ -46,13 +48,18 @@ AstScope* findBoundaryScope(AstScope* scopep) {
 }
 
 SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups, LogicByScope* ownerp,
-                                 AstScope* boundaryScopep, FileLine* filelinep) {
+                                 AstScope* boundaryScopep, AstSenTree* senTreep,
+                                 const AstSenTree* domainKeyp, FileLine* filelinep) {
     for (SubgraphGroup& group : groups) {
-        if (group.m_boundaryScopep == boundaryScopep) return group;
+        if (group.m_boundaryScopep == boundaryScopep && group.m_domainKeyp == domainKeyp) {
+            return group;
+        }
     }
     groups.emplace_back();
     SubgraphGroup& group = groups.back();
     group.m_boundaryScopep = boundaryScopep;
+    group.m_senTreep = senTreep;
+    group.m_domainKeyp = domainKeyp;
     group.m_filelinep = filelinep;
     group.m_ownerp = ownerp;
     return group;
@@ -60,16 +67,26 @@ SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups, LogicByScop
 
 void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep) {
     AstSenTree* const senTreep = activep->sentreep();
-    if (!group.m_senTreep) group.m_senTreep = senTreep;
 
     for (AstNode *nodep = activep->stmtsp(), *nextp; nodep; nodep = nextp) {
         nextp = nodep->nextp();
         nodep->unlinkFrBack();
-        LogicByScope& phaseLogic = VN_IS(nodep, AlwaysPost) ? group.m_postLogic : group.m_preLogic;
+        LogicByScope& phaseLogic = senTreep->hasCombo()       ? group.m_refreshLogic
+                                   : VN_IS(nodep, AlwaysPost) ? group.m_postLogic
+                                                              : group.m_preLogic;
         phaseLogic.add(scopep, senTreep, nodep);
     }
     if (activep->backp()) activep->unlinkFrBack();
     activep->deleteTree();
+}
+
+void removeSingleDomainGuard(AstCFunc* funcp) {
+    AstIf* const guardp = VN_CAST(funcp->stmtsp(), If);
+    UASSERT_OBJ(guardp && !guardp->nextp() && !guardp->elsesp() && guardp->thensp(), funcp,
+                "Subgraph refresh helper should have one artificial domain guard");
+    AstNode* const bodyp = guardp->thensp()->unlinkFrBackWithNext();
+    guardp->unlinkFrBack()->deleteTree();
+    funcp->addStmtsp(bodyp);
 }
 
 class SealSubgraphMetadataVisitor final : public VNVisitor {
@@ -114,15 +131,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             AstScope* const scopep = pair.first;
             AstActive* const activep = pair.second;
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
-            // Keep combinational replicas in the parent scheduler. They need to observe all
-            // parent and subgraph NBA commits before refreshing their outputs and next-state
-            // values. Moving them into the POST helper would use stale parent inputs.
-            if (!boundaryScopep || activep->sentreep()->hasCombo()) {
+            if (!boundaryScopep) {
                 parentLogic.emplace_back(pair);
                 continue;
             }
-            SubgraphGroup& group
-                = findOrCreateGroup(groups, lbsp, boundaryScopep, activep->fileline());
+            AstSenTree* const senTreep = activep->sentreep();
+            const AstSenTree* const domainKeyp
+                = senTreep->hasCombo() ? senTreep : trigToSen.at(senTreep);
+            SubgraphGroup& group = findOrCreateGroup(groups, lbsp, boundaryScopep, senTreep,
+                                                     domainKeyp, activep->fileline());
             addSubgraphLogic(group, scopep, activep);
         }
         *lbsp = std::move(parentLogic);
@@ -135,22 +152,54 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t contracts = 0;
     uint64_t coarseNodes = 0;
     uint64_t logicalUses = 0;
+    uint64_t refreshHelpers = 0;
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
-        orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
-        UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep,
-                    "Subgraph NBA logic has no clocked sensitivity");
+        orderedLogic
+            += group.m_preLogic.size() + group.m_postLogic.size() + group.m_refreshLogic.size();
+        UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep, "Subgraph NBA logic has no domain");
 
-        const auto orderPhase = [&](LogicByScope& logic, const string& phase, bool post) {
+        const auto orderPhase = [&](LogicByScope& logic, const string& phase,
+                                    VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
             const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
+            const bool refresh = subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH};
+            V3Order::ExternalDomainsProvider phaseExternalDomains = externalDomains;
+            if (refresh) {
+                // Isolated combinational logic has no visible external drivers, so V3Order would
+                // prune it as unreachable. Give every input one artificial NBA domain while
+                // ordering; the parent coarse node derives the real domain from its contract.
+                AstSenTree* orderDomainp = nullptr;
+                for (const SubgraphGroup& candidate : groups) {
+                    if (candidate.m_boundaryScopep == group.m_boundaryScopep
+                        && !candidate.m_senTreep->hasCombo()) {
+                        orderDomainp = candidate.m_senTreep;
+                        break;
+                    }
+                }
+                if (!orderDomainp) {
+                    for (const auto& pair : trigToSen) {
+                        if (pair.first->hasCombo()) continue;
+                        orderDomainp = const_cast<AstSenTree*>(pair.first);
+                        break;
+                    }
+                }
+                UASSERT_OBJ(orderDomainp, group.m_boundaryScopep,
+                            "Subgraph refresh helper has no NBA domain");
+                phaseExternalDomains
+                    = [orderDomainp](const AstVarScope*, std::vector<AstSenTree*>& out) {
+                          out.push_back(orderDomainp);
+                      };
+            }
             AstCFunc* const funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
-                                                   externalDomains, group.m_boundaryScopep);
+                                                   phaseExternalDomains, group.m_boundaryScopep);
             if (!funcp) return;
+            if (refresh) removeSingleDomainGuard(funcp);
             util::splitCheck(funcp);
 
             const V3SubgraphContract contract
-                = V3SubgraphContract::make(funcp, group.m_boundaryScopep, group.m_senTreep, post);
+                = V3SubgraphContract::make(funcp, group.m_boundaryScopep, group.m_senTreep,
+                                           subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST});
             contractBoundaryUses += contract.boundaryUses().size();
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
@@ -160,8 +209,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
             AstNode* const callp = util::callVoidFunc(funcp);
             AstSubgraphInstance* const instancep = new AstSubgraphInstance{
-                group.m_filelinep, group.m_boundaryScopep,
-                post ? VSubgraphPhase::POST : VSubgraphPhase::PRE, callp};
+                group.m_filelinep, group.m_boundaryScopep, subgraphPhase, callp};
             for (const V3SubgraphContract::LogicalUse& use :
                  V3SubgraphContract::makeLogicalBoundaryUses(group.m_boundaryScopep)) {
                 instancep->addLogicalUse(use.m_name, use.m_read, use.m_write);
@@ -177,7 +225,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             addMaterializedUses(contract.internalUses(), VSubgraphUseKind::INTERNAL);
             logicalUses += instancep->logicalUseCount();
             ++coarseNodes;
-            if (post) {
+            if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}) {
                 AstAlwaysPost* const postp = new AstAlwaysPost{group.m_filelinep};
                 postp->addStmtsp(instancep);
                 wrapperp->addStmtsp(postp);
@@ -187,8 +235,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
         };
 
-        orderPhase(group.m_preLogic, "pre", false);
-        orderPhase(group.m_postLogic, "post", true);
+        orderPhase(group.m_preLogic, "pre", VSubgraphPhase::PRE);
+        orderPhase(group.m_postLogic, "post", VSubgraphPhase::POST);
+        if (!group.m_refreshLogic.empty()) ++refreshHelpers;
+        orderPhase(group.m_refreshLogic, "refresh", VSubgraphPhase::REFRESH);
         ++groupIndex;
     }
 
@@ -200,6 +250,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA contracts", contracts);
     V3Stats::addStat("Scheduling, Subgraph NBA coarse nodes", coarseNodes);
     V3Stats::addStat("Scheduling, Subgraph NBA logical uses", logicalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
 }
 
 }  // namespace V3Sched

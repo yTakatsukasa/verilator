@@ -365,6 +365,7 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ((nodep->phase() == VSubgraphPhase{VSubgraphPhase::POST}) == m_inPost, nodep,
                     "Subgraph phase does not match its parent procedure");
         ++m_subgraphContractNodes;
+        const bool refresh = nodep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
         for (AstSubgraphUse* usep = nodep->materializedsp(); usep;
              usep = VN_AS(usep->nextp(), SubgraphUse)) {
             ++m_subgraphContractUses;
@@ -378,7 +379,7 @@ class OrderGraphBuilder final : public VNVisitor {
                 // The helper locally orders reads after its own state commits. Publishing those
                 // reads would create an artificial parent-level read-after-write cycle; only the
                 // commit needs to precede external consumers.
-                if (externallyAccessed && !delayedState && !usep->write()) continue;
+                if (!refresh && externallyAccessed && !delayedState && !usep->write()) continue;
             }
             VL_RESTORER(m_softSubgraphRead);
             m_softSubgraphRead = m_inPost && usep->read() && !delayedState;
@@ -456,11 +457,43 @@ class OrderGraphBuilder final : public VNVisitor {
         , m_parallel{parallel} {
         // The parent contract includes internal state only when logic outside a subgraph helper
         // also accesses it (for example, an output-port assignment lowered into the parent
-        // scope). Other internal variables remain hidden from this graph.
+        // scope). State passed from POST to REFRESH is also visible so the parent graph can order
+        // the two helpers. Other internal variables remain hidden from this graph.
+        std::unordered_set<AstVarScope*> postWrittenVscps;
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
                 AstActive* const activep = pair.second;
-                if (containsSubgraphInstance(activep)) continue;
+                if (!containsSubgraphInstance(activep)) continue;
+                activep->foreach([&](AstSubgraphInstance* instancep) {
+                    if (instancep->phase() != VSubgraphPhase{VSubgraphPhase::POST}) return;
+                    for (AstSubgraphUse* usep = instancep->materializedsp(); usep;
+                         usep = VN_AS(usep->nextp(), SubgraphUse)) {
+                        if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::INTERNAL}
+                            && usep->write()) {
+                            postWrittenVscps.insert(usep->varScopep());
+                        }
+                    }
+                });
+            }
+        }
+        for (const V3Sched::LogicByScope* const lbsp : coll) {
+            for (const auto& pair : *lbsp) {
+                AstActive* const activep = pair.second;
+                if (containsSubgraphInstance(activep)) {
+                    activep->foreach([&](AstSubgraphInstance* instancep) {
+                        if (instancep->phase() != VSubgraphPhase{VSubgraphPhase::REFRESH}) {
+                            return;
+                        }
+                        for (AstSubgraphUse* usep = instancep->materializedsp(); usep;
+                             usep = VN_AS(usep->nextp(), SubgraphUse)) {
+                            if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::INTERNAL}
+                                && usep->read() && postWrittenVscps.count(usep->varScopep())) {
+                                m_parentAccessedVscps.insert(usep->varScopep());
+                            }
+                        }
+                    });
+                    continue;
+                }
                 activep->foreach(
                     [&](AstNodeVarRef* refp) { m_parentAccessedVscps.insert(refp->varScopep()); });
             }

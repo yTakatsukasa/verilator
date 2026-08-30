@@ -60,7 +60,10 @@ class SubgraphContractBuilder final : public VNVisitorConst {
             return;
         }
         V3SubgraphContract::Use& use = uses[inserted.first->second];
-        use.m_read |= refp->access().isReadOrRW();
+        // An ordered helper can write a boundary input and consume the propagated value later.
+        // Such a read is internal to the helper, not a dependency on the value that existed
+        // before the coarse node ran. Preserve only reads seen before the first write.
+        use.m_read |= refp->access().isReadOrRW() && !use.m_write;
         use.m_write |= refp->access().isWriteOrRW();
     }
 

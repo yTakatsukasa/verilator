@@ -49,7 +49,8 @@ module sg_nba_comb_input (
   output logic [7:0] y_o
 ); /*verilator subgraph_boundary*/
 
-  logic [7:0] next_w;
+  logic [7:0] next_w /* verilator public_flat_rw */;
+  logic [7:0] neg_q;
   logic [7:0] state_q;
 
   always_comb next_w = {state_q[4:0], state_q[7:5]} + in_q;
@@ -57,7 +58,11 @@ module sg_nba_comb_input (
     if (!rst_n) state_q <= 8'ha7;
     else state_q <= next_w;
   end
-  assign y_o = state_q;
+  always_ff @(negedge clk) begin
+    if (!rst_n) neg_q <= 8'h4d;
+    else neg_q <= {neg_q[2:0], neg_q[7:3]} ^ in_q;
+  end
+  assign y_o = state_q ^ neg_q;
 
 endmodule
 
@@ -69,6 +74,7 @@ module sg_nba_comb_input_ref (
 );
 
   logic [7:0] next_w;
+  logic [7:0] neg_q;
   logic [7:0] state_q;
 
   always_comb next_w = {state_q[4:0], state_q[7:5]} + in_q;
@@ -76,6 +82,10 @@ module sg_nba_comb_input_ref (
     if (!rst_n) state_q <= 8'ha7;
     else state_q <= next_w;
   end
-  assign y_o = state_q;
+  always_ff @(negedge clk) begin
+    if (!rst_n) neg_q <= 8'h4d;
+    else neg_q <= {neg_q[2:0], neg_q[7:3]} ^ in_q;
+  end
+  assign y_o = state_q ^ neg_q;
 
 endmodule
