@@ -100,6 +100,7 @@ class OrderGraphBuilder final : public VNVisitor {
     std::unordered_set<const AstVarScope*> m_parentAccessedVscps;
     uint64_t m_subgraphContractNodes = 0;
     uint64_t m_subgraphContractUses = 0;
+    uint64_t m_subgraphContractCuttableUses = 0;
 
     // Map from Trigger reference AstSenItem to the original AstSenTree
     const V3Order::TrigToSenMap& m_trigToSen;
@@ -114,7 +115,7 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
     bool m_inPost = false;  // Underneath AstAlwaysPost
-    bool m_softSubgraphRead = false;  // Cuttable non-feedthrough read in a subgraph POST helper
+    bool m_softSubgraphRead = false;  // Cuttable read in a coarse subgraph contract
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
     const bool m_parallel;  // Ordering for multi-threaded execution (record variable accesses)
@@ -382,7 +383,8 @@ class OrderGraphBuilder final : public VNVisitor {
                 if (!refresh && externallyAccessed && !delayedState && !usep->write()) continue;
             }
             VL_RESTORER(m_softSubgraphRead);
-            m_softSubgraphRead = m_inPost && usep->read() && !delayedState;
+            m_softSubgraphRead = usep->cuttable() && usep->read() && !delayedState;
+            if (m_softSubgraphRead) ++m_subgraphContractCuttableUses;
             addVarUsage(usep, vscp, usep->read(), usep->write());
         }
         // Do not visit stmtsp(): the helper body is deliberately opaque to the parent graph.
@@ -522,6 +524,8 @@ public:
                              builder.m_subgraphContractNodes);
             V3Stats::addStat("Scheduling, Subgraph order graph contract uses",
                              builder.m_subgraphContractUses);
+            V3Stats::addStat("Scheduling, Subgraph order graph contract cuttable uses",
+                             builder.m_subgraphContractCuttableUses);
         }
         return std::unique_ptr<OrderGraph>{builder.m_graphp};
     }

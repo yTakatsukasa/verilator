@@ -24,6 +24,8 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 20)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 19)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
 
 sched_tree = test.glob_one(test.obj_dir + "/*_sched.tree.json")
 test.file_grep(

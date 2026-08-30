@@ -17,15 +17,13 @@ common_flags = [
 ]
 
 test.compile(verilator_flags2=["--stats", "--subgraph-schedule"] + common_flags)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 1)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph order graph stl, contract uses soft unavailable\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh candidate targets\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh calls\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh inputs\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh instances\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh selected targets\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh scopes\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph input refresh unmatched instances\s+(\d+)", 0)
+               r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 15)
 test.execute()
 
 test.passes()

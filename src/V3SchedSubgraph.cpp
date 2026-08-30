@@ -197,9 +197,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             if (refresh) removeSingleDomainGuard(funcp);
             util::splitCheck(funcp);
 
-            const V3SubgraphContract contract
-                = V3SubgraphContract::make(funcp, group.m_boundaryScopep, group.m_senTreep,
-                                           subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST});
+            const V3SubgraphContract contract = V3SubgraphContract::make(
+                funcp, group.m_boundaryScopep, group.m_senTreep,
+                subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh);
             contractBoundaryUses += contract.boundaryUses().size();
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
@@ -214,12 +214,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                  V3SubgraphContract::makeLogicalBoundaryUses(group.m_boundaryScopep)) {
                 instancep->addLogicalUse(use.m_name, use.m_read, use.m_write);
             }
-            const auto addMaterializedUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
-                                                 VSubgraphUseKind kind) {
-                for (const V3SubgraphContract::Use& use : uses) {
-                    instancep->addMaterializedUse(use.m_varScopep, kind, use.m_read, use.m_write);
-                }
-            };
+            const auto addMaterializedUses
+                = [&](const std::vector<V3SubgraphContract::Use>& uses, VSubgraphUseKind kind) {
+                      for (const V3SubgraphContract::Use& use : uses) {
+                          instancep->addMaterializedUse(use.m_varScopep, kind, use.m_read,
+                                                        use.m_write, use.m_cuttable);
+                      }
+                  };
             addMaterializedUses(contract.boundaryUses(), VSubgraphUseKind::BOUNDARY);
             addMaterializedUses(contract.externalUses(), VSubgraphUseKind::EXTERNAL);
             addMaterializedUses(contract.internalUses(), VSubgraphUseKind::INTERNAL);

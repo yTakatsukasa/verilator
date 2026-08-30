@@ -50,20 +50,25 @@ class SubgraphContractBuilder final : public VNVisitorConst {
     UseIndex m_externalUseIndex;
     UseIndex m_internalUseIndex;
     std::unordered_set<const AstCFunc*> m_visitedFuncps;
+    const bool m_cuttableBoundaryReads;
+    const bool m_cuttableInternalReads;
 
-    static void addUse(Uses& uses, UseIndex& index, AstNodeVarRef* refp) {
+    static void addUse(Uses& uses, UseIndex& index, AstNodeVarRef* refp, bool cuttableReads) {
         AstVarScope* const vscp = refp->varScopep();
         const auto inserted = index.emplace(vscp, uses.size());
         if (inserted.second) {
             uses.push_back(V3SubgraphContract::Use{vscp, refp->access().isReadOrRW(),
-                                                   refp->access().isWriteOrRW()});
+                                                   refp->access().isWriteOrRW(),
+                                                   refp->access().isReadOrRW() && cuttableReads});
             return;
         }
         V3SubgraphContract::Use& use = uses[inserted.first->second];
         // An ordered helper can write a boundary input and consume the propagated value later.
         // Such a read is internal to the helper, not a dependency on the value that existed
         // before the coarse node ran. Preserve only reads seen before the first write.
-        use.m_read |= refp->access().isReadOrRW() && !use.m_write;
+        const bool read = refp->access().isReadOrRW() && !use.m_write;
+        use.m_read |= read;
+        use.m_cuttable |= read && cuttableReads;
         use.m_write |= refp->access().isWriteOrRW();
     }
 
@@ -81,11 +86,11 @@ class SubgraphContractBuilder final : public VNVisitorConst {
         AstVarScope* const vscp = nodep->varScopep();
         UASSERT_OBJ(vscp, nodep, "Subgraph contract reference has no scope");
         if (!isUnderScope(vscp->scopep(), m_boundaryScopep)) {
-            addUse(m_externalUses, m_externalUseIndex, nodep);
+            addUse(m_externalUses, m_externalUseIndex, nodep, m_cuttableBoundaryReads);
         } else if (vscp->scopep() == m_boundaryScopep && vscp->varp()->isIO()) {
-            addUse(m_boundaryUses, m_boundaryUseIndex, nodep);
+            addUse(m_boundaryUses, m_boundaryUseIndex, nodep, m_cuttableBoundaryReads);
         } else {
-            addUse(m_internalUses, m_internalUseIndex, nodep);
+            addUse(m_internalUses, m_internalUseIndex, nodep, m_cuttableInternalReads);
         }
         iterateChildrenConst(nodep);
     }
@@ -93,11 +98,14 @@ class SubgraphContractBuilder final : public VNVisitorConst {
 
 public:
     SubgraphContractBuilder(AstCFunc* funcp, AstScope* boundaryScopep, Uses& boundaryUses,
-                            Uses& externalUses, Uses& internalUses)
+                            Uses& externalUses, Uses& internalUses, bool cuttableBoundaryReads,
+                            bool cuttableInternalReads)
         : m_boundaryScopep{boundaryScopep}
         , m_boundaryUses{boundaryUses}
         , m_externalUses{externalUses}
-        , m_internalUses{internalUses} {
+        , m_internalUses{internalUses}
+        , m_cuttableBoundaryReads{cuttableBoundaryReads}
+        , m_cuttableInternalReads{cuttableInternalReads} {
         iterateConst(funcp);
     }
     ~SubgraphContractBuilder() override = default;
@@ -117,11 +125,12 @@ V3SubgraphContract::V3SubgraphContract(AstScope* boundaryScopep, AstSenTree* dom
     , m_internalUses{std::move(internalUses)} {}
 
 V3SubgraphContract V3SubgraphContract::make(AstCFunc* funcp, AstScope* boundaryScopep,
-                                            AstSenTree* domainp, bool post) {
+                                            AstSenTree* domainp, bool post, bool refresh) {
     std::vector<Use> boundaryUses;
     std::vector<Use> externalUses;
     std::vector<Use> internalUses;
-    SubgraphContractBuilder{funcp, boundaryScopep, boundaryUses, externalUses, internalUses};
+    SubgraphContractBuilder{funcp,        boundaryScopep,  boundaryUses, externalUses,
+                            internalUses, post || refresh, post};
     return V3SubgraphContract{
         boundaryScopep,         domainp, post, std::move(boundaryUses), std::move(externalUses),
         std::move(internalUses)};

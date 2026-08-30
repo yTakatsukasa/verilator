@@ -1294,7 +1294,8 @@ public:
     const string& boundaryName() const { return m_boundaryName; }
     VSubgraphPhase phase() const { return m_phase; }
     void addLogicalUse(const string& name, bool read, bool write);
-    void addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write);
+    void addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write,
+                            bool cuttable);
     void sealSchedulingMetadata();
     size_t logicalUseCount() const;
     size_t materializedUseCount() const;
@@ -1314,14 +1315,16 @@ class AstSubgraphUse final : public AstNodeStmt {
     VSubgraphUseKind m_kind;  // Relationship of the variable to the boundary scope
     bool m_read : 1;  // Contract consumes the variable
     bool m_write : 1;  // Contract produces the variable
+    bool m_cuttable : 1;  // Read dependency may be cut to break combinational cycles
 
 public:
     AstSubgraphUse(FileLine* fl, AstVarScope* varScopep, VSubgraphUseKind kind, bool read,
-                   bool write)
+                   bool write, bool cuttable)
         : ASTGEN_SUPER_SubgraphUse(fl)
         , m_kind{kind}
         , m_read{read}
-        , m_write{write} {
+        , m_write{write}
+        , m_cuttable{cuttable} {
         m_varScopep = varScopep;
     }
     AstSubgraphUse(FileLine* fl, const string& logicalName, bool read, bool write)
@@ -1329,7 +1332,8 @@ public:
         , m_logicalName{logicalName}
         , m_kind{VSubgraphUseKind::BOUNDARY}
         , m_read{read}
-        , m_write{write} {}
+        , m_write{write}
+        , m_cuttable{false} {}
     ASTGEN_MEMBERS_AstSubgraphUse;
     void dump(std::ostream& str) const override;
     void dumpJson(std::ostream& str) const override;
@@ -1340,6 +1344,8 @@ public:
     void read(bool flag) { m_read = flag; }
     bool write() const { return m_write; }
     void write(bool flag) { m_write = flag; }
+    bool cuttable() const { return m_cuttable; }
+    void cuttable(bool flag) { m_cuttable = flag; }
     bool isGateOptimizable() const override { return false; }
     bool isPredictOptimizable() const override { return false; }
     int instrCount() const override { return 0; }
@@ -1347,7 +1353,7 @@ public:
         const AstSubgraphUse* const asamep = VN_DBG_AS(samep, SubgraphUse);
         return varScopep() == asamep->varScopep() && logicalName() == asamep->logicalName()
                && kind() == asamep->kind() && read() == asamep->read()
-               && write() == asamep->write();
+               && write() == asamep->write() && cuttable() == asamep->cuttable();
     }
 };
 class AstSystemT final : public AstNodeStmt {

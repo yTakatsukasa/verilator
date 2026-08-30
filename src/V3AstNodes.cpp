@@ -3758,14 +3758,15 @@ void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool writ
     addLogicalsp(new AstSubgraphUse{fileline(), name, read, write});
 }
 void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
-                                             bool write) {
+                                             bool write, bool cuttable) {
     for (AstSubgraphUse* usep = materializedsp(); usep; usep = VN_AS(usep->nextp(), SubgraphUse)) {
         if (usep->varScopep() != vscp || usep->kind() != kind) continue;
+        if (read) usep->cuttable(!usep->read() ? cuttable : usep->cuttable() && cuttable);
         usep->read(usep->read() || read);
         usep->write(usep->write() || write);
         return;
     }
-    addMaterializedsp(new AstSubgraphUse{fileline(), vscp, kind, read, write});
+    addMaterializedsp(new AstSubgraphUse{fileline(), vscp, kind, read, write, cuttable});
 }
 void AstSubgraphInstance::sealSchedulingMetadata() {
     m_logicalUseCount = logicalUseCount();
@@ -3796,12 +3797,14 @@ void AstSubgraphUse::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
     if (!logicalName().empty()) str << " name=" << logicalName();
     str << " kind=" << kind().ascii() << " access=" << (read() ? "R" : "") << (write() ? "W" : "");
+    if (cuttable()) str << " cuttable";
 }
 void AstSubgraphUse::dumpJson(std::ostream& str) const {
     if (!logicalName().empty()) dumpJsonStr(str, "logicalName", logicalName());
     dumpJsonStr(str, "kind", kind().ascii());
     dumpJsonBoolFuncIf(str, read);
     dumpJsonBoolFuncIf(str, write);
+    dumpJsonBoolFuncIf(str, cuttable);
     dumpJsonGen(str);
 }
 void AstTraceDecl::dump(std::ostream& str) const {

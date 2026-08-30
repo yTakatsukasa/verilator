@@ -33,6 +33,7 @@ public:
         AstVarScope* m_varScopep;
         bool m_read;
         bool m_write;
+        bool m_cuttable;
     };
     struct LogicalUse final {
         std::string m_name;
@@ -54,7 +55,7 @@ private:
 
 public:
     static V3SubgraphContract make(AstCFunc* funcp, AstScope* boundaryScopep, AstSenTree* domainp,
-                                   bool post);
+                                   bool post, bool refresh);
     static std::vector<LogicalUse> makeLogicalBoundaryUses(AstScope* boundaryScopep);
 
     AstScope* boundaryScopep() const { return m_boundaryScopep; }
