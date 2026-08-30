@@ -14,13 +14,12 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--stats", "--subgraph-schedule"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract boundary uses\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph order graph nba, contract uses force post\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post boundary writes\s+(\d+)", 4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, contract post empty write instances\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, contract post instances\s+(\d+)", 3)
+               r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 18)
 
 test.passes()
