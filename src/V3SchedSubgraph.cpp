@@ -170,12 +170,99 @@ struct SharedHelperArg final {
     bool m_state = false;
 };
 
+struct SharedScheduleLogicRef final {
+    uintptr_t m_access = 0;
+    AstVarScope* m_vscp = nullptr;
+};
+
+struct SharedScheduleLogicNode final {
+    uintptr_t m_type = 0;
+    std::vector<uintptr_t> m_nodeTypes;
+    std::vector<string> m_constValues;
+    std::vector<SharedScheduleLogicRef> m_refs;
+};
+
+using SharedScheduleLogicSig = std::vector<SharedScheduleLogicNode>;
+
+SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic) {
+    SharedScheduleLogicSig result;
+    logic.foreachLogic([&](AstNode* logicp) {
+        result.emplace_back();
+        SharedScheduleLogicNode& node = result.back();
+        node.m_type = static_cast<uintptr_t>(logicp->type());
+        logicp->foreach([&](AstNode* scanp) {
+            node.m_nodeTypes.push_back(static_cast<uintptr_t>(scanp->type()));
+            if (const AstConst* const constp = VN_CAST(scanp, Const)) {
+                node.m_constValues.push_back(constp->num().toString());
+            }
+        });
+        logicp->foreach([&](AstVarRef* refp) {
+            node.m_refs.push_back(
+                SharedScheduleLogicRef{static_cast<uintptr_t>(refp->access()), refp->varScopep()});
+        });
+    });
+    return result;
+}
+
+bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, const LogicByScope& candidate,
+                              std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) {
+    std::vector<AstNode*> candidateNodes;
+    candidate.foreachLogic([&](AstNode* logicp) { candidateNodes.push_back(logicp); });
+    if (source.size() != candidateNodes.size()) return false;
+
+    std::unordered_map<AstVarScope*, AstVarScope*> candidateToSource;
+    for (size_t nodeIndex = 0; nodeIndex < source.size(); ++nodeIndex) {
+        const SharedScheduleLogicNode& sourceNode = source[nodeIndex];
+        AstNode* const candidateNodep = candidateNodes[nodeIndex];
+        if (sourceNode.m_type != static_cast<uintptr_t>(candidateNodep->type())) return false;
+
+        std::vector<uintptr_t> nodeTypes;
+        std::vector<string> constValues;
+        candidateNodep->foreach([&](AstNode* scanp) {
+            nodeTypes.push_back(static_cast<uintptr_t>(scanp->type()));
+            if (const AstConst* const constp = VN_CAST(scanp, Const)) {
+                constValues.push_back(constp->num().toString());
+            }
+        });
+        if (sourceNode.m_nodeTypes != nodeTypes || sourceNode.m_constValues != constValues) {
+            return false;
+        }
+
+        std::vector<AstVarRef*> refs;
+        candidateNodep->foreach([&](AstVarRef* refp) { refs.push_back(refp); });
+        if (sourceNode.m_refs.size() != refs.size()) return false;
+        for (size_t refIndex = 0; refIndex < refs.size(); ++refIndex) {
+            const SharedScheduleLogicRef& sourceRef = sourceNode.m_refs[refIndex];
+            AstVarScope* const candidateVscp = refs[refIndex]->varScopep();
+            if (sourceRef.m_access != static_cast<uintptr_t>(refs[refIndex]->access())
+                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())) {
+                return false;
+            }
+            const auto sourceIt = sourceToCandidate.find(sourceRef.m_vscp);
+            if (sourceIt != sourceToCandidate.end()) {
+                if (sourceIt->second != candidateVscp) return false;
+            } else {
+                const auto candidateIt = candidateToSource.find(candidateVscp);
+                if (candidateIt != candidateToSource.end()
+                    && candidateIt->second != sourceRef.m_vscp) {
+                    return false;
+                }
+                sourceToCandidate.emplace(sourceRef.m_vscp, candidateVscp);
+                candidateToSource.emplace(candidateVscp, sourceRef.m_vscp);
+            }
+        }
+    }
+    return true;
+}
+
 struct SharedHelperArtifact final {
     AstNodeModule* m_modp = nullptr;
     VSubgraphPhase m_phase;
+    const AstSenTree* m_domainKeyp = nullptr;
     AstCFunc* m_funcp = nullptr;
     AstCCall* m_firstCallp = nullptr;
     AstNode* m_templateStmtsp = nullptr;
+    SharedScheduleLogicSig m_logicSig;
     std::vector<SharedHelperArg> m_args;
     bool m_parameterized = false;
 };
@@ -589,6 +676,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperSkippedGeneratedTemps = 0;
     uint64_t sharedHelperSkippedOversized = 0;
     uint64_t sharedHelperSkippedTriggered = 0;
+    uint64_t sharedOrderCacheLogicMatches = 0;
+    uint64_t sharedOrderCacheLogicMismatches = 0;
+    uint64_t sharedOrderCacheLookups = 0;
     struct EligibleModulePhase final {
         AstNodeModule* m_modp;
         VSubgraphPhase m_phase;
@@ -604,6 +694,21 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         const auto orderPhase = [&](LogicByScope& logic, const string& phase,
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
+            const SharedScheduleLogicSig logicSig = makeSharedScheduleLogicSig(logic);
+            for (const SharedHelperArtifact& artifact : sharedHelperArtifacts) {
+                if (artifact.m_modp != group.m_boundaryScopep->modp()
+                    || artifact.m_phase != subgraphPhase
+                    || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
+                    continue;
+                }
+                ++sharedOrderCacheLookups;
+                std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
+                if (matchSharedScheduleLogic(artifact.m_logicSig, logic, sourceToCandidate)) {
+                    ++sharedOrderCacheLogicMatches;
+                    break;
+                }
+                ++sharedOrderCacheLogicMismatches;
+            }
             const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
             const bool refresh = subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH};
             V3Order::ExternalDomainsProvider phaseExternalDomains = externalDomains;
@@ -730,8 +835,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     ++sharedHelperReuses;
                 } else {
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                        group.m_boundaryScopep->modp(), subgraphPhase, sharedFuncp, sharedCallp,
-                        cloneSharedHelperTemplate(sharedFuncp), args, false});
+                        group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
+                        sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
+                        args, false});
                     ++sharedHelperArtifactCount;
                 }
             } else if (compositeArgs) {
@@ -834,6 +940,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedHelperSkippedOversized);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped triggered",
                      sharedHelperSkippedTriggered);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache logic matches",
+                     sharedOrderCacheLogicMatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",
+                     sharedOrderCacheLogicMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache lookups", sharedOrderCacheLookups);
 }
 
 }  // namespace V3Sched
