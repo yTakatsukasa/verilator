@@ -20,6 +20,7 @@
 #include "config_build.h"
 #include "verilatedos.h"
 
+#include <unordered_map>
 #include <vector>
 
 class AstCFunc;
@@ -56,6 +57,9 @@ private:
 public:
     static V3SubgraphContract make(AstCFunc* funcp, AstScope* boundaryScopep, AstSenTree* domainp,
                                    bool post, bool refresh);
+    static V3SubgraphContract
+    remap(const V3SubgraphContract& source, AstScope* boundaryScopep, AstSenTree* domainp,
+          const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget);
     static std::vector<LogicalUse> makeLogicalBoundaryUses(AstScope* boundaryScopep);
 
     AstScope* boundaryScopep() const { return m_boundaryScopep; }

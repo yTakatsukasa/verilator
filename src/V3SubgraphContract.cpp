@@ -136,6 +136,28 @@ V3SubgraphContract V3SubgraphContract::make(AstCFunc* funcp, AstScope* boundaryS
         std::move(internalUses)};
 }
 
+V3SubgraphContract
+V3SubgraphContract::remap(const V3SubgraphContract& source, AstScope* boundaryScopep,
+                          AstSenTree* domainp,
+                          const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget) {
+    const auto remapUses = [&](const std::vector<Use>& sourceUses) {
+        std::vector<Use> result;
+        result.reserve(sourceUses.size());
+        for (const Use& use : sourceUses) {
+            const auto it = sourceToTarget.find(use.m_varScopep);
+            result.push_back(Use{it == sourceToTarget.end() ? use.m_varScopep : it->second,
+                                 use.m_read, use.m_write, use.m_cuttable});
+        }
+        return result;
+    };
+    return V3SubgraphContract{boundaryScopep,
+                              domainp,
+                              source.post(),
+                              remapUses(source.boundaryUses()),
+                              remapUses(source.externalUses()),
+                              remapUses(source.internalUses())};
+}
+
 std::vector<V3SubgraphContract::LogicalUse>
 V3SubgraphContract::makeLogicalBoundaryUses(AstScope* boundaryScopep) {
     std::vector<LogicalUse> uses;

@@ -264,6 +264,8 @@ struct SharedHelperArtifact final {
     AstNode* m_templateStmtsp = nullptr;
     SharedScheduleLogicSig m_logicSig;
     std::vector<SharedHelperArg> m_args;
+    std::unique_ptr<V3SubgraphContract> m_contractp;
+    SharedHelperAbiAnalysis m_abi;
     bool m_parameterized = false;
 };
 
@@ -308,6 +310,68 @@ void addSharedHelperCallArgs(AstCCall* callp, const std::vector<SharedHelperArg>
     for (const SharedHelperArg& arg : args) {
         callp->addArgsp(new AstVarRef{callp->fileline(), arg.m_vscp, sharedHelperArgAccess(arg)});
     }
+}
+
+AstCFunc* makeSharedScheduleWrapper(AstNetlist* netlistp, AstScope* scopep, AstSenTree* senTreep,
+                                    AstCFunc* sharedFuncp,
+                                    const std::vector<SharedHelperArg>& args, const string& tag,
+                                    bool slow, bool refresh) {
+    AstCFunc* const funcp = new AstCFunc{netlistp->fileline(), "_eval_body__" + tag, scopep, ""};
+    funcp->dontCombine(true);
+    funcp->isStatic(false);
+    funcp->isLoose(true);
+    funcp->slow(slow);
+    funcp->isConst(false);
+    funcp->declPrivate(true);
+    scopep->addBlocksp(funcp);
+
+    AstCCall* const callp = new AstCCall{funcp->fileline(), sharedFuncp};
+    callp->dtypeSetVoid();
+    addSharedHelperCallArgs(callp, args);
+    AstNodeStmt* const stmtp = callp->makeStmt();
+    if (refresh) {
+        funcp->addStmtsp(stmtp);
+    } else {
+        AstIf* const guardp = util::createIfFromSenTree(senTreep);
+        guardp->addThensp(stmtp);
+        funcp->addStmtsp(guardp);
+    }
+    return funcp;
+}
+
+void discardSharedScheduleLogic(LogicByScope& logic) {
+    for (const auto& pair : logic) {
+        AstActive* const activep = pair.second;
+        if (activep->backp()) activep->unlinkFrBack();
+        activep->deleteTree();
+    }
+    logic.clear();
+}
+
+bool canRemapSharedScheduleContract(
+    const SharedHelperArtifact& artifact, AstScope* targetBoundaryScopep,
+    const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget) {
+    AstScope* const sourceBoundaryScopep = artifact.m_funcp->scopep();
+    for (const auto& pair : sourceToTarget) {
+        AstVarScope* const sourceVscp = pair.first;
+        AstVarScope* const targetVscp = pair.second;
+        const bool sourceUnderBoundary = isUnderScope(sourceVscp->scopep(), sourceBoundaryScopep);
+        const bool targetUnderBoundary = isUnderScope(targetVscp->scopep(), targetBoundaryScopep);
+        if (sourceUnderBoundary != targetUnderBoundary) return false;
+        if (!sourceUnderBoundary) continue;
+        const bool sourceBoundaryIo
+            = sourceVscp->scopep() == sourceBoundaryScopep && sourceVscp->varp()->isIO();
+        const bool targetBoundaryIo
+            = targetVscp->scopep() == targetBoundaryScopep && targetVscp->varp()->isIO();
+        if (sourceBoundaryIo != targetBoundaryIo) return false;
+    }
+    const auto allMapped = [&](const std::vector<V3SubgraphContract::Use>& uses) {
+        return std::all_of(uses.begin(), uses.end(), [&](const V3SubgraphContract::Use& use) {
+            return sourceToTarget.find(use.m_varScopep) != sourceToTarget.end();
+        });
+    };
+    return allMapped(artifact.m_contractp->boundaryUses())
+           && allMapped(artifact.m_contractp->internalUses());
 }
 
 void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
@@ -679,12 +743,36 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedOrderCacheLogicMatches = 0;
     uint64_t sharedOrderCacheLogicMismatches = 0;
     uint64_t sharedOrderCacheLookups = 0;
+    uint64_t sharedOrderCacheOrderCallsAvoided = 0;
     struct EligibleModulePhase final {
         AstNodeModule* m_modp;
         VSubgraphPhase m_phase;
     };
     std::vector<EligibleModulePhase> eligibleModulePhases;
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
+    const auto noteSharedAbi = [&](const SharedHelperAbiAnalysis& abi,
+                                   VSubgraphPhase subgraphPhase, AstNodeModule* modp) {
+        ++sharedAbiAnalyses;
+        sharedAbiConstants += abi.m_constants;
+        sharedAbiDpiCalls += abi.m_dpiCalls;
+        sharedAbiExternalVars += abi.m_externalVars;
+        sharedAbiGeneratedTemps += abi.m_generatedTemps;
+        sharedAbiHiddenUses += abi.m_hiddenUses;
+        sharedAbiInputVars += abi.m_inputVars;
+        sharedAbiOutputVars += abi.m_outputVars;
+        sharedAbiStateVars += abi.m_stateVars;
+        if (!abi.m_eligible) return;
+        ++sharedAbiEligibleHelpers;
+        const auto it = std::find_if(eligibleModulePhases.begin(), eligibleModulePhases.end(),
+                                     [&](const EligibleModulePhase& key) {
+                                         return key.m_modp == modp && key.m_phase == subgraphPhase;
+                                     });
+        if (it == eligibleModulePhases.end()) {
+            eligibleModulePhases.push_back(EligibleModulePhase{modp, subgraphPhase});
+        } else {
+            ++sharedAbiModulePhaseCandidates;
+        }
+    };
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic
@@ -695,88 +783,107 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
             const SharedScheduleLogicSig logicSig = makeSharedScheduleLogicSig(logic);
-            for (const SharedHelperArtifact& artifact : sharedHelperArtifacts) {
+            SharedHelperArtifact* cachedArtifactp = nullptr;
+            std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
+            std::vector<SharedHelperArg> cachedArgs;
+            for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                 if (artifact.m_modp != group.m_boundaryScopep->modp()
                     || artifact.m_phase != subgraphPhase
                     || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
                     continue;
                 }
                 ++sharedOrderCacheLookups;
-                std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
-                if (matchSharedScheduleLogic(artifact.m_logicSig, logic, sourceToCandidate)) {
-                    ++sharedOrderCacheLogicMatches;
-                    break;
+                sourceToCandidate.clear();
+                if (!matchSharedScheduleLogic(artifact.m_logicSig, logic, sourceToCandidate)) {
+                    ++sharedOrderCacheLogicMismatches;
+                    continue;
                 }
-                ++sharedOrderCacheLogicMismatches;
+                if (!canRemapSharedScheduleContract(artifact, group.m_boundaryScopep,
+                                                    sourceToCandidate)) {
+                    continue;
+                }
+                cachedArgs.clear();
+                for (const SharedHelperArg& arg : artifact.m_args) {
+                    const auto it = sourceToCandidate.find(arg.m_vscp);
+                    if (it == sourceToCandidate.end()) break;
+                    cachedArgs.push_back(
+                        SharedHelperArg{it->second, arg.m_read, arg.m_write, arg.m_state});
+                }
+                if (cachedArgs.size() != artifact.m_args.size()) continue;
+                ++sharedOrderCacheLogicMatches;
+                cachedArtifactp = &artifact;
+                break;
             }
             const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
             const bool refresh = subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH};
-            V3Order::ExternalDomainsProvider phaseExternalDomains = externalDomains;
-            if (refresh) {
-                // Isolated combinational logic has no visible external drivers, so V3Order would
-                // prune it as unreachable. Give every input one artificial NBA domain while
-                // ordering; the parent coarse node derives the real domain from its contract.
-                AstSenTree* orderDomainp = nullptr;
-                for (const SubgraphGroup& candidate : groups) {
-                    if (candidate.m_boundaryScopep == group.m_boundaryScopep
-                        && !candidate.m_senTreep->hasCombo()) {
-                        orderDomainp = candidate.m_senTreep;
-                        break;
-                    }
+            AstCFunc* funcp = nullptr;
+            std::unique_ptr<V3SubgraphContract> contractp;
+            SharedHelperAbiAnalysis abi;
+            if (cachedArtifactp) {
+                if (!cachedArtifactp->m_parameterized) {
+                    parameterizeSharedHelper(*cachedArtifactp);
+                    sharedHelperArguments += cachedArtifactp->m_args.size();
+                    ++sharedHelperParameterizations;
                 }
-                if (!orderDomainp) {
-                    for (const auto& pair : trigToSen) {
-                        if (pair.first->hasCombo()) continue;
-                        orderDomainp = const_cast<AstSenTree*>(pair.first);
-                        break;
+                funcp = makeSharedScheduleWrapper(netlistp, group.m_boundaryScopep,
+                                                  group.m_senTreep, cachedArtifactp->m_funcp,
+                                                  cachedArgs, tag, slow, refresh);
+                discardSharedScheduleLogic(logic);
+                contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::remap(
+                    *cachedArtifactp->m_contractp, group.m_boundaryScopep, group.m_senTreep,
+                    sourceToCandidate));
+                abi = cachedArtifactp->m_abi;
+                ++sharedHelperBodyChecks;
+                ++sharedHelperReuses;
+                ++sharedOrderCacheOrderCallsAvoided;
+            } else {
+                V3Order::ExternalDomainsProvider phaseExternalDomains = externalDomains;
+                if (refresh) {
+                    // Isolated combinational logic has no visible external drivers, so V3Order
+                    // would prune it as unreachable. Give every input one artificial NBA domain
+                    // while ordering; the parent coarse node derives the real domain from its
+                    // contract.
+                    AstSenTree* orderDomainp = nullptr;
+                    for (const SubgraphGroup& candidate : groups) {
+                        if (candidate.m_boundaryScopep == group.m_boundaryScopep
+                            && !candidate.m_senTreep->hasCombo()) {
+                            orderDomainp = candidate.m_senTreep;
+                            break;
+                        }
                     }
+                    if (!orderDomainp) {
+                        for (const auto& pair : trigToSen) {
+                            if (pair.first->hasCombo()) continue;
+                            orderDomainp = const_cast<AstSenTree*>(pair.first);
+                            break;
+                        }
+                    }
+                    UASSERT_OBJ(orderDomainp, group.m_boundaryScopep,
+                                "Subgraph refresh helper has no NBA domain");
+                    phaseExternalDomains
+                        = [orderDomainp](const AstVarScope*, std::vector<AstSenTree*>& out) {
+                              out.push_back(orderDomainp);
+                          };
                 }
-                UASSERT_OBJ(orderDomainp, group.m_boundaryScopep,
-                            "Subgraph refresh helper has no NBA domain");
-                phaseExternalDomains
-                    = [orderDomainp](const AstVarScope*, std::vector<AstSenTree*>& out) {
-                          out.push_back(orderDomainp);
-                      };
+                funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
+                                       phaseExternalDomains, group.m_boundaryScopep);
+                if (funcp) {
+                    if (refresh) removeSingleDomainGuard(funcp);
+                    util::splitCheck(funcp);
+                    contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::make(
+                        funcp, group.m_boundaryScopep, group.m_senTreep,
+                        subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh));
+                    abi = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, *contractp}
+                              .result();
+                }
             }
-            AstCFunc* const funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
-                                                   phaseExternalDomains, group.m_boundaryScopep);
             if (!funcp) return;
-            if (refresh) removeSingleDomainGuard(funcp);
-            util::splitCheck(funcp);
-
-            const V3SubgraphContract contract = V3SubgraphContract::make(
-                funcp, group.m_boundaryScopep, group.m_senTreep,
-                subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh);
+            const V3SubgraphContract& contract = *contractp;
             contractBoundaryUses += contract.boundaryUses().size();
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
             ++contracts;
-
-            const SharedHelperAbiAnalysis abi
-                = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, contract}.result();
-            ++sharedAbiAnalyses;
-            sharedAbiConstants += abi.m_constants;
-            sharedAbiDpiCalls += abi.m_dpiCalls;
-            sharedAbiExternalVars += abi.m_externalVars;
-            sharedAbiGeneratedTemps += abi.m_generatedTemps;
-            sharedAbiHiddenUses += abi.m_hiddenUses;
-            sharedAbiInputVars += abi.m_inputVars;
-            sharedAbiOutputVars += abi.m_outputVars;
-            sharedAbiStateVars += abi.m_stateVars;
-            if (abi.m_eligible) {
-                ++sharedAbiEligibleHelpers;
-                AstNodeModule* const modp = group.m_boundaryScopep->modp();
-                const auto it
-                    = std::find_if(eligibleModulePhases.begin(), eligibleModulePhases.end(),
-                                   [&](const EligibleModulePhase& key) {
-                                       return key.m_modp == modp && key.m_phase == subgraphPhase;
-                                   });
-                if (it == eligibleModulePhases.end()) {
-                    eligibleModulePhases.push_back(EligibleModulePhase{modp, subgraphPhase});
-                } else {
-                    ++sharedAbiModulePhaseCandidates;
-                }
-            }
+            noteSharedAbi(abi, subgraphPhase, group.m_boundaryScopep->modp());
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
@@ -786,7 +893,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             AstCFunc* sharedFuncp = funcp;
             AstCCall* sharedCallp = callExprp;
             SharedHelperAbiAnalysis sharedAbi = abi;
-            if (abi.m_calls) {
+            if (!cachedArtifactp && abi.m_calls) {
                 if (AstCCall* const localCallp = soleLocalHelperCall(funcp)) {
                     sharedFuncp = localCallp->funcp();
                     sharedCallp = localCallp;
@@ -810,7 +917,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             // Composite and very wide ABIs require additional alias/lifetime validation. Start
             // with the small scalar case and leave the wrapper unchanged for all other helpers.
             static constexpr size_t kMaxSharedHelperArgs = 8;
-            if (shareCandidate && !compositeArgs && args.size() <= kMaxSharedHelperArgs) {
+            if (cachedArtifactp) {
+                // The cached artifact was already validated and accounted for above.
+            } else if (shareCandidate && !compositeArgs && args.size() <= kMaxSharedHelperArgs) {
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                     if (artifact.m_modp != group.m_boundaryScopep->modp()
@@ -837,7 +946,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
                         group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
                         sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        args, false});
+                        args, std::make_unique<V3SubgraphContract>(contract), abi, false});
                     ++sharedHelperArtifactCount;
                 }
             } else if (compositeArgs) {
@@ -945,6 +1054,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",
                      sharedOrderCacheLogicMismatches);
     V3Stats::addStat("Scheduling, Subgraph shared order cache lookups", sharedOrderCacheLookups);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache order calls avoided",
+                     sharedOrderCacheOrderCallsAvoided);
 }
 
 }  // namespace V3Sched
