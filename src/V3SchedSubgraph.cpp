@@ -743,6 +743,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedOrderCacheLogicMatches = 0;
     uint64_t sharedOrderCacheLogicMismatches = 0;
     uint64_t sharedOrderCacheLookups = 0;
+    uint64_t sharedOrderCacheOrderCallsExecuted = 0;
     uint64_t sharedOrderCacheOrderCallsAvoided = 0;
     struct EligibleModulePhase final {
         AstNodeModule* m_modp;
@@ -865,6 +866,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                               out.push_back(orderDomainp);
                           };
                 }
+                ++sharedOrderCacheOrderCallsExecuted;
                 funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
                                        phaseExternalDomains, group.m_boundaryScopep);
                 if (funcp) {
@@ -1054,6 +1056,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",
                      sharedOrderCacheLogicMismatches);
     V3Stats::addStat("Scheduling, Subgraph shared order cache lookups", sharedOrderCacheLookups);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache order calls executed",
+                     sharedOrderCacheOrderCallsExecuted);
     V3Stats::addStat("Scheduling, Subgraph shared order cache order calls avoided",
                      sharedOrderCacheOrderCallsAvoided);
 }
