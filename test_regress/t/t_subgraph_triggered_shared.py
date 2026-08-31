@@ -14,66 +14,24 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse shared skip triggered\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse coarse hits\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse coarse lookups\s+(\d+)", 19)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clone calls\s+(\d+)",
-               11)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse scope clones\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared clone avoids\s+\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, artifact reuse shared call permille\s+\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle builds\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle materialized plans\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI analyses\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 10)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped oversized\s+(\d+)", 3)
+# Trigger guards stay in per-instance wrappers, not in shared process helpers.
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggered\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 10)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 10)
 test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph nba, bundle materialized plans per bundle permille\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, bundle plans\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, bundle plans per build permille\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, schedule plans\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant buckets\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant candidates\s+\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, order cache variant max\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse template map fail constant value\s+\d+")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse template map fail node topology\s+\d+")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, artifact reuse miss no entry constant value\s+\d+")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, order cache miss no entry node topology\s+\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, ordered function clones\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic shape builds\s+(\d+)", 19)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, logic signature builds avoided\s+(\d+)", 11)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, shared helper implicit context vars\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper instance local args\s+(\d+)",
-               27)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use cache hits\s+0")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden use scans\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper hidden uses\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper scope index builds\s+0")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper scope index hits\s+0")
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper var index builds\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, shared helper var index hits\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact no nonlocal writes\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact input tail writes\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph nba, triggered artifact input tail shareable\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact shareable\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered artifact unshareable\s+(\d+)", 7)
-test.file_grep(test.stats, r"Scheduling, Subgraph nba, triggered ref state\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph parent contracts, boundary writes pruned\s+(\d+)", 3)
+    test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)", 10
+)
 test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph order graph nba, phase barrier irrelevant uses skipped\s+(\d+)", 3)
+    test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 9
+)
 
 test.passes()
