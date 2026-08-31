@@ -50,6 +50,7 @@ struct SubgraphGroup final {
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
 struct SharedHelperAbiAnalysis final {
+    uint64_t m_calls = 0;
     uint64_t m_constants = 0;
     uint64_t m_dpiCalls = 0;
     uint64_t m_externalVars = 0;
@@ -58,6 +59,7 @@ struct SharedHelperAbiAnalysis final {
     uint64_t m_inputVars = 0;
     uint64_t m_outputVars = 0;
     uint64_t m_stateVars = 0;
+    bool m_hasTriggeredState = false;
     bool m_eligible = true;
 };
 
@@ -78,6 +80,7 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
         iterateChildren(nodep);
     }
     void visit(AstCCall* nodep) override {
+        ++m_result.m_calls;
         iterateChildren(nodep);
         AstCFunc* const funcp = nodep->funcp();
         if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiContext()) {
@@ -106,6 +109,18 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
         access.second |= nodep->access().isWriteOrRW();
         if (!vscp->varp()->isFuncLocal() && !m_contractVscps.count(vscp)) {
             m_hiddenVscps.insert(vscp);
+        }
+        const string& name = vscp->varp()->name();
+        const string::size_type dot = name.rfind("__DOT__");
+        const string leafName = dot == string::npos ? name : name.substr(dot + 7);
+        const bool triggered
+            = leafName.size() >= 9 && leafName.compare(leafName.size() - 9, 9, "Triggered") == 0;
+        const bool triggeredAcc
+            = leafName.size() >= 12
+              && leafName.compare(leafName.size() - 12, 12, "TriggeredAcc") == 0;
+        if (leafName.rfind("__V", 0) == 0
+            && (triggeredAcc || (triggered && nodep->access().isWriteOrRW()))) {
+            m_result.m_hasTriggeredState = true;
         }
         iterateChildren(nodep);
     }
@@ -147,6 +162,164 @@ public:
 
     const SharedHelperAbiAnalysis& result() const { return m_result; }
 };
+
+struct SharedHelperArg final {
+    AstVarScope* m_vscp = nullptr;
+    bool m_read = false;
+    bool m_write = false;
+    bool m_state = false;
+};
+
+struct SharedHelperArtifact final {
+    AstNodeModule* m_modp = nullptr;
+    VSubgraphPhase m_phase;
+    AstCFunc* m_funcp = nullptr;
+    AstCCall* m_firstCallp = nullptr;
+    AstNode* m_templateStmtsp = nullptr;
+    std::vector<SharedHelperArg> m_args;
+    bool m_parameterized = false;
+};
+
+VAccess sharedHelperArgAccess(const SharedHelperArg& arg) {
+    if (arg.m_read && arg.m_write) return VAccess::READWRITE;
+    return arg.m_write ? VAccess::WRITE : VAccess::READ;
+}
+
+std::vector<SharedHelperArg> collectSharedHelperArgs(AstCFunc* funcp, AstScope* boundaryScopep) {
+    std::vector<SharedHelperArg> args;
+    std::unordered_map<AstVarScope*, size_t> argIndex;
+    funcp->foreach([&](AstNodeVarRef* refp) {
+        AstVarScope* const vscp = refp->varScopep();
+        if (vscp->varp()->isFuncLocal()) return;
+        const auto inserted = argIndex.emplace(vscp, args.size());
+        if (inserted.second) {
+            args.push_back(
+                SharedHelperArg{vscp, false, false, isUnderScope(vscp->scopep(), boundaryScopep)});
+        }
+        SharedHelperArg& arg = args[inserted.first->second];
+        arg.m_read |= refp->access().isReadOrRW();
+        arg.m_write |= refp->access().isWriteOrRW();
+    });
+    return args;
+}
+
+AstVarScope* newSharedHelperArg(AstCFunc* funcp, const SharedHelperArg& arg, size_t index) {
+    FileLine* const flp = funcp->fileline();
+    AstScope* const scopep = funcp->scopep();
+    AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP, "__VsubgraphArg" + cvtToStr(index),
+                                    arg.m_vscp->dtypep()};
+    varp->direction(arg.m_write ? (arg.m_read ? VDirection::INOUT : VDirection::OUTPUT)
+                                : VDirection::CONSTREF);
+    varp->funcLocal(true);
+    funcp->addArgsp(varp);
+    AstVarScope* const vscp = new AstVarScope{flp, scopep, varp};
+    scopep->addVarsp(vscp);
+    return vscp;
+}
+
+void addSharedHelperCallArgs(AstCCall* callp, const std::vector<SharedHelperArg>& args) {
+    for (const SharedHelperArg& arg : args) {
+        callp->addArgsp(new AstVarRef{callp->fileline(), arg.m_vscp, sharedHelperArgAccess(arg)});
+    }
+}
+
+void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
+    UASSERT_OBJ(!artifact.m_parameterized, artifact.m_funcp,
+                "Shared subgraph helper parameterized twice");
+    std::unordered_map<AstVarScope*, AstVarScope*> argVscps;
+    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
+        const SharedHelperArg& arg = artifact.m_args[index];
+        argVscps.emplace(arg.m_vscp, newSharedHelperArg(artifact.m_funcp, arg, index));
+    }
+    artifact.m_funcp->foreach([&](AstNodeVarRef* refp) {
+        const auto it = argVscps.find(refp->varScopep());
+        if (it == argVscps.end()) return;
+        AstVarScope* const argVscp = it->second;
+        refp->varp(argVscp->varp());
+        refp->varScopep(argVscp);
+        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+    });
+    artifact.m_funcp->foreach([&](AstNodeVarRef* refp) {
+        UASSERT_OBJ(refp->varp()->isFuncLocal(), refp,
+                    "Shared subgraph helper retained an implicit instance reference");
+    });
+    addSharedHelperCallArgs(artifact.m_firstCallp, artifact.m_args);
+    artifact.m_funcp->isStatic(true);
+    artifact.m_funcp->noLife(true);
+    artifact.m_parameterized = true;
+}
+
+bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candidateFuncp,
+                          const std::vector<SharedHelperArg>& candidateArgs) {
+    if (artifact.m_args.size() != candidateArgs.size()) return false;
+    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
+        const SharedHelperArg& source = artifact.m_args[index];
+        const SharedHelperArg& candidate = candidateArgs[index];
+        if (source.m_read != candidate.m_read || source.m_write != candidate.m_write
+            || source.m_state != candidate.m_state
+            || !source.m_vscp->dtypep()->similarDType(candidate.m_vscp->dtypep())) {
+            return false;
+        }
+    }
+
+    // Compare alpha-equivalent bodies by temporarily mapping candidate variables to the
+    // canonical argument order. Constants and every other AST property remain exact.
+    std::unordered_map<AstVarScope*, AstVarScope*> remap;
+    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
+        remap.emplace(candidateArgs[index].m_vscp, artifact.m_args[index].m_vscp);
+    }
+    struct RestoreRef final {
+        AstNodeVarRef* m_refp;
+        AstVarScope* m_vscp;
+        AstVar* m_varp;
+        VSelfPointerText m_selfPointer;
+    };
+    std::vector<RestoreRef> restores;
+    candidateFuncp->foreach([&](AstNodeVarRef* refp) {
+        const auto it = remap.find(refp->varScopep());
+        if (it == remap.end()) return;
+        restores.push_back(RestoreRef{refp, refp->varScopep(), refp->varp(), refp->selfPointer()});
+        refp->varp(it->second->varp());
+        refp->varScopep(it->second);
+        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+    });
+    const bool same = candidateFuncp->stmtsp()->sameTree(artifact.m_templateStmtsp);
+    for (const RestoreRef& restore : restores) {
+        restore.m_refp->varp(restore.m_varp);
+        restore.m_refp->varScopep(restore.m_vscp);
+        restore.m_refp->selfPointer(restore.m_selfPointer);
+    }
+    return same;
+}
+
+AstNode* cloneSharedHelperTemplate(AstCFunc* funcp) {
+    AstNode* const templatep = funcp->stmtsp()->cloneTree(true);
+    templatep->foreach([&](AstNodeVarRef* refp) {
+        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+    });
+    return templatep;
+}
+
+AstCCall* soleLocalHelperCall(AstCFunc* funcp) {
+    // V3Order normally emits a small per-instance trigger wrapper around one process function.
+    // Keep that wrapper private to the instance and share only the process function.
+    AstCCall* resultp = nullptr;
+    bool multiple = false;
+    funcp->foreach([&](AstCCall* callp) {
+        if (resultp) {
+            multiple = true;
+        } else {
+            resultp = callp;
+        }
+    });
+    if (multiple || !resultp || resultp->argsp()) return nullptr;
+    AstCFunc* const calledFuncp = resultp->funcp();
+    if (calledFuncp->entryPoint() || calledFuncp->dpiImportPrototype()
+        || calledFuncp->dpiImportWrapper() || calledFuncp->scopep() != funcp->scopep()) {
+        return nullptr;
+    }
+    return resultp;
+}
 
 class SnapshotNameAllocator final {
     std::unordered_map<AstScope*, std::unordered_set<string>> m_usedNames;
@@ -405,11 +578,23 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedAbiModulePhaseCandidates = 0;
     uint64_t sharedAbiOutputVars = 0;
     uint64_t sharedAbiStateVars = 0;
+    uint64_t sharedHelperArguments = 0;
+    uint64_t sharedHelperArtifactCount = 0;
+    uint64_t sharedHelperBodyChecks = 0;
+    uint64_t sharedHelperBodyMismatches = 0;
+    uint64_t sharedHelperParameterizations = 0;
+    uint64_t sharedHelperReuses = 0;
+    uint64_t sharedHelperSkippedCalls = 0;
+    uint64_t sharedHelperSkippedComposite = 0;
+    uint64_t sharedHelperSkippedGeneratedTemps = 0;
+    uint64_t sharedHelperSkippedOversized = 0;
+    uint64_t sharedHelperSkippedTriggered = 0;
     struct EligibleModulePhase final {
         AstNodeModule* m_modp;
         VSubgraphPhase m_phase;
     };
     std::vector<EligibleModulePhase> eligibleModulePhases;
+    std::vector<SharedHelperArtifact> sharedHelperArtifacts;
     unsigned groupIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic
@@ -490,7 +675,76 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
-            AstNode* const callp = util::callVoidFunc(funcp);
+            AstCCall* const callExprp = new AstCCall{funcp->fileline(), funcp};
+            callExprp->dtypeSetVoid();
+            AstNode* const callp = callExprp->makeStmt();
+            AstCFunc* sharedFuncp = funcp;
+            AstCCall* sharedCallp = callExprp;
+            SharedHelperAbiAnalysis sharedAbi = abi;
+            if (abi.m_calls) {
+                if (AstCCall* const localCallp = soleLocalHelperCall(funcp)) {
+                    sharedFuncp = localCallp->funcp();
+                    sharedCallp = localCallp;
+                    sharedAbi
+                        = SharedHelperAbiAnalyzer{sharedFuncp, group.m_boundaryScopep, contract}
+                              .result();
+                }
+            }
+            const bool generatedTemps
+                = sharedAbi.m_generatedTemps || sharedFuncp->varsp() || sharedFuncp->argsp();
+            const bool shareCandidate = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState
+                                        && !sharedAbi.m_calls && !generatedTemps;
+            const std::vector<SharedHelperArg> args
+                = shareCandidate ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
+                                 : std::vector<SharedHelperArg>{};
+            const bool compositeArgs
+                = std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
+                      AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
+                      return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
+                  });
+            // Composite and very wide ABIs require additional alias/lifetime validation. Start
+            // with the small scalar case and leave the wrapper unchanged for all other helpers.
+            static constexpr size_t kMaxSharedHelperArgs = 8;
+            if (shareCandidate && !compositeArgs && args.size() <= kMaxSharedHelperArgs) {
+                SharedHelperArtifact* matchingArtifactp = nullptr;
+                for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
+                    if (artifact.m_modp != group.m_boundaryScopep->modp()
+                        || artifact.m_phase != subgraphPhase) {
+                        continue;
+                    }
+                    ++sharedHelperBodyChecks;
+                    if (sameSharedHelperBody(artifact, sharedFuncp, args)) {
+                        matchingArtifactp = &artifact;
+                        break;
+                    }
+                    ++sharedHelperBodyMismatches;
+                }
+                if (matchingArtifactp) {
+                    if (!matchingArtifactp->m_parameterized) {
+                        parameterizeSharedHelper(*matchingArtifactp);
+                        sharedHelperArguments += matchingArtifactp->m_args.size();
+                        ++sharedHelperParameterizations;
+                    }
+                    sharedCallp->funcp(matchingArtifactp->m_funcp);
+                    addSharedHelperCallArgs(sharedCallp, args);
+                    ++sharedHelperReuses;
+                } else {
+                    sharedHelperArtifacts.push_back(SharedHelperArtifact{
+                        group.m_boundaryScopep->modp(), subgraphPhase, sharedFuncp, sharedCallp,
+                        cloneSharedHelperTemplate(sharedFuncp), args, false});
+                    ++sharedHelperArtifactCount;
+                }
+            } else if (compositeArgs) {
+                ++sharedHelperSkippedComposite;
+            } else if (shareCandidate) {
+                ++sharedHelperSkippedOversized;
+            } else if (sharedAbi.m_hasTriggeredState) {
+                ++sharedHelperSkippedTriggered;
+            } else if (sharedAbi.m_calls) {
+                ++sharedHelperSkippedCalls;
+            } else if (generatedTemps) {
+                ++sharedHelperSkippedGeneratedTemps;
+            }
             AstSubgraphInstance* const instancep = new AstSubgraphInstance{
                 group.m_filelinep, group.m_boundaryScopep, subgraphPhase, callp};
             for (const V3SubgraphContract::LogicalUse& use :
@@ -535,6 +789,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         ++groupIndex;
     }
 
+    for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
+        artifact.m_templateStmtsp->deleteTree();
+        artifact.m_templateStmtsp = nullptr;
+    }
+
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph NBA contract boundary uses", contractBoundaryUses);
@@ -558,6 +817,23 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedAbiModulePhaseCandidates);
     V3Stats::addStat("Scheduling, Subgraph shared ABI output vars", sharedAbiOutputVars);
     V3Stats::addStat("Scheduling, Subgraph shared ABI state vars", sharedAbiStateVars);
+    V3Stats::addStat("Scheduling, Subgraph shared helper arguments", sharedHelperArguments);
+    V3Stats::addStat("Scheduling, Subgraph shared helper artifacts", sharedHelperArtifactCount);
+    V3Stats::addStat("Scheduling, Subgraph shared helper body checks", sharedHelperBodyChecks);
+    V3Stats::addStat("Scheduling, Subgraph shared helper body mismatches",
+                     sharedHelperBodyMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared helper parameterizations",
+                     sharedHelperParameterizations);
+    V3Stats::addStat("Scheduling, Subgraph shared helper reuses", sharedHelperReuses);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped calls", sharedHelperSkippedCalls);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped composite",
+                     sharedHelperSkippedComposite);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped generated temps",
+                     sharedHelperSkippedGeneratedTemps);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped oversized",
+                     sharedHelperSkippedOversized);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped triggered",
+                     sharedHelperSkippedTriggered);
 }
 
 }  // namespace V3Sched
