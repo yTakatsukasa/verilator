@@ -17,8 +17,7 @@ test.execute()
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract boundary uses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 18)
 

@@ -27,11 +27,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggere
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 10)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 10)
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)", 10
-)
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 9
-)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
+               10)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               9)
 
 test.passes()

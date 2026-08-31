@@ -63,11 +63,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)",
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 9)
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 6
-)
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)", 9
-)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
+               9)
 
 test.passes()
