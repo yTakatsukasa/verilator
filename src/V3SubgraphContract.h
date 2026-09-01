@@ -61,6 +61,7 @@ public:
     remap(const V3SubgraphContract& source, AstScope* boundaryScopep, AstSenTree* domainp,
           const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget);
     static std::vector<LogicalUse> makeLogicalBoundaryUses(AstScope* boundaryScopep);
+    static bool isDelayedState(const AstVarScope* vscp);
 
     AstScope* boundaryScopep() const { return m_boundaryScopep; }
     AstSenTree* domainp() const { return m_domainp; }

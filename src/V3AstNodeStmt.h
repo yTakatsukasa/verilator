@@ -1275,8 +1275,8 @@ class AstSubgraphInstance final : public AstNodeStmt {
     // @astgen ptr := m_scopep : Optional[AstScope]
 private:
     string m_boundaryName;  // Stable boundary identity after AstScope deletion
-    uint32_t m_logicalUseCount = 0;  // Preserved after scheduling metadata is consumed
-    uint32_t m_materializedUseCount = 0;  // Preserved after scheduling metadata is consumed
+    uint32_t m_logicalUseCount = 0;  // Number of logical scheduling uses
+    uint32_t m_materializedUseCount = 0;  // Number of materialized scheduling uses
     VSubgraphPhase m_phase;  // Evaluation phase represented by this wrapper
 
 public:

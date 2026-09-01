@@ -47,6 +47,12 @@ struct SubgraphGroup final {
     std::vector<SubgraphSnapshot> m_snapshots;
 };
 
+struct PendingSubgraphMaterialization final {
+    AstSubgraphInstance* m_instancep = nullptr;
+    const SubgraphGroup* m_groupp = nullptr;
+    std::unique_ptr<V3SubgraphContract> m_contractp;
+};
+
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
 struct SharedHelperAbiAnalysis final {
@@ -716,6 +722,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         }
         *lbsp = std::move(parentLogic);
     }
+    // Capture parent accesses before adding coarse wrappers. Internal helper state not observed by
+    // this logic can remain private and need not become parent order-graph metadata.
+    std::unordered_set<AstVarScope*> parentAccessedVscps;
+    for (LogicByScope* const lbsp : logic) {
+        for (const auto& pair : *lbsp) {
+            pair.second->foreach(
+                [&](AstNodeVarRef* refp) { parentAccessedVscps.insert(refp->varScopep()); });
+        }
+    }
     if (measure) collectWallTime = collectTimer.deltaTime();
 
     uint64_t snapshotInstances = 0;
@@ -731,6 +746,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t contracts = 0;
     uint64_t coarseNodes = 0;
     uint64_t logicalUses = 0;
+    uint64_t materializedBoundaryUses = 0;
+    uint64_t materializedExternalUses = 0;
+    uint64_t materializedInternalUses = 0;
+    uint64_t prunedInternalUses = 0;
     uint64_t refreshHelpers = 0;
     uint64_t sharedAbiAnalyses = 0;
     uint64_t sharedAbiConstants = 0;
@@ -764,6 +783,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         VSubgraphPhase m_phase;
     };
     std::vector<EligibleModulePhase> eligibleModulePhases;
+    std::vector<PendingSubgraphMaterialization> pendingMaterializations;
+    std::unordered_set<AstVarScope*> postWrittenInternalVscps;
+    std::unordered_set<AstVarScope*> refreshReadInternalVscps;
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
     const auto noteSharedAbi = [&](const SharedHelperAbiAnalysis& abi,
                                    VSubgraphPhase subgraphPhase, AstNodeModule* modp) {
@@ -909,6 +931,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             contractBoundaryUses += contract.boundaryUses().size();
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
+            for (const V3SubgraphContract::Use& use : contract.internalUses()) {
+                if (V3SubgraphContract::isDelayedState(use.m_varScopep)) {
+                    parentAccessedVscps.insert(use.m_varScopep);
+                }
+                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST} && use.m_write) {
+                    postWrittenInternalVscps.insert(use.m_varScopep);
+                }
+                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH} && use.m_read) {
+                    refreshReadInternalVscps.insert(use.m_varScopep);
+                }
+            }
             ++contracts;
             noteSharedAbi(abi, subgraphPhase, group.m_boundaryScopep->modp());
             if (measure) contractAbiWallTime += contractAccountingTimer.deltaTime();
@@ -997,25 +1030,6 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                  V3SubgraphContract::makeLogicalBoundaryUses(group.m_boundaryScopep)) {
                 instancep->addLogicalUse(use.m_name, use.m_read, use.m_write);
             }
-            const auto addMaterializedUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
-                                                 VSubgraphUseKind kind) {
-                for (const V3SubgraphContract::Use& use : uses) {
-                    const bool snapshotStorage
-                        = kind == VSubgraphUseKind{VSubgraphUseKind::EXTERNAL}
-                          && std::any_of(group.m_snapshots.begin(), group.m_snapshots.end(),
-                                         [&](const auto& snapshot) {
-                                             return snapshot.m_storageVscp == use.m_varScopep;
-                                         });
-                    instancep->addMaterializedUse(
-                        use.m_varScopep,
-                        snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
-                                        : kind,
-                        use.m_read, use.m_write, use.m_cuttable);
-                }
-            };
-            addMaterializedUses(contract.boundaryUses(), VSubgraphUseKind::BOUNDARY);
-            addMaterializedUses(contract.externalUses(), VSubgraphUseKind::EXTERNAL);
-            addMaterializedUses(contract.internalUses(), VSubgraphUseKind::INTERNAL);
             logicalUses += instancep->logicalUseCount();
             ++coarseNodes;
             if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}) {
@@ -1026,6 +1040,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 wrapperp->addStmtsp(instancep);
             }
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
+            pendingMaterializations.push_back(
+                PendingSubgraphMaterialization{instancep, &group, std::move(contractp)});
             if (measure) materializeWallTime += materializeTimer.deltaTime();
         };
 
@@ -1035,6 +1051,48 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         orderPhase(group.m_refreshLogic, "refresh", VSubgraphPhase::REFRESH);
         ++groupIndex;
     }
+
+    for (AstVarScope* const vscp : refreshReadInternalVscps) {
+        if (postWrittenInternalVscps.count(vscp)) parentAccessedVscps.insert(vscp);
+    }
+    // Materialize only internal uses that the parent graph consumes. Delaying this until all
+    // contracts are known preserves POST-to-REFRESH dependencies without allocating metadata for
+    // helper-private state.
+    const VlOs::DeltaWallTime deferredMaterializeTimer{measure};
+    for (PendingSubgraphMaterialization& pending : pendingMaterializations) {
+        AstSubgraphInstance* const instancep = pending.m_instancep;
+        const SubgraphGroup& group = *pending.m_groupp;
+        const V3SubgraphContract& contract = *pending.m_contractp;
+        for (const V3SubgraphContract::Use& use : contract.boundaryUses()) {
+            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY, use.m_read,
+                                          use.m_write, use.m_cuttable);
+            ++materializedBoundaryUses;
+        }
+        for (const V3SubgraphContract::Use& use : contract.externalUses()) {
+            const bool snapshotStorage = std::any_of(
+                group.m_snapshots.begin(), group.m_snapshots.end(),
+                [&](const auto& snapshot) { return snapshot.m_storageVscp == use.m_varScopep; });
+            instancep->addMaterializedUse(
+                use.m_varScopep,
+                snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
+                                : VSubgraphUseKind{VSubgraphUseKind::EXTERNAL},
+                use.m_read, use.m_write, use.m_cuttable);
+            ++materializedExternalUses;
+        }
+        for (const V3SubgraphContract::Use& use : contract.internalUses()) {
+            const bool delayedState = V3SubgraphContract::isDelayedState(use.m_varScopep);
+            const bool parentAccessed = parentAccessedVscps.count(use.m_varScopep);
+            const bool publishRead = instancep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
+            if (!delayedState && (!parentAccessed || (!publishRead && !use.m_write))) {
+                ++prunedInternalUses;
+                continue;
+            }
+            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::INTERNAL, use.m_read,
+                                          use.m_write, use.m_cuttable);
+            ++materializedInternalUses;
+        }
+    }
+    if (measure) materializeWallTime += deferredMaterializeTimer.deltaTime();
 
     for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
         artifact.m_templateStmtsp->deleteTree();
@@ -1066,6 +1124,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA contracts", contracts);
     V3Stats::addStat("Scheduling, Subgraph NBA coarse nodes", coarseNodes);
     V3Stats::addStat("Scheduling, Subgraph NBA logical uses", logicalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized boundary uses",
+                     materializedBoundaryUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized external uses",
+                     materializedExternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized internal uses",
+                     materializedInternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA pruned internal uses", prunedInternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);

@@ -21,17 +21,19 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract internal uses\s+(
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 20)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 7)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA pruned internal uses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot instances\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot sources\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 7)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 25)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 21)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
 
 sched_tree = test.glob_one(test.obj_dir + "/*_sched.tree.json")
 test.file_grep(
     sched_tree,
-    r'"type":"SUBGRAPHINSTANCE".*"phase":"pre".*"logicalUses":4.*"materializedUses":5',
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"pre".*"logicalUses":4.*"materializedUses":3',
 )
 test.file_grep(
     sched_tree,
@@ -39,7 +41,7 @@ test.file_grep(
 )
 test.file_grep(
     sched_tree,
-    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":3',
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":2',
 )
 
 test.passes()

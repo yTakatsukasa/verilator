@@ -3756,43 +3756,20 @@ void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool writ
         return;
     }
     addLogicalsp(new AstSubgraphUse{fileline(), name, read, write});
+    ++m_logicalUseCount;
 }
 void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
                                              bool write, bool cuttable) {
-    for (AstSubgraphUse* usep = materializedsp(); usep; usep = VN_AS(usep->nextp(), SubgraphUse)) {
-        if (usep->varScopep() != vscp || usep->kind() != kind) continue;
-        if (read) usep->cuttable(!usep->read() ? cuttable : usep->cuttable() && cuttable);
-        usep->read(usep->read() || read);
-        usep->write(usep->write() || write);
-        return;
-    }
     addMaterializedsp(new AstSubgraphUse{fileline(), vscp, kind, read, write, cuttable});
+    ++m_materializedUseCount;
 }
 void AstSubgraphInstance::sealSchedulingMetadata() {
-    m_logicalUseCount = logicalUseCount();
-    m_materializedUseCount = materializedUseCount();
     if (logicalsp()) logicalsp()->unlinkFrBackWithNext()->deleteTree();
     if (materializedsp()) materializedsp()->unlinkFrBackWithNext()->deleteTree();
     m_scopep = nullptr;
 }
-size_t AstSubgraphInstance::logicalUseCount() const {
-    if (!logicalsp()) return m_logicalUseCount;
-    size_t count = 0;
-    for (const AstSubgraphUse* usep = logicalsp(); usep;
-         usep = VN_AS(usep->nextp(), SubgraphUse)) {
-        ++count;
-    }
-    return count;
-}
-size_t AstSubgraphInstance::materializedUseCount() const {
-    if (!materializedsp()) return m_materializedUseCount;
-    size_t count = 0;
-    for (const AstSubgraphUse* usep = materializedsp(); usep;
-         usep = VN_AS(usep->nextp(), SubgraphUse)) {
-        ++count;
-    }
-    return count;
-}
+size_t AstSubgraphInstance::logicalUseCount() const { return m_logicalUseCount; }
+size_t AstSubgraphInstance::materializedUseCount() const { return m_materializedUseCount; }
 void AstSubgraphUse::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
     if (!logicalName().empty()) str << " name=" << logicalName();

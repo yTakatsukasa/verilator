@@ -172,3 +172,7 @@ V3SubgraphContract::makeLogicalBoundaryUses(AstScope* boundaryScopep) {
     }
     return uses;
 }
+
+bool V3SubgraphContract::isDelayedState(const AstVarScope* vscp) {
+    return 0 == vscp->varp()->name().rfind("__Vdly", 0);
+}
