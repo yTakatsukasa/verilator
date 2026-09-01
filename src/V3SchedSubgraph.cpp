@@ -673,6 +673,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                            const V3Order::ExternalDomainsProvider& externalDomains) {
     if (!v3Global.opt.subgraphSchedule()) return;
 
+    const bool measure = v3Global.opt.stats();
+    double cacheLookupWallTime = 0.0;
+    double cacheReuseWallTime = 0.0;
+    double collectWallTime = 0.0;
+    double contractAbiWallTime = 0.0;
+    double helperSharingWallTime = 0.0;
+    double logicSignatureWallTime = 0.0;
+    double materializeWallTime = 0.0;
+    double orderCallsWallTime = 0.0;
+    double snapshotsWallTime = 0.0;
+    const VlOs::DeltaWallTime collectTimer{measure};
     std::unordered_set<AstVarScope*> regionWrittenVscps;
     for (LogicByScope* const lbsp : logic) {
         for (const auto& pair : *lbsp) {
@@ -705,10 +716,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         }
         *lbsp = std::move(parentLogic);
     }
+    if (measure) collectWallTime = collectTimer.deltaTime();
 
     uint64_t snapshotInstances = 0;
     uint64_t snapshotSources = 0;
+    const VlOs::DeltaWallTime snapshotsTimer{measure};
     prepareSubgraphSnapshots(groups, regionWrittenVscps, snapshotInstances, snapshotSources);
+    if (measure) snapshotsWallTime = snapshotsTimer.deltaTime();
 
     uint64_t orderedLogic = 0;
     uint64_t contractBoundaryUses = 0;
@@ -783,10 +797,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         const auto orderPhase = [&](LogicByScope& logic, const string& phase,
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
+            const VlOs::DeltaWallTime logicSignatureTimer{measure};
             const SharedScheduleLogicSig logicSig = makeSharedScheduleLogicSig(logic);
+            if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
             SharedHelperArtifact* cachedArtifactp = nullptr;
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
             std::vector<SharedHelperArg> cachedArgs;
+            const VlOs::DeltaWallTime cacheLookupTimer{measure};
             for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                 if (artifact.m_modp != group.m_boundaryScopep->modp()
                     || artifact.m_phase != subgraphPhase
@@ -815,12 +832,14 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 cachedArtifactp = &artifact;
                 break;
             }
+            if (measure) cacheLookupWallTime += cacheLookupTimer.deltaTime();
             const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
             const bool refresh = subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH};
             AstCFunc* funcp = nullptr;
             std::unique_ptr<V3SubgraphContract> contractp;
             SharedHelperAbiAnalysis abi;
             if (cachedArtifactp) {
+                const VlOs::DeltaWallTime cacheReuseTimer{measure};
                 if (!cachedArtifactp->m_parameterized) {
                     parameterizeSharedHelper(*cachedArtifactp);
                     sharedHelperArguments += cachedArtifactp->m_args.size();
@@ -837,7 +856,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 ++sharedHelperBodyChecks;
                 ++sharedHelperReuses;
                 ++sharedOrderCacheOrderCallsAvoided;
+                if (measure) cacheReuseWallTime += cacheReuseTimer.deltaTime();
             } else {
+                const VlOs::DeltaWallTime orderCallsTimer{measure};
                 V3Order::ExternalDomainsProvider phaseExternalDomains = externalDomains;
                 if (refresh) {
                     // Isolated combinational logic has no visible external drivers, so V3Order
@@ -869,7 +890,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 ++sharedOrderCacheOrderCallsExecuted;
                 funcp = V3Order::order(netlistp, {&logic}, trigToSen, tag, false, slow,
                                        phaseExternalDomains, group.m_boundaryScopep);
+                if (measure) orderCallsWallTime += orderCallsTimer.deltaTime();
                 if (funcp) {
+                    const VlOs::DeltaWallTime contractAbiTimer{measure};
                     if (refresh) removeSingleDomainGuard(funcp);
                     util::splitCheck(funcp);
                     contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::make(
@@ -877,16 +900,20 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                         subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh));
                     abi = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, *contractp}
                               .result();
+                    if (measure) contractAbiWallTime += contractAbiTimer.deltaTime();
                 }
             }
             if (!funcp) return;
+            const VlOs::DeltaWallTime contractAccountingTimer{measure};
             const V3SubgraphContract& contract = *contractp;
             contractBoundaryUses += contract.boundaryUses().size();
             contractExternalUses += contract.externalUses().size();
             contractInternalUses += contract.internalUses().size();
             ++contracts;
             noteSharedAbi(abi, subgraphPhase, group.m_boundaryScopep->modp());
+            if (measure) contractAbiWallTime += contractAccountingTimer.deltaTime();
 
+            const VlOs::DeltaWallTime helperSharingTimer{measure};
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
             AstCCall* const callExprp = new AstCCall{funcp->fileline(), funcp};
@@ -962,6 +989,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             } else if (generatedTemps) {
                 ++sharedHelperSkippedGeneratedTemps;
             }
+            if (measure) helperSharingWallTime += helperSharingTimer.deltaTime();
+            const VlOs::DeltaWallTime materializeTimer{measure};
             AstSubgraphInstance* const instancep = new AstSubgraphInstance{
                 group.m_filelinep, group.m_boundaryScopep, subgraphPhase, callp};
             for (const V3SubgraphContract::LogicalUse& use :
@@ -997,6 +1026,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 wrapperp->addStmtsp(instancep);
             }
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
+            if (measure) materializeWallTime += materializeTimer.deltaTime();
         };
 
         orderPhase(group.m_preLogic, "pre", VSubgraphPhase::PRE);
@@ -1011,6 +1041,23 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         artifact.m_templateStmtsp = nullptr;
     }
 
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), cache lookup",
+                         cacheLookupWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), cache reuse",
+                         cacheReuseWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), collect", collectWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), contract and ABI",
+                         contractAbiWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), helper sharing",
+                         helperSharingWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), logic signatures",
+                         logicSignatureWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), materialize coarse nodes",
+                         materializeWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), order calls",
+                         orderCallsWallTime);
+    V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), snapshots",
+                         snapshotsWallTime);
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph NBA contract boundary uses", contractBoundaryUses);

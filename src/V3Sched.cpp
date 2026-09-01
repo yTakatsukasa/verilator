@@ -1014,10 +1014,17 @@ void schedule(AstNetlist* netlistp) {
 
     const EvalKit actKit{trigKit.vscp(), actFuncp};
 
+    double nbaPrepareWallTime = 0.0;
+    double nbaSubgraphWallTime = 0.0;
+    double nbaCoarseOrderWallTime = 0.0;
+    double nbaMetadataWallTime = 0.0;
+
     // Orders a region's logic and creates the region eval function
     const auto order = [&](const std::string& name,
                            const std::vector<V3Sched::LogicByScope*>& logic) -> EvalKit {
         UINFO(2, "Scheduling " << name << " #logic = " << logic.size());
+        const bool measureNba = name == "nba" && v3Global.opt.stats();
+        VlOs::DeltaWallTime nbaTimer{measureNba};
         AstVarScope* const trigVscp = trigKit.newTrigVec(name);
         const auto trigMap = cloneMapWithNewTriggerReferences(trigKit.mapVec(), trigVscp);
         // Remap sensitivities of the input logic to the triggers
@@ -1048,21 +1055,49 @@ void schedule(AstNetlist* netlistp) {
               };
 
         if (name == "nba") {
+            if (measureNba) {
+                nbaPrepareWallTime = nbaTimer.deltaTime();
+                nbaTimer.start();
+            }
             lowerSubgraphNbaLogic(netlistp, logic, trigToSen, false, externalDomains);
+            if (measureNba) {
+                nbaSubgraphWallTime = nbaTimer.deltaTime();
+                nbaTimer.start();
+            }
         }
 
         AstCFunc* const funcp
             = V3Order::order(netlistp, logic, trigToSen, name,
                              name == "nba" && v3Global.opt.mtasks(), false, externalDomains);
+        if (measureNba) {
+            nbaCoarseOrderWallTime = nbaTimer.deltaTime();
+            nbaTimer.start();
+        }
         sealSubgraphSchedulingMetadata(funcp);
+        if (measureNba) nbaMetadataWallTime = nbaTimer.deltaTime();
 
         return {trigVscp, funcp};
     };
 
     // Step 12: Create the 'nba' region evaluation function
     const EvalKit nbaKit = order("nba", {&logicRegions.m_nba, &logicReplicas.m_nba});
+    const VlOs::DeltaWallTime nbaSplitTimer{v3Global.opt.stats()};
     util::splitCheck(nbaKit.m_funcp);
-    if (v3Global.opt.stats()) V3Stats::statsStage("sched-create-nba");
+    if (v3Global.opt.stats()) {
+        const double nbaSplitWallTime = nbaSplitTimer.deltaTime();
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), coarse order",
+                             nbaCoarseOrderWallTime);
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), measured total",
+                             nbaPrepareWallTime + nbaSubgraphWallTime + nbaCoarseOrderWallTime
+                                 + nbaMetadataWallTime + nbaSplitWallTime);
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), metadata seal",
+                             nbaMetadataWallTime);
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), prepare", nbaPrepareWallTime);
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), split", nbaSplitWallTime);
+        V3Stats::addStatPerf("Scheduling, NBA elapsed time (sec), subgraph lowering",
+                             nbaSubgraphWallTime);
+        V3Stats::statsStage("sched-create-nba");
+    }
 
     // Orders a region's logic and creates the region eval function (only if there is any logic in
     // the region)

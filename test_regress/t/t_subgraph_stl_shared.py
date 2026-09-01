@@ -48,6 +48,12 @@ elif max(function_sizes) > 1600:
 
 test.execute()
 
+test.file_grep(
+    test.stats, r"Scheduling, NBA elapsed time \(sec\), measured total\s+\d+\.\d+"
+)
+test.file_grep(
+    test.stats, r"Scheduling, Subgraph NBA elapsed time \(sec\), order calls\s+\d+\.\d+"
+)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI analyses\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI DPI calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI eligible helpers\s+([1-9]\d*)")

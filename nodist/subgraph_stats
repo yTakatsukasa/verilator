@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# DESCRIPTION: Verilator: Extract subgraph scheduling statistics
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2026 Wilson Snyder
+# SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+
+set -euo pipefail
+
+usage() {
+    echo "Usage: $0 <Verilator __stats.txt file>" >&2
+    exit 1
+}
+
+if (( $# != 1 )); then
+    usage
+fi
+
+stats_file=$1
+if [[ ! -r $stats_file ]]; then
+    echo "$0: Cannot read stats file: $stats_file" >&2
+    exit 1
+fi
+
+awk -v source="$stats_file" '
+function print_section(title, lines, count, i) {
+    print title ":"
+    if (!count) {
+        print "  (no matching statistics; regenerate with --stats using this build)"
+    } else {
+        for (i = 1; i <= count; ++i) print lines[i]
+    }
+    print ""
+}
+
+/^Verilator Statistics Report$/ {
+    report = 1
+    next
+}
+/^[[:space:]]+(Version|Arguments|Build jobs|Verilate jobs):/ {
+    config[++config_count] = $0
+    next
+}
+/Stage, Elapsed time \(sec\), [^ ]*_sched-/ {
+    stages[++stage_count] = $0
+    next
+}
+/Scheduling, NBA elapsed time \(sec\),/ {
+    nba_timing[++nba_timing_count] = $0
+    next
+}
+/Scheduling, Subgraph NBA elapsed time \(sec\),/ {
+    subgraph_timing[++subgraph_timing_count] = $0
+    next
+}
+/Scheduling, Subgraph NBA / {
+    subgraph_shape[++subgraph_shape_count] = $0
+    next
+}
+/Scheduling, Subgraph order graph contract / {
+    subgraph_shape[++subgraph_shape_count] = $0
+    next
+}
+/Scheduling, Subgraph shared order cache / {
+    cache[++cache_count] = $0
+    next
+}
+/Scheduling, Subgraph shared (ABI|helper) / {
+    sharing[++sharing_count] = $0
+    next
+}
+
+END {
+    if (!report) {
+        print "subgraph_stats: Not a Verilator statistics report: " source > "/dev/stderr"
+        exit 2
+    }
+    print "Verilator subgraph scheduling statistics"
+    print "Source: " source
+    print ""
+    print_section("Configuration", config, config_count)
+    print_section("Scheduling stages", stages, stage_count)
+    print_section("NBA timing breakdown", nba_timing, nba_timing_count)
+    print_section("Subgraph lowering timing breakdown", subgraph_timing,
+                  subgraph_timing_count)
+    print_section("Subgraph structure", subgraph_shape, subgraph_shape_count)
+    print_section("Order cache", cache, cache_count)
+    print_section("Shared helper eligibility", sharing, sharing_count)
+}
+' "$stats_file"
