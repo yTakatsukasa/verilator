@@ -1268,13 +1268,15 @@ public:
     bool isFatal() const { return m_isFatal; }
 };
 class AstSubgraphInstance final : public AstNodeStmt {
-    // Coarse subgraph wrapper carrying logical and materialized parent contracts.
+    // Coarse subgraph wrapper carrying logical and materialized parent contracts. Materialized
+    // uses are compact scheduling-only metadata rather than AST children as large designs can
+    // contain millions of them.
     // @astgen op1 := stmtsp : List[AstNode]
     // @astgen op2 := logicalsp : List[AstSubgraphUse]
-    // @astgen op3 := materializedsp : List[AstSubgraphUse]
     // @astgen ptr := m_scopep : Optional[AstScope]
 private:
     string m_boundaryName;  // Stable boundary identity after AstScope deletion
+    std::vector<V3SubgraphMaterializedUse> m_materializedUses;  // Parent graph dependencies
     uint32_t m_logicalUseCount = 0;  // Number of logical scheduling uses
     uint32_t m_materializedUseCount = 0;  // Number of materialized scheduling uses
     VSubgraphPhase m_phase;  // Evaluation phase represented by this wrapper
@@ -1296,9 +1298,15 @@ public:
     void addLogicalUse(const string& name, bool read, bool write);
     void addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write,
                             bool cuttable);
+    void reserveMaterializedUses(size_t count) { m_materializedUses.reserve(count); }
+    const std::vector<V3SubgraphMaterializedUse>& materializedUses() const {
+        return m_materializedUses;
+    }
     void sealSchedulingMetadata();
     size_t logicalUseCount() const;
     size_t materializedUseCount() const;
+    void cloneRelink() override;
+    const char* broken() const override;
     bool maybePointedTo() const override VL_MT_SAFE { return true; }
     bool isGateOptimizable() const override { return false; }
     bool isPredictOptimizable() const override { return false; }
@@ -1309,51 +1317,32 @@ public:
     }
 };
 class AstSubgraphUse final : public AstNodeStmt {
-    // One variable access in a coarse subgraph contract.
-    // @astgen ptr := m_varScopep : Optional[AstVarScope]
+    // One logical boundary-port access in a coarse subgraph contract.
     string m_logicalName;  // Port name for logical boundary uses
-    VSubgraphUseKind m_kind;  // Relationship of the variable to the boundary scope
     bool m_read : 1;  // Contract consumes the variable
     bool m_write : 1;  // Contract produces the variable
-    bool m_cuttable : 1;  // Read dependency may be cut to break combinational cycles
 
 public:
-    AstSubgraphUse(FileLine* fl, AstVarScope* varScopep, VSubgraphUseKind kind, bool read,
-                   bool write, bool cuttable)
-        : ASTGEN_SUPER_SubgraphUse(fl)
-        , m_kind{kind}
-        , m_read{read}
-        , m_write{write}
-        , m_cuttable{cuttable} {
-        m_varScopep = varScopep;
-    }
     AstSubgraphUse(FileLine* fl, const string& logicalName, bool read, bool write)
         : ASTGEN_SUPER_SubgraphUse(fl)
         , m_logicalName{logicalName}
-        , m_kind{VSubgraphUseKind::BOUNDARY}
         , m_read{read}
-        , m_write{write}
-        , m_cuttable{false} {}
+        , m_write{write} {}
     ASTGEN_MEMBERS_AstSubgraphUse;
     void dump(std::ostream& str) const override;
     void dumpJson(std::ostream& str) const override;
-    AstVarScope* varScopep() const { return m_varScopep; }
     const string& logicalName() const { return m_logicalName; }
-    VSubgraphUseKind kind() const { return m_kind; }
     bool read() const { return m_read; }
     void read(bool flag) { m_read = flag; }
     bool write() const { return m_write; }
     void write(bool flag) { m_write = flag; }
-    bool cuttable() const { return m_cuttable; }
-    void cuttable(bool flag) { m_cuttable = flag; }
     bool isGateOptimizable() const override { return false; }
     bool isPredictOptimizable() const override { return false; }
     int instrCount() const override { return 0; }
     bool sameNode(const AstNode* samep) const override {
         const AstSubgraphUse* const asamep = VN_DBG_AS(samep, SubgraphUse);
-        return varScopep() == asamep->varScopep() && logicalName() == asamep->logicalName()
-               && kind() == asamep->kind() && read() == asamep->read()
-               && write() == asamep->write() && cuttable() == asamep->cuttable();
+        return logicalName() == asamep->logicalName() && read() == asamep->read()
+               && write() == asamep->write();
     }
 };
 class AstSystemT final : public AstNodeStmt {

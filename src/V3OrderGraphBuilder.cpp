@@ -357,11 +357,11 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         }
     }
-    void addSnapshotSourceUsage(AstSubgraphUse* nodep, AstVarScope* varscp) {
+    void addSnapshotSourceUsage(AstSubgraphInstance* nodep, const V3SubgraphMaterializedUse& use) {
+        AstVarScope* const varscp = use.varScopep();
         UASSERT_OBJ(m_scopep, nodep, "Snapshot source not under scope");
         UASSERT_OBJ(m_logicVxp, nodep, "Snapshot source not under logic");
-        UASSERT_OBJ(nodep->read() && !nodep->write(), nodep,
-                    "Snapshot source should be read-only");
+        UASSERT_OBJ(use.read() && !use.write(), nodep, "Snapshot source should be read-only");
 
         if (m_parallel && !varscp->user4Or(VA_READ)) m_accessedVscps.push_back(varscp);
         if (varscp->user2() & VU_CON) return;
@@ -387,26 +387,25 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ((nodep->phase() == VSubgraphPhase{VSubgraphPhase::SNAPSHOT}) == m_inPre, nodep,
                     "Subgraph snapshot phase does not match its parent procedure");
         ++m_subgraphContractNodes;
-        for (AstSubgraphUse* usep = nodep->materializedsp(); usep;
-             usep = VN_AS(usep->nextp(), SubgraphUse)) {
+        for (const V3SubgraphMaterializedUse& use : nodep->materializedUses()) {
             ++m_subgraphContractUses;
-            AstVarScope* const vscp = usep->varScopep();
-            UASSERT_OBJ(vscp, usep, "Materialized subgraph use has no variable scope");
-            const bool delayedState = usep->kind() == VSubgraphUseKind{VSubgraphUseKind::INTERNAL}
+            AstVarScope* const vscp = use.varScopep();
+            UASSERT_OBJ(vscp, nodep, "Materialized subgraph use has no variable scope");
+            const bool delayedState = use.kind() == VSubgraphUseKind{VSubgraphUseKind::INTERNAL}
                                       && V3SubgraphContract::isDelayedState(vscp);
             VL_RESTORER(m_softSubgraphRead);
-            m_softSubgraphRead = usep->cuttable() && usep->read() && !delayedState;
+            m_softSubgraphRead = use.cuttable() && use.read() && !delayedState;
             if (m_softSubgraphRead) ++m_subgraphContractCuttableUses;
-            if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_SOURCE}) {
-                addSnapshotSourceUsage(usep, vscp);
-            } else if (usep->kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}) {
+            if (use.kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_SOURCE}) {
+                addSnapshotSourceUsage(nodep, use);
+            } else if (use.kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}) {
                 VL_RESTORER(m_inClocked);
                 VL_RESTORER(m_inPre);
                 m_inClocked = false;
                 m_inPre = false;
-                addVarUsage(usep, vscp, usep->read(), usep->write());
+                addVarUsage(nodep, vscp, use.read(), use.write());
             } else {
-                addVarUsage(usep, vscp, usep->read(), usep->write());
+                addVarUsage(nodep, vscp, use.read(), use.write());
             }
         }
         // Do not visit stmtsp(): the helper body is deliberately opaque to the parent graph.

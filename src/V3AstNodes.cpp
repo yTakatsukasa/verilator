@@ -3760,28 +3760,39 @@ void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool writ
 }
 void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
                                              bool write, bool cuttable) {
-    addMaterializedsp(new AstSubgraphUse{fileline(), vscp, kind, read, write, cuttable});
+    m_materializedUses.emplace_back(vscp, kind, read, write, cuttable);
     ++m_materializedUseCount;
 }
 void AstSubgraphInstance::sealSchedulingMetadata() {
     if (logicalsp()) logicalsp()->unlinkFrBackWithNext()->deleteTree();
-    if (materializedsp()) materializedsp()->unlinkFrBackWithNext()->deleteTree();
+    m_materializedUses = std::vector<V3SubgraphMaterializedUse>{};
     m_scopep = nullptr;
 }
 size_t AstSubgraphInstance::logicalUseCount() const { return m_logicalUseCount; }
 size_t AstSubgraphInstance::materializedUseCount() const { return m_materializedUseCount; }
+void AstSubgraphInstance::cloneRelink() {
+    cloneRelinkGen();
+    for (V3SubgraphMaterializedUse& use : m_materializedUses) {
+        if (use.m_varScopep && use.m_varScopep->clonep()) {
+            use.m_varScopep = use.m_varScopep->clonep();
+        }
+    }
+}
+const char* AstSubgraphInstance::broken() const {
+    for (const V3SubgraphMaterializedUse& use : m_materializedUses) {
+        BROKEN_RTN(!use.m_varScopep);
+        BROKEN_RTN(!use.m_varScopep->brokeExists());
+    }
+    return nullptr;
+}
 void AstSubgraphUse::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
-    if (!logicalName().empty()) str << " name=" << logicalName();
-    str << " kind=" << kind().ascii() << " access=" << (read() ? "R" : "") << (write() ? "W" : "");
-    if (cuttable()) str << " cuttable";
+    str << " name=" << logicalName() << " access=" << (read() ? "R" : "") << (write() ? "W" : "");
 }
 void AstSubgraphUse::dumpJson(std::ostream& str) const {
-    if (!logicalName().empty()) dumpJsonStr(str, "logicalName", logicalName());
-    dumpJsonStr(str, "kind", kind().ascii());
+    dumpJsonStr(str, "logicalName", logicalName());
     dumpJsonBoolFuncIf(str, read);
     dumpJsonBoolFuncIf(str, write);
-    dumpJsonBoolFuncIf(str, cuttable);
     dumpJsonGen(str);
 }
 void AstTraceDecl::dump(std::ostream& str) const {

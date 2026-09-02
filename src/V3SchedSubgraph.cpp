@@ -628,6 +628,7 @@ void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups,
         FileLine* const flp = sourceVscps.front()->fileline();
         AstSubgraphInstance* const instancep = new AstSubgraphInstance{
             flp, group.m_boundaryScopep, VSubgraphPhase::SNAPSHOT, assignmentsp};
+        instancep->reserveMaterializedUses(2 * group.m_snapshots.size());
         for (const SubgraphSnapshot& snapshot : group.m_snapshots) {
             instancep->addMaterializedUse(snapshot.m_sourceVscp, VSubgraphUseKind::SNAPSHOT_SOURCE,
                                           true, false, false);
@@ -1063,6 +1064,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         AstSubgraphInstance* const instancep = pending.m_instancep;
         const SubgraphGroup& group = *pending.m_groupp;
         const V3SubgraphContract& contract = *pending.m_contractp;
+        const auto keepInternalUse = [&](const V3SubgraphContract::Use& use) {
+            const bool delayedState = V3SubgraphContract::isDelayedState(use.m_varScopep);
+            const bool parentAccessed = parentAccessedVscps.count(use.m_varScopep);
+            const bool publishRead = instancep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
+            return delayedState || (parentAccessed && (publishRead || use.m_write));
+        };
+        const std::vector<V3SubgraphContract::Use>& internalUses = contract.internalUses();
+        const size_t keptInternalUses
+            = std::count_if(internalUses.begin(), internalUses.end(), keepInternalUse);
+        instancep->reserveMaterializedUses(contract.boundaryUses().size()
+                                           + contract.externalUses().size() + keptInternalUses);
         for (const V3SubgraphContract::Use& use : contract.boundaryUses()) {
             instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY, use.m_read,
                                           use.m_write, use.m_cuttable);
@@ -1079,11 +1091,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 use.m_read, use.m_write, use.m_cuttable);
             ++materializedExternalUses;
         }
-        for (const V3SubgraphContract::Use& use : contract.internalUses()) {
-            const bool delayedState = V3SubgraphContract::isDelayedState(use.m_varScopep);
-            const bool parentAccessed = parentAccessedVscps.count(use.m_varScopep);
-            const bool publishRead = instancep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
-            if (!delayedState && (!parentAccessed || (!publishRead && !use.m_write))) {
+        for (const V3SubgraphContract::Use& use : internalUses) {
+            if (!keepInternalUse(use)) {
                 ++prunedInternalUses;
                 continue;
             }
@@ -1130,6 +1139,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      materializedExternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA materialized internal uses",
                      materializedInternalUses);
+    const uint64_t materializedMetadataBytes = (materializedBoundaryUses + materializedExternalUses
+                                                + materializedInternalUses + 2 * snapshotSources)
+                                               * sizeof(V3SubgraphMaterializedUse);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized metadata bytes",
+                     materializedMetadataBytes);
     V3Stats::addStat("Scheduling, Subgraph NBA pruned internal uses", prunedInternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);

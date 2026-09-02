@@ -2082,6 +2082,34 @@ constexpr bool operator==(VSubgraphUseKind lhs, VSubgraphUseKind rhs) {
 constexpr bool operator!=(VSubgraphUseKind lhs, VSubgraphUseKind rhs) { return !(lhs == rhs); }
 
 // ######################################################################
+
+// Compact scheduling-only dependency published by a coarse subgraph wrapper. This deliberately
+// is not an AstNode: large designs can have millions of these records, and they are discarded
+// immediately after the parent order graph is built.
+class V3SubgraphMaterializedUse final {
+public:
+    AstVarScope* m_varScopep;
+    VSubgraphUseKind m_kind;
+    bool m_read : 1;
+    bool m_write : 1;
+    bool m_cuttable : 1;
+
+    V3SubgraphMaterializedUse(AstVarScope* varScopep, VSubgraphUseKind kind, bool read, bool write,
+                              bool cuttable)
+        : m_varScopep{varScopep}
+        , m_kind{kind}
+        , m_read{read}
+        , m_write{write}
+        , m_cuttable{cuttable} {}
+    AstVarScope* varScopep() const { return m_varScopep; }
+    VSubgraphUseKind kind() const { return m_kind; }
+    bool read() const { return m_read; }
+    bool write() const { return m_write; }
+    bool cuttable() const { return m_cuttable; }
+};
+static_assert(sizeof(V3SubgraphMaterializedUse) <= 2 * sizeof(void*));
+
+// ######################################################################
 //  VSystemCSectionType - Represents the type of a `systemc_* block (Verilator specific extension)
 
 class VSystemCSectionType final {
