@@ -315,6 +315,19 @@ VAccess sharedHelperArgAccess(const SharedHelperArg& arg) {
     return arg.m_write ? VAccess::WRITE : VAccess::READ;
 }
 
+bool hasCompositeSharedHelperArgs(const std::vector<SharedHelperArg>& args) {
+    return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
+        AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
+        return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
+    });
+}
+
+bool hasAggregateSharedHelperArgs(const std::vector<SharedHelperArg>& args) {
+    return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
+        return !VN_IS(arg.m_vscp->dtypep()->skipRefp(), BasicDType);
+    });
+}
+
 std::vector<SharedHelperArg> collectSharedHelperArgs(AstCFunc* funcp, AstScope* boundaryScopep,
                                                      bool externalOnly = false) {
     std::vector<SharedHelperArg> args;
@@ -462,6 +475,7 @@ void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
         }
     });
     addSharedHelperCallArgs(artifact.m_firstCallp, artifact.m_args);
+    artifact.m_firstCallp->useCallerSelf(artifact.m_instanceContext);
     if (artifact.m_instanceContext) {
         artifact.m_funcp->subgraphCallerSelf(true);
     } else {
@@ -470,6 +484,238 @@ void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
     artifact.m_funcp->noLife(true);
     artifact.m_parameterized = true;
 }
+
+bool shareableFuncVar(const AstVar* varp) {
+    const VDirection direction = varp->direction();
+    const AstBasicDType* const basicp = VN_CAST(varp->dtypep()->skipRefp(), BasicDType);
+    return basicp && basicp->isIntegralOrPacked() && !varp->lifetime().isStatic()
+           && !direction.isInout() && !direction.isRef();
+}
+
+bool shareableFuncLocals(AstCFunc* funcp) {
+    bool safe = true;
+    for (AstVar* varp = funcp->varsp(); varp; varp = VN_AS(varp->nextp(), Var)) {
+        if (!shareableFuncVar(varp)) safe = false;
+    }
+    funcp->foreach([&](AstNodeVarRef* refp) {
+        AstVar* const varp = refp->varp();
+        if (varp->isFuncLocal() && !shareableFuncVar(varp)) safe = false;
+    });
+    return safe;
+}
+
+bool selfContainedCalledFunc(AstCFunc* funcp) {
+    if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiContext()
+        || funcp->needProcess() || funcp->recursive() || funcp->isCoroutine()) {
+        return false;
+    }
+    bool safe = true;
+    for (AstVar* varp = funcp->argsp(); varp; varp = VN_AS(varp->nextp(), Var)) {
+        if (!shareableFuncVar(varp)) safe = false;
+    }
+    safe &= shareableFuncLocals(funcp);
+    funcp->foreach([&](AstNode* nodep) {
+        if (AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            AstVarScope* const vscp = refp->varScopep();
+            if (!vscp || !vscp->varp()->isFuncLocal() || !shareableFuncVar(vscp->varp())) {
+                safe = false;
+            }
+        } else if (VN_IS(nodep, ThisRef) || VN_IS(nodep, CStmt)) {
+            safe = false;
+        } else if (!VN_IS(nodep, CCall) && nodep->isOutputter()) {
+            safe = false;
+        }
+    });
+    return safe;
+}
+
+class SharedHelperCallChecker final {
+    std::unordered_set<AstCFunc*> m_visited;
+
+    bool checkFunc(AstCFunc* funcp) {
+        if (!m_visited.emplace(funcp).second) return true;
+        bool safe = selfContainedCalledFunc(funcp);
+        funcp->foreach([&](AstCCall* callp) { safe &= checkFunc(callp->funcp()); });
+        return safe;
+    }
+
+public:
+    bool checkCalls(AstCFunc* funcp) {
+        bool safe = true;
+        funcp->foreach([&](AstCCall* callp) { safe &= checkFunc(callp->funcp()); });
+        return safe;
+    }
+};
+
+class SharedHelperBodyComparator final {
+    std::unordered_map<AstVarScope*, AstVarScope*> m_candidateToSourceVscps;
+    std::unordered_map<AstVarScope*, AstVarScope*> m_sourceToCandidateVscps;
+    std::unordered_map<const AstCFunc*, const AstCFunc*> m_candidateToSourceFuncps;
+    std::unordered_map<const AstCFunc*, const AstCFunc*> m_sourceToCandidateFuncps;
+
+    struct RestoreRef final {
+        AstNodeVarRef* m_refp;
+        AstVarScope* m_vscp;
+        AstVar* m_varp;
+        VSelfPointerText m_selfPointer;
+    };
+    struct RestoreCall final {
+        AstCCall* m_callp;
+        AstCFunc* m_funcp;
+    };
+
+    bool mapVarScope(AstVarScope* sourceVscp, AstVarScope* candidateVscp) {
+        const auto candidateIt = m_candidateToSourceVscps.find(candidateVscp);
+        if (candidateIt != m_candidateToSourceVscps.end()) {
+            return candidateIt->second == sourceVscp;
+        }
+        const auto sourceIt = m_sourceToCandidateVscps.find(sourceVscp);
+        if (sourceIt != m_sourceToCandidateVscps.end()) {
+            return sourceIt->second == candidateVscp;
+        }
+        m_candidateToSourceVscps.emplace(candidateVscp, sourceVscp);
+        m_sourceToCandidateVscps.emplace(sourceVscp, candidateVscp);
+        return true;
+    }
+
+    static AstVarScope* findVarScope(AstCFunc* funcp, AstVar* varp) {
+        for (AstVarScope* vscp = funcp->scopep()->varsp(); vscp;
+             vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp() == varp) return vscp;
+        }
+        return nullptr;
+    }
+
+    bool sameFuncVars(AstCFunc* sourceFuncp, AstVar* sourceVarp, AstCFunc* candidateFuncp,
+                      AstVar* candidateVarp) {
+        while (sourceVarp && candidateVarp) {
+            if (!shareableFuncVar(sourceVarp) || !shareableFuncVar(candidateVarp)
+                || sourceVarp->direction() != candidateVarp->direction()
+                || sourceVarp->varType() != candidateVarp->varType()
+                || !sourceVarp->dtypep()->similarDType(candidateVarp->dtypep())) {
+                return false;
+            }
+            AstVarScope* const sourceVscp = findVarScope(sourceFuncp, sourceVarp);
+            AstVarScope* const candidateVscp = findVarScope(candidateFuncp, candidateVarp);
+            if (!sourceVscp || !candidateVscp || !mapVarScope(sourceVscp, candidateVscp)) {
+                return false;
+            }
+            sourceVarp = VN_CAST(sourceVarp->nextp(), Var);
+            candidateVarp = VN_CAST(candidateVarp->nextp(), Var);
+        }
+        return !sourceVarp && !candidateVarp;
+    }
+
+    bool sameCalledFunc(AstCFunc* sourceFuncp, AstCFunc* candidateFuncp) {
+        const auto candidateIt = m_candidateToSourceFuncps.find(candidateFuncp);
+        if (candidateIt != m_candidateToSourceFuncps.end()) {
+            return candidateIt->second == sourceFuncp;
+        }
+        const auto sourceIt = m_sourceToCandidateFuncps.find(sourceFuncp);
+        if (sourceIt != m_sourceToCandidateFuncps.end()) {
+            return sourceIt->second == candidateFuncp;
+        }
+        if (!selfContainedCalledFunc(sourceFuncp) || !selfContainedCalledFunc(candidateFuncp)
+            || sourceFuncp->scopep()->modp() != candidateFuncp->scopep()->modp()
+            || sourceFuncp->rtnTypeVoid() != candidateFuncp->rtnTypeVoid()
+            || sourceFuncp->argTypes() != candidateFuncp->argTypes()
+            || sourceFuncp->isStatic() != candidateFuncp->isStatic()
+            || sourceFuncp->isLoose() != candidateFuncp->isLoose()) {
+            return false;
+        }
+        if (sourceFuncp == candidateFuncp) return true;
+        m_candidateToSourceFuncps.emplace(candidateFuncp, sourceFuncp);
+        m_sourceToCandidateFuncps.emplace(sourceFuncp, candidateFuncp);
+        if (!sameFuncVars(sourceFuncp, sourceFuncp->argsp(), candidateFuncp,
+                          candidateFuncp->argsp())
+            || !sameFuncVars(sourceFuncp, sourceFuncp->varsp(), candidateFuncp,
+                             candidateFuncp->varsp())) {
+            return false;
+        }
+        return sameTree(sourceFuncp->stmtsp(), candidateFuncp->stmtsp(), true);
+    }
+
+    bool sameTree(AstNode* sourcep, AstNode* candidatep, bool calledFunc) {
+        if (!sourcep || !candidatep) return sourcep == candidatep;
+        std::vector<AstNodeVarRef*> sourceRefs;
+        std::vector<AstNodeVarRef*> candidateRefs;
+        sourcep->foreach([&](AstNodeVarRef* refp) { sourceRefs.push_back(refp); });
+        candidatep->foreach([&](AstNodeVarRef* refp) { candidateRefs.push_back(refp); });
+        if (sourceRefs.size() != candidateRefs.size()) return false;
+        for (size_t index = 0; index < sourceRefs.size(); ++index) {
+            AstNodeVarRef* const sourceRefp = sourceRefs[index];
+            AstNodeVarRef* const candidateRefp = candidateRefs[index];
+            AstVarScope* const sourceVscp = sourceRefp->varScopep();
+            AstVarScope* const candidateVscp = candidateRefp->varScopep();
+            if (!sourceVscp || !candidateVscp || sourceRefp->access() != candidateRefp->access()
+                || !sourceVscp->dtypep()->similarDType(candidateVscp->dtypep())) {
+                return false;
+            }
+            const bool sourceLocal = sourceVscp->varp()->isFuncLocal();
+            const bool candidateLocal = candidateVscp->varp()->isFuncLocal();
+            if (sourceLocal != candidateLocal || (calledFunc && !sourceLocal)
+                || (sourceLocal
+                    && (sourceVscp->varp()->lifetime().isStatic()
+                        || candidateVscp->varp()->lifetime().isStatic()))
+                || !mapVarScope(sourceVscp, candidateVscp)) {
+                return false;
+            }
+        }
+
+        std::vector<AstCCall*> sourceCalls;
+        std::vector<AstCCall*> candidateCalls;
+        sourcep->foreach([&](AstCCall* callp) { sourceCalls.push_back(callp); });
+        candidatep->foreach([&](AstCCall* callp) { candidateCalls.push_back(callp); });
+        if (sourceCalls.size() != candidateCalls.size()) return false;
+        for (size_t index = 0; index < sourceCalls.size(); ++index) {
+            if (!sameCalledFunc(sourceCalls[index]->funcp(), candidateCalls[index]->funcp())) {
+                return false;
+            }
+        }
+
+        std::vector<RestoreRef> restoreRefs;
+        for (AstNodeVarRef* const refp : candidateRefs) {
+            AstVarScope* const sourceVscp = m_candidateToSourceVscps.at(refp->varScopep());
+            restoreRefs.push_back(
+                RestoreRef{refp, refp->varScopep(), refp->varp(), refp->selfPointer()});
+            refp->varp(sourceVscp->varp());
+            refp->varScopep(sourceVscp);
+            refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
+        }
+        std::vector<RestoreCall> restoreCalls;
+        for (size_t index = 0; index < candidateCalls.size(); ++index) {
+            AstCCall* const callp = candidateCalls[index];
+            restoreCalls.push_back(RestoreCall{callp, callp->funcp()});
+            callp->funcp(sourceCalls[index]->funcp());
+        }
+        const bool same = candidatep->sameTree(sourcep);
+        for (const RestoreCall& restore : restoreCalls) restore.m_callp->funcp(restore.m_funcp);
+        for (const RestoreRef& restore : restoreRefs) {
+            restore.m_refp->varp(restore.m_varp);
+            restore.m_refp->varScopep(restore.m_vscp);
+            restore.m_refp->selfPointer(restore.m_selfPointer);
+        }
+        return same;
+    }
+
+public:
+    SharedHelperBodyComparator(const SharedHelperArtifact& artifact,
+                               const std::vector<SharedHelperArg>& candidateArgs) {
+        UASSERT_OBJ(artifact.m_args.size() == candidateArgs.size(), artifact.m_funcp,
+                    "Mismatched shared helper argument counts");
+        for (size_t index = 0; index < artifact.m_args.size(); ++index) {
+            mapVarScope(artifact.m_args[index].m_vscp, candidateArgs[index].m_vscp);
+        }
+    }
+
+    bool same(const SharedHelperArtifact& artifact, AstCFunc* candidateFuncp) {
+        if (!sameFuncVars(artifact.m_funcp, artifact.m_funcp->varsp(), candidateFuncp,
+                          candidateFuncp->varsp())) {
+            return false;
+        }
+        return sameTree(artifact.m_templateStmtsp, candidateFuncp->stmtsp(), false);
+    }
+};
 
 bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candidateFuncp,
                           const std::vector<SharedHelperArg>& candidateArgs) {
@@ -483,35 +729,7 @@ bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candid
             return false;
         }
     }
-
-    // Compare alpha-equivalent bodies by temporarily mapping candidate variables to the
-    // canonical argument order. Constants and every other AST property remain exact.
-    std::unordered_map<AstVarScope*, AstVarScope*> remap;
-    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
-        remap.emplace(candidateArgs[index].m_vscp, artifact.m_args[index].m_vscp);
-    }
-    struct RestoreRef final {
-        AstNodeVarRef* m_refp;
-        AstVarScope* m_vscp;
-        AstVar* m_varp;
-        VSelfPointerText m_selfPointer;
-    };
-    std::vector<RestoreRef> restores;
-    candidateFuncp->foreach([&](AstNodeVarRef* refp) {
-        const auto it = remap.find(refp->varScopep());
-        if (it == remap.end()) return;
-        restores.push_back(RestoreRef{refp, refp->varScopep(), refp->varp(), refp->selfPointer()});
-        refp->varp(it->second->varp());
-        refp->varScopep(it->second);
-        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
-    });
-    const bool same = candidateFuncp->stmtsp()->sameTree(artifact.m_templateStmtsp);
-    for (const RestoreRef& restore : restores) {
-        restore.m_refp->varp(restore.m_varp);
-        restore.m_refp->varScopep(restore.m_vscp);
-        restore.m_refp->selfPointer(restore.m_selfPointer);
-    }
-    return same;
+    return SharedHelperBodyComparator{artifact, candidateArgs}.same(artifact, candidateFuncp);
 }
 
 AstNode* cloneSharedHelperTemplate(AstCFunc* funcp) {
@@ -833,6 +1051,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperArtifactCount = 0;
     uint64_t sharedHelperBodyChecks = 0;
     uint64_t sharedHelperBodyMismatches = 0;
+    uint64_t sharedHelperCallArtifacts = 0;
+    uint64_t sharedHelperCallReuses = 0;
+    uint64_t sharedHelperCompositeArtifacts = 0;
+    uint64_t sharedHelperCompositeReuses = 0;
     uint64_t sharedHelperContextArtifacts = 0;
     uint64_t sharedHelperContextReuses = 0;
     uint64_t sharedHelperParameterizations = 0;
@@ -899,6 +1121,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                 if (artifact.m_modp != group.m_boundaryScopep->modp()
                     || artifact.m_phase != subgraphPhase
+                    // Calls and composite ABIs require independently ordered body comparison.
+                    || artifact.m_abi.m_calls || hasCompositeSharedHelperArgs(artifact.m_args)
                     || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
                     continue;
                 }
@@ -1043,23 +1267,21 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             const bool generatedTemps
                 = sharedAbi.m_generatedTemps || sharedFuncp->varsp() || sharedFuncp->argsp();
-            const auto hasCompositeArgs = [](const std::vector<SharedHelperArg>& args) {
-                return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
-                    AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
-                    return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
-                });
-            };
+            const bool shareableCalls
+                = !sharedAbi.m_calls || SharedHelperCallChecker{}.checkCalls(sharedFuncp);
             static constexpr size_t kMaxSharedHelperArgs = 8;
-            const bool scalarBaseCandidate = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState
-                                             && !sharedAbi.m_calls && !generatedTemps;
+            const bool scalarBaseCandidate
+                = sharedAbi.m_eligible && sharedAbi.m_contextSafe && !sharedAbi.m_hasTriggeredState
+                  && !sharedFuncp->argsp() && shareableCalls && shareableFuncLocals(sharedFuncp);
             const std::vector<SharedHelperArg> scalarArgs
                 = scalarBaseCandidate
                       ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                       : std::vector<SharedHelperArg>{};
-            const bool compositeArgs = hasCompositeArgs(scalarArgs);
+            const bool compositeArgs = hasCompositeSharedHelperArgs(scalarArgs);
+            const bool aggregateArgs = hasAggregateSharedHelperArgs(scalarArgs);
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (scalarBaseCandidate && !compositeArgs
+            } else if (scalarBaseCandidate && !aggregateArgs
                        && scalarArgs.size() <= kMaxSharedHelperArgs) {
                 // Only share helpers after independently running V3Order and comparing their
                 // ordered bodies. A matching pre-order signature is insufficient to prove that
@@ -1067,7 +1289,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                     if (artifact.m_modp != group.m_boundaryScopep->modp()
-                        || artifact.m_phase != subgraphPhase || artifact.m_instanceContext) {
+                        || artifact.m_phase != subgraphPhase) {
                         continue;
                     }
                     ++sharedHelperBodyChecks;
@@ -1084,17 +1306,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                         ++sharedHelperParameterizations;
                     }
                     sharedCallp->funcp(matchingArtifactp->m_funcp);
+                    sharedCallp->useCallerSelf(matchingArtifactp->m_instanceContext);
                     addSharedHelperCallArgs(sharedCallp, scalarArgs);
                     ++sharedHelperReuses;
+                    if (sharedAbi.m_calls) ++sharedHelperCallReuses;
+                    if (compositeArgs) ++sharedHelperCompositeReuses;
                 } else {
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
                         group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
                         sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        scalarArgs, std::make_unique<V3SubgraphContract>(contract), abi, false,
-                        false});
+                        scalarArgs, std::make_unique<V3SubgraphContract>(contract), sharedAbi,
+                        sharedAbi.m_calls != 0, false});
                     ++sharedHelperArtifactCount;
+                    if (sharedAbi.m_calls) ++sharedHelperCallArtifacts;
+                    if (compositeArgs) ++sharedHelperCompositeArtifacts;
                 }
-            } else if (compositeArgs) {
+            } else if (aggregateArgs) {
                 ++sharedHelperSkippedComposite;
             } else if (scalarBaseCandidate) {
                 ++sharedHelperSkippedOversized;
@@ -1248,6 +1475,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared helper body checks", sharedHelperBodyChecks);
     V3Stats::addStat("Scheduling, Subgraph shared helper body mismatches",
                      sharedHelperBodyMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared helper call artifacts",
+                     sharedHelperCallArtifacts);
+    V3Stats::addStat("Scheduling, Subgraph shared helper call reuses", sharedHelperCallReuses);
+    V3Stats::addStat("Scheduling, Subgraph shared helper composite artifacts",
+                     sharedHelperCompositeArtifacts);
+    V3Stats::addStat("Scheduling, Subgraph shared helper composite reuses",
+                     sharedHelperCompositeReuses);
     V3Stats::addStat("Scheduling, Subgraph shared helper context artifacts",
                      sharedHelperContextArtifacts);
     V3Stats::addStat("Scheduling, Subgraph shared helper context reuses",

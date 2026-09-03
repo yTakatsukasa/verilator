@@ -26,6 +26,12 @@ module t (
   logic [14:0] ref0;
   logic [14:0] ref1;
   logic [14:0] ref2;
+  logic [14:0] unsafe_y0;
+  logic [14:0] unsafe_y1;
+  logic [14:0] unsafe_y2;
+  logic [14:0] unsafe_ref0;
+  logic [14:0] unsafe_ref1;
+  logic [14:0] unsafe_ref2;
   logic [14:0] salt0 = 15'h123;
   logic [14:0] salt1 = 15'h456;
   logic [14:0] salt2 = 15'h789;
@@ -36,6 +42,12 @@ module t (
   sg_context_ref i_ref0 (clk, salt0, ref0);
   sg_context_ref i_ref1 (clk, salt1, ref1);
   sg_context_ref i_ref2 (clk, salt2, ref2);
+  sg_context_unsafe i_unsafe0 (clk, salt0, unsafe_y0);
+  sg_context_unsafe i_unsafe1 (clk, salt1, unsafe_y1);
+  sg_context_unsafe i_unsafe2 (clk, salt2, unsafe_y2);
+  sg_context_unsafe_ref i_unsafe_ref0 (clk, salt0, unsafe_ref0);
+  sg_context_unsafe_ref i_unsafe_ref1 (clk, salt1, unsafe_ref1);
+  sg_context_unsafe_ref i_unsafe_ref2 (clk, salt2, unsafe_ref2);
 
   always_ff @(posedge clk) begin
     cyc <= cyc + 1;
@@ -46,12 +58,59 @@ module t (
       `checkh(y0, ref0)
       `checkh(y1, ref1)
       `checkh(y2, ref2)
+      `checkh(unsafe_y0, unsafe_ref0)
+      `checkh(unsafe_y1, unsafe_ref1)
+      `checkh(unsafe_y2, unsafe_ref2)
     end
     if (cyc == 30) begin
       $write("*-* All Finished *-*\n");
       $finish;
     end
   end
+
+endmodule
+
+module sg_context_unsafe (
+  input logic clk,
+  input logic [14:0] salt,
+  output logic [14:0] y
+); `SUBGRAPH_BOUNDARY
+
+  logic [14:0] q = 15'h1234;
+
+  function automatic logic [14:0] scramble(input logic [14:0] value);
+    // verilator no_inline_task
+    string text;
+    text = value[0] ? "a" : "bc";
+    scramble = {value[6:0], value[14:7]} ^ 15'(text.len());
+  endfunction
+
+  always_ff @(posedge clk) begin
+    q <= scramble(q) ^ salt;
+  end
+  assign y = q;
+
+endmodule
+
+module sg_context_unsafe_ref (
+  input logic clk,
+  input logic [14:0] salt,
+  output logic [14:0] y
+);
+
+  logic [14:0] q = 15'h1234;
+
+  function automatic logic [14:0] scramble(input logic [14:0] value);
+    // verilator no_inline_task
+    string text;
+    text = value[0] ? "a" : "bc";
+    scramble = {value[6:0], value[14:7]} ^ 15'(text.len());
+  endfunction
+
+  always_ff @(posedge clk) begin
+    q <= scramble(q) ^ salt;
+  end
+  assign y = q;
 
 endmodule
 
