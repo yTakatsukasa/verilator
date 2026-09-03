@@ -915,18 +915,12 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 cachedArgs.clear();
                 for (const SharedHelperArg& arg : artifact.m_args) {
                     const auto it = sourceToCandidate.find(arg.m_vscp);
-                    // V3Order adds trigger-state reads to the helper wrapper. They are not in the
-                    // pre-order logic signature, and are shared by all groups in the same domain.
-                    AstVarScope* candidateVscp = nullptr;
-                    if (it != sourceToCandidate.end()) {
-                        candidateVscp = it->second;
-                    } else if (!arg.m_state) {
-                        candidateVscp = arg.m_vscp;
-                    } else {
-                        break;
-                    }
+                    // Every helper argument must be mapped to the candidate instance. Falling
+                    // back to the canonical variable can make one instance read another
+                    // instance's state.
+                    if (it == sourceToCandidate.end()) break;
                     cachedArgs.push_back(
-                        SharedHelperArg{candidateVscp, arg.m_read, arg.m_write, arg.m_state});
+                        SharedHelperArg{it->second, arg.m_read, arg.m_write, arg.m_state});
                 }
                 if (cachedArgs.size() != artifact.m_args.size()) continue;
                 ++sharedOrderCacheLogicMatches;
@@ -1049,18 +1043,6 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             const bool generatedTemps
                 = sharedAbi.m_generatedTemps || sharedFuncp->varsp() || sharedFuncp->argsp();
-            // Refresh contracts contain cuttable combinational dependencies. Reusing a helper
-            // before parent scheduling can change which of those dependencies remain visible, so
-            // caller-context sharing is restricted to the ordered PRE and POST NBA phases.
-            const bool contextBaseCandidate
-                = sharedAbi.m_eligible && sharedAbi.m_contextSafe && !sharedAbi.m_hasTriggeredState
-                  && subgraphPhase != VSubgraphPhase{VSubgraphPhase::REFRESH}
-                  && sharedFuncp->isLoose() && !sharedFuncp->isStatic()
-                  && sharedFuncp->scopep() == group.m_boundaryScopep;
-            const std::vector<SharedHelperArg> contextArgs
-                = contextBaseCandidate
-                      ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep, true)
-                      : std::vector<SharedHelperArg>{};
             const auto hasCompositeArgs = [](const std::vector<SharedHelperArg>& args) {
                 return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
                     AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
@@ -1068,29 +1050,20 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 });
             };
             static constexpr size_t kMaxSharedHelperArgs = 8;
-            // Context helpers retain all state below the boundary behind their caller's vlSelf.
-            // Their remaining arguments are external scheduler state, for which the normal CFunc
-            // argument lowering supports wide and aggregate const-reference types.
-            const bool contextCandidate
-                = contextBaseCandidate && contextArgs.size() <= kMaxSharedHelperArgs;
             const bool scalarBaseCandidate = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState
                                              && !sharedAbi.m_calls && !generatedTemps;
             const std::vector<SharedHelperArg> scalarArgs
-                = !contextCandidate && scalarBaseCandidate
+                = scalarBaseCandidate
                       ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                       : std::vector<SharedHelperArg>{};
             const bool compositeArgs = hasCompositeArgs(scalarArgs);
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (contextCandidate) {
-                sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                    group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp, sharedFuncp,
-                    sharedCallp, nullptr, logicSig, contextArgs,
-                    std::make_unique<V3SubgraphContract>(contract), abi, true, false});
-                ++sharedHelperArtifactCount;
-                ++sharedHelperContextArtifacts;
             } else if (scalarBaseCandidate && !compositeArgs
                        && scalarArgs.size() <= kMaxSharedHelperArgs) {
+                // Only share helpers after independently running V3Order and comparing their
+                // ordered bodies. A matching pre-order signature is insufficient to prove that
+                // caller-instance context and the resulting dependency contract are equivalent.
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                     if (artifact.m_modp != group.m_boundaryScopep->modp()
