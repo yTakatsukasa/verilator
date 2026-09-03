@@ -230,7 +230,9 @@ class LifePostDlyVisitor final : public VNVisitorConst {
 
     void visit(AstVarRef* nodep) override {
         // We only try to optimize NBA shadow variables
-        if (!nodep->varScopep()->optimizeLifePost()) return;
+        if (!nodep->varScopep()->optimizeLifePost() || nodep->varScopep()->subgraphSharedUse()) {
+            return;
+        }
 
         // Mark variables referenced outside the 'nba' region
         if (!m_inEvalNba) {

@@ -130,6 +130,7 @@ void AstNodeStmt::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 
 void AstNodeCCall::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
+    if (useCallerSelf()) str << " callerSelf";
     if (funcp()) {
         str << " " << funcp()->name() << " => ";
         funcp()->dump(str);
@@ -139,6 +140,7 @@ void AstNodeCCall::dump(std::ostream& str) const {
 }
 void AstNodeCCall::dumpJson(std::ostream& str) const {
     if (funcp()) dumpJsonStr(str, "funcName", funcp()->name());
+    dumpJsonBoolFuncIf(str, useCallerSelf);
     dumpJsonGen(str);
 }
 bool AstNodeCCall::isPure() { return funcp()->dpiPure(); }
@@ -3281,6 +3283,7 @@ void AstStreamDType::dumpSmall(std::ostream& str) const {
 void AstVarScope::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (isTrace()) str << " [T]";
+    if (subgraphSharedUse()) str << " [SUBGRAPH_SHARED]";
     if (scopep()) str << " [scopep=" << nodeAddr(scopep()) << "]";
     if (varp()) {
         str << " -> ";
@@ -3291,11 +3294,13 @@ void AstVarScope::dump(std::ostream& str) const {
 }
 void AstVarScope::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isTrace);
+    dumpJsonBoolFuncIf(str, subgraphSharedUse);
     dumpJsonGen(str);
 }
 bool AstVarScope::sameNode(const AstNode* samep) const {
     const AstVarScope* const asamep = VN_DBG_AS(samep, VarScope);
-    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep());
+    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep())
+           && subgraphSharedUse() == asamep->subgraphSharedUse();
 }
 void AstNodeVarRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
@@ -3867,6 +3872,7 @@ void AstCFunc::dump(std::ostream& str) const {
     if (needProcess()) str << " [NPRC]";
     if (entryPoint()) str << " [ENTRY]";
     if (noLife()) str << " [NOLIFE]";
+    if (subgraphCallerSelf()) str << " [SUBGRAPH_CALLER_SELF]";
 }
 void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, slow);
@@ -3882,6 +3888,7 @@ void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isCoroutine);
     dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonBoolFuncIf(str, noLife);
+    dumpJsonBoolFuncIf(str, subgraphCallerSelf);
     dumpJsonGen(str);
     // TODO: maybe try to shorten these flags somehow
 }

@@ -62,6 +62,7 @@ class LocalizeVisitor final : public VNVisitor {
 
     // METHODS
     bool isOptimizable(AstVarScope* nodep) {
+        if (nodep->subgraphSharedUse()) return false;
         // Don't want to malloc/free the backing store all the time
         if (VN_IS(nodep->dtypep(), NBACommitQueueDType)) return false;
         // Do not localize strings. They result in unnecessary initialization

@@ -86,6 +86,25 @@ class DescopeVisitor final : public VNVisitor {
         }
         return ret.vlSymsPtr;
     }
+    VSelfPointerText subgraphCallerSelf(const AstScope* scopep) const {
+        const AstScope* const basep = m_funcp->scopep();
+        if (scopep == basep) return VSelfPointerText{VSelfPointerText::This{}};
+        std::vector<string> fields;
+        for (const AstScope* scanp = scopep; scanp != basep; scanp = scanp->aboveScopep()) {
+            UASSERT_OBJ(scanp && VN_IS(scanp->modp(), Module), m_funcp,
+                        "Shared subgraph function references state outside its instance");
+            string name = scanp->name();
+            const string::size_type pos = name.rfind('.');
+            if (pos != string::npos) name.erase(0, pos + 1);
+            fields.push_back(name);
+        }
+        string path;
+        for (auto it = fields.rbegin(); it != fields.rend(); ++it) {
+            if (!path.empty()) path += "->";
+            path += *it;
+        }
+        return VSelfPointerText{VSelfPointerText::This{}, path};
+    }
 
     // Construct the best self pointer to reference an object in 'scopep'  from a CFunc in
     // 'm_scopep'. Result may be relative ("this->[...]") or absolute ("vlSyms->[...]").
@@ -96,6 +115,8 @@ class DescopeVisitor final : public VNVisitor {
         UASSERT(scopep, "Var/Func not scoped");
         // Static functions can't use relative references via 'this->'
         const bool relativeRefOk = !m_funcp->isStatic();
+
+        if (relativeRefOk && m_funcp->subgraphCallerSelf()) { return subgraphCallerSelf(scopep); }
 
         UINFO(8, "      Descope ref under " << m_scopep);
         UINFO(8, "              ref to    " << scopep);
@@ -257,7 +278,15 @@ class DescopeVisitor final : public VNVisitor {
         // Convert the hierch name
         UASSERT_OBJ(m_scopep, nodep, "Node not under scope");
         const AstScope* const scopep = nodep->funcp()->scopep();
-        nodep->selfPointer(descopedSelfPointer(scopep));
+        if (nodep->useCallerSelf()) {
+            UASSERT_OBJ(nodep->funcp()->isLoose() && !nodep->funcp()->isStatic(), nodep,
+                        "Caller-self call requires a non-static loose function");
+            UASSERT_OBJ(scopep->modp() == m_scopep->modp(), nodep,
+                        "Caller-self call crosses module specializations");
+            nodep->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
+        } else {
+            nodep->selfPointer(descopedSelfPointer(scopep));
+        }
         // Can't do this, as we may have more calls later
         // nodep->funcp()->scopep(nullptr);
     }
