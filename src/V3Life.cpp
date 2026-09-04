@@ -148,7 +148,6 @@ public:
         if (varp->isSigPublic()) return;
         if (varp->isReadByDpi()) return;
         if (varp->sensIfacep()) return;
-        if (vscp->subgraphSharedUse()) return;
         // Check the var entry, and remove if appropriate
         AstNodeStmt* const oldassp = entr.assignp();
         if (!oldassp) return;
@@ -310,11 +309,7 @@ class LifeVisitor final : public VNVisitor {
         if (VN_IS(lhsp, VarRef) && !m_sideEffect && !m_noopt) {
             AstVarScope* const vscp = VN_AS(lhsp, VarRef)->varScopep();
             UASSERT_OBJ(vscp, nodep, "Scope lost on variable");
-            if (vscp->subgraphSharedUse()) {
-                iterateAndNextNull(lhsp);
-            } else {
-                m_lifep->simpleAssign(vscp, nodep);
-            }
+            m_lifep->simpleAssign(vscp, nodep);
         } else {
             iterateAndNextNull(lhsp);
         }

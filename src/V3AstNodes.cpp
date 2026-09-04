@@ -130,7 +130,6 @@ void AstNodeStmt::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 
 void AstNodeCCall::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
-    if (useCallerSelf()) str << " callerSelf";
     if (funcp()) {
         str << " " << funcp()->name() << " => ";
         funcp()->dump(str);
@@ -140,7 +139,6 @@ void AstNodeCCall::dump(std::ostream& str) const {
 }
 void AstNodeCCall::dumpJson(std::ostream& str) const {
     if (funcp()) dumpJsonStr(str, "funcName", funcp()->name());
-    dumpJsonBoolFuncIf(str, useCallerSelf);
     dumpJsonGen(str);
 }
 bool AstNodeCCall::isPure() { return funcp()->dpiPure(); }
@@ -3283,7 +3281,6 @@ void AstStreamDType::dumpSmall(std::ostream& str) const {
 void AstVarScope::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (isTrace()) str << " [T]";
-    if (subgraphSharedUse()) str << " [SUBGRAPH_SHARED]";
     if (scopep()) str << " [scopep=" << nodeAddr(scopep()) << "]";
     if (varp()) {
         str << " -> ";
@@ -3294,13 +3291,11 @@ void AstVarScope::dump(std::ostream& str) const {
 }
 void AstVarScope::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isTrace);
-    dumpJsonBoolFuncIf(str, subgraphSharedUse);
     dumpJsonGen(str);
 }
 bool AstVarScope::sameNode(const AstNode* samep) const {
     const AstVarScope* const asamep = VN_DBG_AS(samep, VarScope);
-    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep())
-           && subgraphSharedUse() == asamep->subgraphSharedUse();
+    return varp()->sameNode(asamep->varp()) && scopep()->sameNode(asamep->scopep());
 }
 void AstNodeVarRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
@@ -3765,43 +3760,28 @@ void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool writ
 }
 void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
                                              bool write, bool cuttable) {
-    UASSERT_OBJ(!m_sharedMaterializedUsePatternp, this,
-                "Cannot append to a shared subgraph use pattern");
-    m_materializedUseVscps.push_back(vscp);
-    m_materializedUsePattern.emplace_back(kind, read, write, cuttable);
+    m_materializedUses.emplace_back(vscp, kind, read, write, cuttable);
     ++m_materializedUseCount;
-}
-void AstSubgraphInstance::setMaterializedUses(
-    std::vector<AstVarScope*>&& vscps,
-    const std::shared_ptr<const V3SubgraphUsePattern>& sharedPatternp) {
-    UASSERT_OBJ(m_materializedUseVscps.empty() && m_materializedUsePattern.empty(), this,
-                "Cannot replace existing subgraph uses");
-    UASSERT_OBJ(sharedPatternp && vscps.size() == sharedPatternp->size(), this,
-                "Subgraph use pattern size mismatch");
-    m_materializedUseCount = static_cast<uint32_t>(vscps.size());
-    m_materializedUseVscps = std::move(vscps);
-    m_sharedMaterializedUsePatternp = sharedPatternp;
 }
 void AstSubgraphInstance::sealSchedulingMetadata() {
     if (logicalsp()) logicalsp()->unlinkFrBackWithNext()->deleteTree();
-    m_materializedUseVscps = std::vector<AstVarScope*>{};
-    m_materializedUsePattern = V3SubgraphUsePattern{};
-    m_sharedMaterializedUsePatternp.reset();
+    m_materializedUses = std::vector<V3SubgraphMaterializedUse>{};
     m_scopep = nullptr;
 }
 size_t AstSubgraphInstance::logicalUseCount() const { return m_logicalUseCount; }
 size_t AstSubgraphInstance::materializedUseCount() const { return m_materializedUseCount; }
 void AstSubgraphInstance::cloneRelink() {
     cloneRelinkGen();
-    for (AstVarScope*& vscp : m_materializedUseVscps) {
-        if (vscp && vscp->clonep()) vscp = vscp->clonep();
+    for (V3SubgraphMaterializedUse& use : m_materializedUses) {
+        if (use.m_varScopep && use.m_varScopep->clonep()) {
+            use.m_varScopep = use.m_varScopep->clonep();
+        }
     }
 }
 const char* AstSubgraphInstance::broken() const {
-    BROKEN_RTN(m_materializedUseVscps.size() != materializedUsePattern().size());
-    for (AstVarScope* const vscp : m_materializedUseVscps) {
-        BROKEN_RTN(!vscp);
-        BROKEN_RTN(!vscp->brokeExists());
+    for (const V3SubgraphMaterializedUse& use : m_materializedUses) {
+        BROKEN_RTN(!use.m_varScopep);
+        BROKEN_RTN(!use.m_varScopep->brokeExists());
     }
     return nullptr;
 }
@@ -3887,7 +3867,6 @@ void AstCFunc::dump(std::ostream& str) const {
     if (needProcess()) str << " [NPRC]";
     if (entryPoint()) str << " [ENTRY]";
     if (noLife()) str << " [NOLIFE]";
-    if (subgraphCallerSelf()) str << " [SUBGRAPH_CALLER_SELF]";
 }
 void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, slow);
@@ -3903,7 +3882,6 @@ void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isCoroutine);
     dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonBoolFuncIf(str, noLife);
-    dumpJsonBoolFuncIf(str, subgraphCallerSelf);
     dumpJsonGen(str);
     // TODO: maybe try to shorten these flags somehow
 }

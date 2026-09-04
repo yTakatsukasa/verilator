@@ -288,10 +288,6 @@ class DeadVisitor final : public VNVisitor {
         iterateChildren(nodep);
         checkAll(nodep);
         if (nodep->scopep()) nodep->scopep()->user1Inc();
-        if (nodep->subgraphSharedUse()) {
-            nodep->user1Inc();
-            nodep->varp()->user1Inc();
-        }
         if (mightElimVar(nodep->varp())) m_vscsp.push_back(nodep);
     }
     void visit(AstVar* nodep) override {

@@ -357,8 +357,8 @@ class OrderGraphBuilder final : public VNVisitor {
             }
         }
     }
-    void addSnapshotSourceUsage(AstSubgraphInstance* nodep, AstVarScope* varscp,
-                                const V3SubgraphUsePatternEntry& use) {
+    void addSnapshotSourceUsage(AstSubgraphInstance* nodep, const V3SubgraphMaterializedUse& use) {
+        AstVarScope* const varscp = use.varScopep();
         UASSERT_OBJ(m_scopep, nodep, "Snapshot source not under scope");
         UASSERT_OBJ(m_logicVxp, nodep, "Snapshot source not under logic");
         UASSERT_OBJ(use.read() && !use.write(), nodep, "Snapshot source should be read-only");
@@ -387,13 +387,9 @@ class OrderGraphBuilder final : public VNVisitor {
         UASSERT_OBJ((nodep->phase() == VSubgraphPhase{VSubgraphPhase::SNAPSHOT}) == m_inPre, nodep,
                     "Subgraph snapshot phase does not match its parent procedure");
         ++m_subgraphContractNodes;
-        const std::vector<AstVarScope*>& vscps = nodep->materializedUseVscps();
-        const V3SubgraphUsePattern& pattern = nodep->materializedUsePattern();
-        UASSERT_OBJ(vscps.size() == pattern.size(), nodep, "Subgraph use pattern size mismatch");
-        for (size_t index = 0; index < pattern.size(); ++index) {
-            AstVarScope* const vscp = vscps[index];
-            const V3SubgraphUsePatternEntry& use = pattern[index];
+        for (const V3SubgraphMaterializedUse& use : nodep->materializedUses()) {
             ++m_subgraphContractUses;
+            AstVarScope* const vscp = use.varScopep();
             UASSERT_OBJ(vscp, nodep, "Materialized subgraph use has no variable scope");
             const bool delayedState = use.kind() == VSubgraphUseKind{VSubgraphUseKind::INTERNAL}
                                       && V3SubgraphContract::isDelayedState(vscp);
@@ -401,7 +397,7 @@ class OrderGraphBuilder final : public VNVisitor {
             m_softSubgraphRead = use.cuttable() && use.read() && !delayedState;
             if (m_softSubgraphRead) ++m_subgraphContractCuttableUses;
             if (use.kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_SOURCE}) {
-                addSnapshotSourceUsage(nodep, vscp, use);
+                addSnapshotSourceUsage(nodep, use);
             } else if (use.kind() == VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}) {
                 VL_RESTORER(m_inClocked);
                 VL_RESTORER(m_inPre);

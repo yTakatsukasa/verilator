@@ -1276,9 +1276,7 @@ class AstSubgraphInstance final : public AstNodeStmt {
     // @astgen ptr := m_scopep : Optional[AstScope]
 private:
     string m_boundaryName;  // Stable boundary identity after AstScope deletion
-    std::vector<AstVarScope*> m_materializedUseVscps;  // Instance-specific dependencies
-    V3SubgraphUsePattern m_materializedUsePattern;  // Unshared dependency shape
-    std::shared_ptr<const V3SubgraphUsePattern> m_sharedMaterializedUsePatternp;
+    std::vector<V3SubgraphMaterializedUse> m_materializedUses;  // Parent graph dependencies
     uint32_t m_logicalUseCount = 0;  // Number of logical scheduling uses
     uint32_t m_materializedUseCount = 0;  // Number of materialized scheduling uses
     VSubgraphPhase m_phase;  // Evaluation phase represented by this wrapper
@@ -1300,18 +1298,9 @@ public:
     void addLogicalUse(const string& name, bool read, bool write);
     void addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write,
                             bool cuttable);
-    void reserveMaterializedUses(size_t count) {
-        m_materializedUseVscps.reserve(count);
-        m_materializedUsePattern.reserve(count);
-    }
-    void setMaterializedUses(std::vector<AstVarScope*>&& vscps,
-                             const std::shared_ptr<const V3SubgraphUsePattern>& sharedPatternp);
-    const std::vector<AstVarScope*>& materializedUseVscps() const {
-        return m_materializedUseVscps;
-    }
-    const V3SubgraphUsePattern& materializedUsePattern() const {
-        return m_sharedMaterializedUsePatternp ? *m_sharedMaterializedUsePatternp
-                                               : m_materializedUsePattern;
+    void reserveMaterializedUses(size_t count) { m_materializedUses.reserve(count); }
+    const std::vector<V3SubgraphMaterializedUse>& materializedUses() const {
+        return m_materializedUses;
     }
     void sealSchedulingMetadata();
     size_t logicalUseCount() const;
