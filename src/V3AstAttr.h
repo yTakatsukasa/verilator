@@ -2107,7 +2107,8 @@ public:
     bool write() const { return m_write; }
     bool cuttable() const { return m_cuttable; }
 };
-static_assert(sizeof(V3SubgraphMaterializedUse) <= 2 * sizeof(void*));
+static_assert(sizeof(V3SubgraphMaterializedUse) <= 2 * sizeof(void*),
+              "V3SubgraphMaterializedUse must fit in two pointers");
 
 // ######################################################################
 //  VSystemCSectionType - Represents the type of a `systemc_* block (Verilator specific extension)
