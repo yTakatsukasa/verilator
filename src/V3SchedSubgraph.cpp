@@ -253,38 +253,54 @@ SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic) {
     return result;
 }
 
-bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, const LogicByScope& candidate,
+bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
+                              const SharedScheduleLogicSig& candidate,
                               std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) {
-    std::vector<AstNode*> candidateNodes;
-    candidate.foreachLogic([&](AstNode* logicp) { candidateNodes.push_back(logicp); });
-    if (source.size() != candidateNodes.size()) return false;
+    if (source.size() != candidate.size()) {
+        UINFO(9, "Subgraph logic mismatch: node count " << source.size() << " vs "
+                                                        << candidate.size());
+        return false;
+    }
 
     std::unordered_map<AstVarScope*, AstVarScope*> candidateToSource;
     for (size_t nodeIndex = 0; nodeIndex < source.size(); ++nodeIndex) {
         const SharedScheduleLogicNode& sourceNode = source[nodeIndex];
-        AstNode* const candidateNodep = candidateNodes[nodeIndex];
-        const SharedScheduleLogicNode candidate = makeSharedScheduleLogicNode(candidateNodep);
-        if (sourceNode.m_type != candidate.m_type
-            || sourceNode.m_nodeTypes != candidate.m_nodeTypes
-            || sourceNode.m_constValues != candidate.m_constValues
-            || sourceNode.m_refs.size() != candidate.m_refs.size()) {
+        const SharedScheduleLogicNode& candidateNode = candidate[nodeIndex];
+        if (sourceNode.m_type != candidateNode.m_type
+            || sourceNode.m_nodeTypes != candidateNode.m_nodeTypes
+            || sourceNode.m_constValues != candidateNode.m_constValues
+            || sourceNode.m_refs.size() != candidateNode.m_refs.size()) {
+            UINFO(9, "Subgraph logic mismatch: topology at node " << nodeIndex);
             return false;
         }
-        for (size_t refIndex = 0; refIndex < candidate.m_refs.size(); ++refIndex) {
+        for (size_t refIndex = 0; refIndex < candidateNode.m_refs.size(); ++refIndex) {
             const SharedScheduleLogicRef& sourceRef = sourceNode.m_refs[refIndex];
-            const SharedScheduleLogicRef& candidateRef = candidate.m_refs[refIndex];
+            const SharedScheduleLogicRef& candidateRef = candidateNode.m_refs[refIndex];
             AstVarScope* const candidateVscp = candidateRef.m_vscp;
+            AstVar* const sourceVarp = sourceRef.m_vscp->varp();
+            AstVar* const candidateVarp = candidateVscp->varp();
             if (sourceRef.m_access != candidateRef.m_access
-                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())) {
+                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())
+                || sourceVarp->varType() != candidateVarp->varType()
+                || sourceVarp->direction() != candidateVarp->direction()
+                || sourceVarp->lifetime() != candidateVarp->lifetime()) {
+                UINFO(9, "Subgraph logic mismatch: reference at node " << nodeIndex << " index "
+                                                                       << refIndex);
                 return false;
             }
             const auto sourceIt = sourceToCandidate.find(sourceRef.m_vscp);
             if (sourceIt != sourceToCandidate.end()) {
-                if (sourceIt->second != candidateVscp) return false;
+                if (sourceIt->second != candidateVscp) {
+                    UINFO(9, "Subgraph logic mismatch: source mapping at node "
+                                 << nodeIndex << " index " << refIndex);
+                    return false;
+                }
             } else {
                 const auto candidateIt = candidateToSource.find(candidateVscp);
                 if (candidateIt != candidateToSource.end()
                     && candidateIt->second != sourceRef.m_vscp) {
+                    UINFO(9, "Subgraph logic mismatch: candidate mapping at node "
+                                 << nodeIndex << " index " << refIndex);
                     return false;
                 }
                 sourceToCandidate.emplace(sourceRef.m_vscp, candidateVscp);
@@ -307,6 +323,7 @@ struct SharedHelperArtifact final {
     std::unique_ptr<V3SubgraphContract> m_contractp;
     SharedHelperAbiAnalysis m_abi;
     bool m_instanceContext = false;
+    bool m_orderReusable = false;
     bool m_parameterized = false;
 };
 
@@ -319,12 +336,6 @@ bool hasCompositeSharedHelperArgs(const std::vector<SharedHelperArg>& args) {
     return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
         AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
         return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
-    });
-}
-
-bool hasAggregateSharedHelperArgs(const std::vector<SharedHelperArg>& args) {
-    return std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
-        return !VN_IS(arg.m_vscp->dtypep()->skipRefp(), BasicDType);
     });
 }
 
@@ -732,6 +743,12 @@ bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candid
     return SharedHelperBodyComparator{artifact, candidateArgs}.same(artifact, candidateFuncp);
 }
 
+bool sameSharedScheduleInput(const SharedHelperArtifact& artifact,
+                             const SharedScheduleLogicSig& candidate) {
+    std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
+    return matchSharedScheduleLogic(artifact.m_logicSig, candidate, sourceToCandidate);
+}
+
 AstNode* cloneSharedHelperTemplate(AstCFunc* funcp) {
     AstNode* const templatep = funcp->stmtsp()->cloneTree(true);
     templatep->foreach([&](AstNodeVarRef* refp) {
@@ -1121,14 +1138,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                 if (artifact.m_modp != group.m_boundaryScopep->modp()
                     || artifact.m_phase != subgraphPhase
-                    // Calls and composite ABIs require independently ordered body comparison.
-                    || artifact.m_abi.m_calls || hasCompositeSharedHelperArgs(artifact.m_args)
+                    // Helpers with a fully explicit ABI are reusable immediately. A helper that
+                    // retains caller context first requires an independently ordered match.
+                    || !artifact.m_orderReusable
                     || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
                     continue;
                 }
                 ++sharedOrderCacheLookups;
                 sourceToCandidate.clear();
-                if (!matchSharedScheduleLogic(artifact.m_logicSig, logic, sourceToCandidate)) {
+                if (!matchSharedScheduleLogic(artifact.m_logicSig, logicSig, sourceToCandidate)) {
                     ++sharedOrderCacheLogicMismatches;
                     continue;
                 }
@@ -1174,9 +1192,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::remap(
                     *cachedArtifactp->m_contractp, group.m_boundaryScopep, group.m_senTreep,
                     sourceToCandidate));
-                abi = cachedArtifactp->m_abi;
+                abi = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, *contractp}.result();
                 ++sharedHelperBodyChecks;
                 ++sharedHelperReuses;
+                if (cachedArtifactp->m_abi.m_calls) ++sharedHelperCallReuses;
+                if (hasCompositeSharedHelperArgs(cachedArtifactp->m_args)) {
+                    ++sharedHelperCompositeReuses;
+                }
                 if (cachedArtifactp->m_instanceContext) ++sharedHelperContextReuses;
                 ++sharedOrderCacheOrderCallsAvoided;
                 if (measure) cacheReuseWallTime += cacheReuseTimer.deltaTime();
@@ -1270,19 +1292,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             const bool shareableCalls
                 = !sharedAbi.m_calls || SharedHelperCallChecker{}.checkCalls(sharedFuncp);
             static constexpr size_t kMaxSharedHelperArgs = 8;
-            const bool scalarBaseCandidate
+            const bool explicitBaseCandidate
                 = sharedAbi.m_eligible && sharedAbi.m_contextSafe && !sharedAbi.m_hasTriggeredState
                   && !sharedFuncp->argsp() && shareableCalls && shareableFuncLocals(sharedFuncp);
-            const std::vector<SharedHelperArg> scalarArgs
-                = scalarBaseCandidate
+            const std::vector<SharedHelperArg> explicitArgs
+                = explicitBaseCandidate
                       ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                       : std::vector<SharedHelperArg>{};
-            const bool compositeArgs = hasCompositeSharedHelperArgs(scalarArgs);
-            const bool aggregateArgs = hasAggregateSharedHelperArgs(scalarArgs);
+            const bool compositeArgs = hasCompositeSharedHelperArgs(explicitArgs);
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (scalarBaseCandidate && !aggregateArgs
-                       && scalarArgs.size() <= kMaxSharedHelperArgs) {
+            } else if (explicitBaseCandidate && explicitArgs.size() <= kMaxSharedHelperArgs) {
                 // Only share helpers after independently running V3Order and comparing their
                 // ordered bodies. A matching pre-order signature is insufficient to prove that
                 // caller-instance context and the resulting dependency contract are equivalent.
@@ -1293,13 +1313,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                         continue;
                     }
                     ++sharedHelperBodyChecks;
-                    if (sameSharedHelperBody(artifact, sharedFuncp, scalarArgs)) {
+                    if (sameSharedScheduleInput(artifact, logicSig)
+                        && sameSharedHelperBody(artifact, sharedFuncp, explicitArgs)) {
                         matchingArtifactp = &artifact;
                         break;
                     }
                     ++sharedHelperBodyMismatches;
                 }
                 if (matchingArtifactp) {
+                    matchingArtifactp->m_orderReusable = true;
                     if (!matchingArtifactp->m_parameterized) {
                         parameterizeSharedHelper(*matchingArtifactp);
                         sharedHelperArguments += matchingArtifactp->m_args.size();
@@ -1307,7 +1329,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     }
                     sharedCallp->funcp(matchingArtifactp->m_funcp);
                     sharedCallp->useCallerSelf(matchingArtifactp->m_instanceContext);
-                    addSharedHelperCallArgs(sharedCallp, scalarArgs);
+                    addSharedHelperCallArgs(sharedCallp, explicitArgs);
                     ++sharedHelperReuses;
                     if (sharedAbi.m_calls) ++sharedHelperCallReuses;
                     if (compositeArgs) ++sharedHelperCompositeReuses;
@@ -1315,15 +1337,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
                         group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
                         sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        scalarArgs, std::make_unique<V3SubgraphContract>(contract), sharedAbi,
-                        sharedAbi.m_calls != 0, false});
+                        explicitArgs, std::make_unique<V3SubgraphContract>(contract), sharedAbi,
+                        sharedAbi.m_calls != 0, sharedAbi.m_calls == 0, false});
                     ++sharedHelperArtifactCount;
                     if (sharedAbi.m_calls) ++sharedHelperCallArtifacts;
                     if (compositeArgs) ++sharedHelperCompositeArtifacts;
                 }
-            } else if (aggregateArgs) {
-                ++sharedHelperSkippedComposite;
-            } else if (scalarBaseCandidate) {
+            } else if (explicitBaseCandidate) {
                 ++sharedHelperSkippedOversized;
             } else if (sharedAbi.m_hasTriggeredState) {
                 ++sharedHelperSkippedTriggered;
