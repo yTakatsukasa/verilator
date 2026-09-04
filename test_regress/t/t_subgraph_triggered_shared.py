@@ -18,8 +18,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 19)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 19)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI analyses\s+(\d+)", 19)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper argument candidates\s+(\d+)",
-               84)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper argument candidates\s+(\d+)", 84)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper internal argument candidates\s+(\d+)", 62)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper maximum arguments\s+(\d+)", 9)
@@ -35,8 +34,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic match
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 10)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain matches\s+(\d+)", 10)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain mismatches\s+(\d+)",
-               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                10)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",

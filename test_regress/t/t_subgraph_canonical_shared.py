@@ -22,8 +22,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper composite artifa
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper composite reuses\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain matches\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain mismatches\s+(\d+)",
-               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                5)
 
