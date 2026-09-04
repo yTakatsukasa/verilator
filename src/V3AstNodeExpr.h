@@ -191,6 +191,7 @@ class AstNodeCCall VL_NOT_FINAL : public AstNodeExpr {
     // @astgen ptr := m_funcp : AstCFunc  // Function being called
     string m_argTypes;
     bool m_superReference = false;  // Called with super reference
+    bool m_useCallerSelf = false;  // Invoke a shared loose function on the caller's instance
 
 protected:
     AstNodeCCall(VNType t, FileLine* fl, AstCFunc* funcp, AstNodeExpr* argsp = nullptr)
@@ -206,7 +207,8 @@ public:
     int instrCount() const override { return INSTR_COUNT_CALL; }
     bool sameNode(const AstNode* samep) const override {
         const AstNodeCCall* const asamep = VN_DBG_AS(samep, NodeCCall);
-        return (funcp() == asamep->funcp() && argTypes() == asamep->argTypes());
+        return (funcp() == asamep->funcp() && argTypes() == asamep->argTypes()
+                && useCallerSelf() == asamep->useCallerSelf());
     }
     bool isGateOptimizable() const override { return false; }
     bool isPredictOptimizable() const override { return false; }
@@ -222,6 +224,8 @@ public:
     bool cleanOut() const final override { return true; }
     bool superReference() const { return m_superReference; }
     void superReference(bool flag) { m_superReference = flag; }
+    bool useCallerSelf() const { return m_useCallerSelf; }
+    void useCallerSelf(bool flag) { m_useCallerSelf = flag; }
 };
 class AstNodeFTaskRef VL_NOT_FINAL : public AstNodeExpr {
     // A reference to a task (or function)

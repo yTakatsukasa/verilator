@@ -67,6 +67,10 @@ function print_section(title, lines, count, i) {
     cache[++cache_count] = $0
     next
 }
+/Scheduling, Subgraph canonical / {
+    canonical[++canonical_count] = $0
+    next
+}
 /Scheduling, Subgraph shared (ABI|helper) / {
     sharing[++sharing_count] = $0
     next
@@ -87,6 +91,7 @@ END {
                   subgraph_timing_count)
     print_section("Subgraph structure", subgraph_shape, subgraph_shape_count)
     print_section("Order cache", cache, cache_count)
+    print_section("Canonical context", canonical, canonical_count)
     print_section("Shared helper eligibility", sharing, sharing_count)
 }
 ' "$stats_file"

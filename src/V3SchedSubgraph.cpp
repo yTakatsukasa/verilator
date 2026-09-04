@@ -55,6 +55,27 @@ struct PendingSubgraphMaterialization final {
 
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
+bool sameSubgraphRelativeVar(const AstVarScope* sourceVscp, const AstScope* sourceBoundaryScopep,
+                             const AstVarScope* targetVscp, const AstScope* targetBoundaryScopep) {
+    const bool sourceUnderBoundary = isUnderScope(sourceVscp->scopep(), sourceBoundaryScopep);
+    const bool targetUnderBoundary = isUnderScope(targetVscp->scopep(), targetBoundaryScopep);
+    if (sourceUnderBoundary != targetUnderBoundary) return false;
+    if (!sourceUnderBoundary) return true;
+    if (sourceVscp->varp() != targetVscp->varp()) return false;
+
+    const AstScope* sourceScopep = sourceVscp->scopep();
+    const AstScope* targetScopep = targetVscp->scopep();
+    while (sourceScopep != sourceBoundaryScopep && targetScopep != targetBoundaryScopep) {
+        if (!sourceScopep || !targetScopep
+            || sourceScopep->aboveCellp() != targetScopep->aboveCellp()) {
+            return false;
+        }
+        sourceScopep = sourceScopep->aboveScopep();
+        targetScopep = targetScopep->aboveScopep();
+    }
+    return sourceScopep == sourceBoundaryScopep && targetScopep == targetBoundaryScopep;
+}
+
 struct SharedHelperAbiAnalysis final {
     uint64_t m_calls = 0;
     uint64_t m_constants = 0;
@@ -210,7 +231,8 @@ SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic) {
     return result;
 }
 
-bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, const LogicByScope& candidate,
+bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, AstScope* sourceBoundaryScopep,
+                              const LogicByScope& candidate, AstScope* targetBoundaryScopep,
                               std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) {
     std::vector<AstNode*> candidateNodes;
     candidate.foreachLogic([&](AstNode* logicp) { candidateNodes.push_back(logicp); });
@@ -241,7 +263,9 @@ bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, const LogicB
             const SharedScheduleLogicRef& sourceRef = sourceNode.m_refs[refIndex];
             AstVarScope* const candidateVscp = refs[refIndex]->varScopep();
             if (sourceRef.m_access != static_cast<uintptr_t>(refs[refIndex]->access())
-                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())) {
+                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())
+                || !sameSubgraphRelativeVar(sourceRef.m_vscp, sourceBoundaryScopep, candidateVscp,
+                                            targetBoundaryScopep)) {
                 return false;
             }
             const auto sourceIt = sourceToCandidate.find(sourceRef.m_vscp);
@@ -272,6 +296,7 @@ struct SharedHelperArtifact final {
     std::vector<SharedHelperArg> m_args;
     std::unique_ptr<V3SubgraphContract> m_contractp;
     SharedHelperAbiAnalysis m_abi;
+    bool m_instanceContext = false;
     bool m_parameterized = false;
 };
 
@@ -280,12 +305,14 @@ VAccess sharedHelperArgAccess(const SharedHelperArg& arg) {
     return arg.m_write ? VAccess::WRITE : VAccess::READ;
 }
 
-std::vector<SharedHelperArg> collectSharedHelperArgs(AstCFunc* funcp, AstScope* boundaryScopep) {
+std::vector<SharedHelperArg> collectSharedHelperArgs(AstCFunc* funcp, AstScope* boundaryScopep,
+                                                     bool externalOnly = false) {
     std::vector<SharedHelperArg> args;
     std::unordered_map<AstVarScope*, size_t> argIndex;
     funcp->foreach([&](AstNodeVarRef* refp) {
         AstVarScope* const vscp = refp->varScopep();
         if (vscp->varp()->isFuncLocal()) return;
+        if (externalOnly && isUnderScope(vscp->scopep(), boundaryScopep)) return;
         const auto inserted = argIndex.emplace(vscp, args.size());
         if (inserted.second) {
             args.push_back(
@@ -321,7 +348,7 @@ void addSharedHelperCallArgs(AstCCall* callp, const std::vector<SharedHelperArg>
 AstCFunc* makeSharedScheduleWrapper(AstNetlist* netlistp, AstScope* scopep, AstSenTree* senTreep,
                                     AstCFunc* sharedFuncp,
                                     const std::vector<SharedHelperArg>& args, const string& tag,
-                                    bool slow, bool refresh) {
+                                    bool slow, bool refresh, bool instanceContext) {
     AstCFunc* const funcp = new AstCFunc{netlistp->fileline(), "_eval_body__" + tag, scopep, ""};
     funcp->dontCombine(true);
     funcp->isStatic(false);
@@ -333,6 +360,7 @@ AstCFunc* makeSharedScheduleWrapper(AstNetlist* netlistp, AstScope* scopep, AstS
 
     AstCCall* const callp = new AstCCall{funcp->fileline(), sharedFuncp};
     callp->dtypeSetVoid();
+    callp->useCallerSelf(instanceContext);
     addSharedHelperCallArgs(callp, args);
     AstNodeStmt* const stmtp = callp->makeStmt();
     if (refresh) {
@@ -365,6 +393,10 @@ bool canRemapSharedScheduleContract(
         const bool targetUnderBoundary = isUnderScope(targetVscp->scopep(), targetBoundaryScopep);
         if (sourceUnderBoundary != targetUnderBoundary) return false;
         if (!sourceUnderBoundary) continue;
+        if (!sameSubgraphRelativeVar(sourceVscp, sourceBoundaryScopep, targetVscp,
+                                     targetBoundaryScopep)) {
+            return false;
+        }
         const bool sourceBoundaryIo
             = sourceVscp->scopep() == sourceBoundaryScopep && sourceVscp->varp()->isIO();
         const bool targetBoundaryIo
@@ -380,9 +412,37 @@ bool canRemapSharedScheduleContract(
            && allMapped(artifact.m_contractp->internalUses());
 }
 
+void preserveSharedInstanceUses(const V3SubgraphContract& contract) {
+    const auto preserveUses = [&](const std::vector<V3SubgraphContract::Use>& uses) {
+        for (const V3SubgraphContract::Use& use : uses) {
+            use.m_varScopep->optimizeLifePost(false);
+            use.m_varScopep->subgraphSharedUse(true);
+        }
+    };
+    preserveUses(contract.boundaryUses());
+    preserveUses(contract.internalUses());
+}
+
+void preserveRemappedSharedInstanceUses(
+    const SharedHelperArtifact& artifact,
+    const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget) {
+    const auto preserveUses = [&](const std::vector<V3SubgraphContract::Use>& uses) {
+        for (const V3SubgraphContract::Use& use : uses) {
+            const auto it = sourceToTarget.find(use.m_varScopep);
+            UASSERT_OBJ(it != sourceToTarget.end(), artifact.m_funcp,
+                        "Shared subgraph contract variable is not remapped");
+            it->second->optimizeLifePost(false);
+            it->second->subgraphSharedUse(true);
+        }
+    };
+    preserveUses(artifact.m_contractp->boundaryUses());
+    preserveUses(artifact.m_contractp->internalUses());
+}
+
 void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
     UASSERT_OBJ(!artifact.m_parameterized, artifact.m_funcp,
                 "Shared subgraph helper parameterized twice");
+    if (artifact.m_instanceContext) preserveSharedInstanceUses(*artifact.m_contractp);
     std::unordered_map<AstVarScope*, AstVarScope*> argVscps;
     for (size_t index = 0; index < artifact.m_args.size(); ++index) {
         const SharedHelperArg& arg = artifact.m_args[index];
@@ -397,11 +457,22 @@ void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
         refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
     });
     artifact.m_funcp->foreach([&](AstNodeVarRef* refp) {
-        UASSERT_OBJ(refp->varp()->isFuncLocal(), refp,
-                    "Shared subgraph helper retained an implicit instance reference");
+        if (artifact.m_instanceContext) {
+            UASSERT_OBJ(
+                refp->varp()->isFuncLocal()
+                    || isUnderScope(refp->varScopep()->scopep(), artifact.m_funcp->scopep()),
+                refp, "Shared subgraph helper retained an external instance reference");
+        } else {
+            UASSERT_OBJ(refp->varp()->isFuncLocal(), refp,
+                        "Shared subgraph helper retained an implicit instance reference");
+        }
     });
     addSharedHelperCallArgs(artifact.m_firstCallp, artifact.m_args);
-    artifact.m_funcp->isStatic(true);
+    if (artifact.m_instanceContext) {
+        artifact.m_funcp->subgraphCallerSelf(true);
+    } else {
+        artifact.m_funcp->isStatic(true);
+    }
     artifact.m_funcp->noLife(true);
     artifact.m_parameterized = true;
 }
@@ -752,6 +823,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t materializedInternalUses = 0;
     uint64_t prunedInternalUses = 0;
     uint64_t refreshHelpers = 0;
+    uint64_t canonicalContextArtifacts = 0;
+    uint64_t canonicalContextReuses = 0;
+    uint64_t canonicalOrderCallsAvoided = 0;
     uint64_t sharedAbiAnalyses = 0;
     uint64_t sharedAbiConstants = 0;
     uint64_t sharedAbiDpiCalls = 0;
@@ -835,7 +909,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 }
                 ++sharedOrderCacheLookups;
                 sourceToCandidate.clear();
-                if (!matchSharedScheduleLogic(artifact.m_logicSig, logic, sourceToCandidate)) {
+                if (!matchSharedScheduleLogic(artifact.m_logicSig, artifact.m_funcp->scopep(),
+                                              logic, group.m_boundaryScopep, sourceToCandidate)) {
                     ++sharedOrderCacheLogicMismatches;
                     continue;
                 }
@@ -863,14 +938,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             SharedHelperAbiAnalysis abi;
             if (cachedArtifactp) {
                 const VlOs::DeltaWallTime cacheReuseTimer{measure};
+                if (cachedArtifactp->m_instanceContext) {
+                    preserveRemappedSharedInstanceUses(*cachedArtifactp, sourceToCandidate);
+                }
                 if (!cachedArtifactp->m_parameterized) {
                     parameterizeSharedHelper(*cachedArtifactp);
                     sharedHelperArguments += cachedArtifactp->m_args.size();
                     ++sharedHelperParameterizations;
                 }
-                funcp = makeSharedScheduleWrapper(netlistp, group.m_boundaryScopep,
-                                                  group.m_senTreep, cachedArtifactp->m_funcp,
-                                                  cachedArgs, tag, slow, refresh);
+                funcp = makeSharedScheduleWrapper(
+                    netlistp, group.m_boundaryScopep, group.m_senTreep, cachedArtifactp->m_funcp,
+                    cachedArgs, tag, slow, refresh, cachedArtifactp->m_instanceContext);
                 discardSharedScheduleLogic(logic);
                 contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::remap(
                     *cachedArtifactp->m_contractp, group.m_boundaryScopep, group.m_senTreep,
@@ -879,6 +957,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 ++sharedHelperBodyChecks;
                 ++sharedHelperReuses;
                 ++sharedOrderCacheOrderCallsAvoided;
+                if (cachedArtifactp->m_instanceContext) {
+                    ++canonicalContextReuses;
+                    ++canonicalOrderCallsAvoided;
+                }
                 if (measure) cacheReuseWallTime += cacheReuseTimer.deltaTime();
             } else {
                 const VlOs::DeltaWallTime orderCallsTimer{measure};
@@ -972,6 +1054,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             const std::vector<SharedHelperArg> args
                 = shareCandidate ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                                  : std::vector<SharedHelperArg>{};
+            // A canonical context helper keeps boundary-local state behind the caller's instance
+            // pointer. It is keyed by module specialization, phase, event domain, and exact
+            // relative variable identity, so sibling paths are never alpha-renamed together.
+            static constexpr size_t kMaxSharedHelperArgs = 8;
+            const bool canonicalContextCandidate
+                = shareCandidate && !refresh && sharedFuncp->isLoose() && !sharedFuncp->isStatic()
+                  && sharedFuncp->scopep() == group.m_boundaryScopep;
+            const std::vector<SharedHelperArg> contextArgs
+                = canonicalContextCandidate
+                      ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep, true)
+                      : std::vector<SharedHelperArg>{};
+            const bool contextCompositeArgs = std::any_of(
+                contextArgs.begin(), contextArgs.end(), [](const SharedHelperArg& arg) {
+                    AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
+                    return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
+                });
             const bool compositeArgs
                 = std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
                       AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
@@ -979,14 +1077,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                   });
             // Composite and very wide ABIs require additional alias/lifetime validation. Start
             // with the small scalar case and leave the wrapper unchanged for all other helpers.
-            static constexpr size_t kMaxSharedHelperArgs = 8;
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (shareCandidate && !compositeArgs && args.size() <= kMaxSharedHelperArgs) {
+            } else if (canonicalContextCandidate && !contextCompositeArgs
+                       && contextArgs.size() <= kMaxSharedHelperArgs) {
+                sharedHelperArtifacts.push_back(SharedHelperArtifact{
+                    group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp, sharedFuncp,
+                    sharedCallp, nullptr, logicSig, contextArgs,
+                    std::make_unique<V3SubgraphContract>(contract), abi, true, false});
+                ++sharedHelperArtifactCount;
+                ++canonicalContextArtifacts;
+            } else if (!canonicalContextCandidate && shareCandidate && !compositeArgs
+                       && args.size() <= kMaxSharedHelperArgs) {
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                     if (artifact.m_modp != group.m_boundaryScopep->modp()
-                        || artifact.m_phase != subgraphPhase) {
+                        || artifact.m_phase != subgraphPhase || artifact.m_instanceContext) {
                         continue;
                     }
                     ++sharedHelperBodyChecks;
@@ -1009,10 +1115,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
                         group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
                         sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        args, std::make_unique<V3SubgraphContract>(contract), abi, false});
+                        args, std::make_unique<V3SubgraphContract>(contract), abi, false, false});
                     ++sharedHelperArtifactCount;
                 }
-            } else if (compositeArgs) {
+            } else if ((canonicalContextCandidate && contextCompositeArgs)
+                       || (!canonicalContextCandidate && compositeArgs)) {
                 ++sharedHelperSkippedComposite;
             } else if (shareCandidate) {
                 ++sharedHelperSkippedOversized;
@@ -1104,7 +1211,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     if (measure) materializeWallTime += deferredMaterializeTimer.deltaTime();
 
     for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
-        artifact.m_templateStmtsp->deleteTree();
+        if (artifact.m_templateStmtsp) artifact.m_templateStmtsp->deleteTree();
         artifact.m_templateStmtsp = nullptr;
     }
 
@@ -1148,6 +1255,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);
+    V3Stats::addStat("Scheduling, Subgraph canonical context artifacts",
+                     canonicalContextArtifacts);
+    V3Stats::addStat("Scheduling, Subgraph canonical context reuses", canonicalContextReuses);
+    V3Stats::addStat("Scheduling, Subgraph canonical order calls avoided",
+                     canonicalOrderCallsAvoided);
     V3Stats::addStat("Scheduling, Subgraph shared ABI analyses", sharedAbiAnalyses);
     V3Stats::addStat("Scheduling, Subgraph shared ABI constants", sharedAbiConstants);
     V3Stats::addStat("Scheduling, Subgraph shared ABI DPI calls", sharedAbiDpiCalls);

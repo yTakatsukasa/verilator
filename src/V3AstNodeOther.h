@@ -548,6 +548,7 @@ class AstCFunc final : public AstNode {
     bool m_recursive : 1;  // Recursive or part of recursion
     bool m_noLife : 1;  // Disable V3Life on this function - has multiple calls, and reads Syms
                         // state
+    bool m_subgraphCallerSelf : 1;  // Resolve descendant state relative to the calling instance
     bool m_isCovergroupSample : 1;  // Automatic covergroup sample() function
     int m_cost;  // Function call cost
 public:
@@ -579,6 +580,7 @@ public:
         m_dpiImportWrapper = false;
         m_recursive = false;
         m_noLife = false;
+        m_subgraphCallerSelf = false;
         m_isCovergroupSample = false;
         m_cost = v3Global.opt.instrCountDpi();  // As proxy for unknown general DPI cost
     }
@@ -591,6 +593,7 @@ public:
         const AstCFunc* const asamep = VN_DBG_AS(samep, CFunc);
         return ((isTrace() == asamep->isTrace()) && (rtnTypeVoid() == asamep->rtnTypeVoid())
                 && (argTypes() == asamep->argTypes()) && isLoose() == asamep->isLoose()
+                && subgraphCallerSelf() == asamep->subgraphCallerSelf()
                 && (!(dpiImportPrototype() || dpiExportImpl()) || name() == asamep->name()));
     }
     //
@@ -658,6 +661,8 @@ public:
     bool recursive() const { return m_recursive; }
     void noLife(bool flag) { m_noLife = flag; }
     bool noLife() const { return m_noLife; }
+    bool subgraphCallerSelf() const { return m_subgraphCallerSelf; }
+    void subgraphCallerSelf(bool flag) { m_subgraphCallerSelf = flag; }
     bool isCovergroupSample() const { return m_isCovergroupSample; }
     void isCovergroupSample(bool flag) { m_isCovergroupSample = flag; }
     void cost(int cost) { m_cost = cost; }
@@ -2592,6 +2597,7 @@ class AstVarScope final : public AstNode {
     // @astgen ptr := m_varp : Optional[AstVar]  // [AfterLink] Pointer to variable itself
     bool m_trace : 1;  // Tracing is turned on for this scope
     bool m_optimizeLifePost : 1;  // One half of an NBA pair using ShadowVariable scheme. Optimize.
+    bool m_subgraphSharedUse : 1;  // Accessed through a shared subgraph instance context
 public:
     AstVarScope(FileLine* fl, AstScope* scopep, AstVar* varp)
         : ASTGEN_SUPER_VarScope(fl)
@@ -2601,6 +2607,7 @@ public:
         UASSERT_OBJ(varp, fl, "Var must be non-null");
         m_trace = true;
         m_optimizeLifePost = false;
+        m_subgraphSharedUse = false;
         dtypeFrom(varp);
     }
     ASTGEN_MEMBERS_AstVarScope;
@@ -2623,6 +2630,8 @@ public:
     void trace(bool flag) { m_trace = flag; }
     bool optimizeLifePost() const { return m_optimizeLifePost; }
     void optimizeLifePost(bool flag) { m_optimizeLifePost = flag; }
+    bool subgraphSharedUse() const { return m_subgraphSharedUse; }
+    void subgraphSharedUse(bool flag) { m_subgraphSharedUse = flag; }
 };
 
 // === AstNodeCoverDecl ===
