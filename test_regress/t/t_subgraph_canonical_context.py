@@ -16,7 +16,6 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
 
 test.passes()
