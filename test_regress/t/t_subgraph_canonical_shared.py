@@ -13,9 +13,17 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA materialized canonical pattern entries\s+(\d+)", 12)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA materialized canonical pattern reuses\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized canonical patterns\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper composite artifacts\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper composite reuses\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain matches\s+(\d+)", 5)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache domain mismatches\s+(\d+)",
+               0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                5)
 

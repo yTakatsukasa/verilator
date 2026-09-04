@@ -3765,28 +3765,43 @@ void AstSubgraphInstance::addLogicalUse(const string& name, bool read, bool writ
 }
 void AstSubgraphInstance::addMaterializedUse(AstVarScope* vscp, VSubgraphUseKind kind, bool read,
                                              bool write, bool cuttable) {
-    m_materializedUses.emplace_back(vscp, kind, read, write, cuttable);
+    UASSERT_OBJ(!m_sharedMaterializedUsePatternp, this,
+                "Cannot append to a shared subgraph use pattern");
+    m_materializedUseVscps.push_back(vscp);
+    m_materializedUsePattern.emplace_back(kind, read, write, cuttable);
     ++m_materializedUseCount;
+}
+void AstSubgraphInstance::setMaterializedUses(
+    std::vector<AstVarScope*>&& vscps,
+    const std::shared_ptr<const V3SubgraphUsePattern>& sharedPatternp) {
+    UASSERT_OBJ(m_materializedUseVscps.empty() && m_materializedUsePattern.empty(), this,
+                "Cannot replace existing subgraph uses");
+    UASSERT_OBJ(sharedPatternp && vscps.size() == sharedPatternp->size(), this,
+                "Subgraph use pattern size mismatch");
+    m_materializedUseCount = static_cast<uint32_t>(vscps.size());
+    m_materializedUseVscps = std::move(vscps);
+    m_sharedMaterializedUsePatternp = sharedPatternp;
 }
 void AstSubgraphInstance::sealSchedulingMetadata() {
     if (logicalsp()) logicalsp()->unlinkFrBackWithNext()->deleteTree();
-    m_materializedUses = std::vector<V3SubgraphMaterializedUse>{};
+    m_materializedUseVscps = std::vector<AstVarScope*>{};
+    m_materializedUsePattern = V3SubgraphUsePattern{};
+    m_sharedMaterializedUsePatternp.reset();
     m_scopep = nullptr;
 }
 size_t AstSubgraphInstance::logicalUseCount() const { return m_logicalUseCount; }
 size_t AstSubgraphInstance::materializedUseCount() const { return m_materializedUseCount; }
 void AstSubgraphInstance::cloneRelink() {
     cloneRelinkGen();
-    for (V3SubgraphMaterializedUse& use : m_materializedUses) {
-        if (use.m_varScopep && use.m_varScopep->clonep()) {
-            use.m_varScopep = use.m_varScopep->clonep();
-        }
+    for (AstVarScope*& vscp : m_materializedUseVscps) {
+        if (vscp && vscp->clonep()) vscp = vscp->clonep();
     }
 }
 const char* AstSubgraphInstance::broken() const {
-    for (const V3SubgraphMaterializedUse& use : m_materializedUses) {
-        BROKEN_RTN(!use.m_varScopep);
-        BROKEN_RTN(!use.m_varScopep->brokeExists());
+    BROKEN_RTN(m_materializedUseVscps.size() != materializedUsePattern().size());
+    for (AstVarScope* const vscp : m_materializedUseVscps) {
+        BROKEN_RTN(!vscp);
+        BROKEN_RTN(!vscp->brokeExists());
     }
     return nullptr;
 }

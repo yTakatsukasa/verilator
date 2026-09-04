@@ -53,6 +53,33 @@ struct PendingSubgraphMaterialization final {
     std::unique_ptr<V3SubgraphContract> m_contractp;
 };
 
+class SubgraphUsePatternInterner final {
+    std::unordered_map<string, std::shared_ptr<const V3SubgraphUsePattern>> m_patterns;
+
+    static string key(const V3SubgraphUsePattern& pattern) {
+        string result;
+        result.reserve(pattern.size());
+        for (const V3SubgraphUsePatternEntry& entry : pattern) {
+            const unsigned value = static_cast<unsigned>(entry.kind()) | (entry.read() << 3)
+                                   | (entry.write() << 4) | (entry.cuttable() << 5);
+            result.push_back(static_cast<char>(value));
+        }
+        return result;
+    }
+
+public:
+    std::pair<std::shared_ptr<const V3SubgraphUsePattern>, bool>
+    intern(V3SubgraphUsePattern&& pattern) {
+        string patternKey = key(pattern);
+        const auto it = m_patterns.find(patternKey);
+        if (it != m_patterns.end()) return {it->second, false};
+        const std::shared_ptr<const V3SubgraphUsePattern> patternp
+            = std::make_shared<const V3SubgraphUsePattern>(std::move(pattern));
+        m_patterns.emplace(std::move(patternKey), patternp);
+        return {patternp, true};
+    }
+};
+
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
 struct SharedHelperAbiAnalysis final {
@@ -263,6 +290,9 @@ bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
     }
 
     std::unordered_map<AstVarScope*, AstVarScope*> candidateToSource;
+    for (const auto& pair : sourceToCandidate) {
+        if (!candidateToSource.emplace(pair.second, pair.first).second) return false;
+    }
     for (size_t nodeIndex = 0; nodeIndex < source.size(); ++nodeIndex) {
         const SharedScheduleLogicNode& sourceNode = source[nodeIndex];
         const SharedScheduleLogicNode& candidateNode = candidate[nodeIndex];
@@ -314,11 +344,11 @@ bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
 struct SharedHelperArtifact final {
     AstNodeModule* m_modp = nullptr;
     VSubgraphPhase m_phase;
-    const AstSenTree* m_domainKeyp = nullptr;
     AstCFunc* m_funcp = nullptr;
     AstCCall* m_firstCallp = nullptr;
     AstNode* m_templateStmtsp = nullptr;
     SharedScheduleLogicSig m_logicSig;
+    SharedScheduleLogicSig m_domainSig;
     std::vector<SharedHelperArg> m_args;
     std::unique_ptr<V3SubgraphContract> m_contractp;
     SharedHelperAbiAnalysis m_abi;
@@ -744,9 +774,20 @@ bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candid
 }
 
 bool sameSharedScheduleInput(const SharedHelperArtifact& artifact,
-                             const SharedScheduleLogicSig& candidate) {
+                             const SharedScheduleLogicSig& candidateLogic) {
     std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
-    return matchSharedScheduleLogic(artifact.m_logicSig, candidate, sourceToCandidate);
+    return matchSharedScheduleLogic(artifact.m_logicSig, candidateLogic, sourceToCandidate);
+}
+
+void preserveSubgraphContractUses(const V3SubgraphContract& contract) {
+    const auto preserveUses = [](const std::vector<V3SubgraphContract::Use>& uses) {
+        for (const V3SubgraphContract::Use& use : uses) {
+            use.m_varScopep->optimizeLifePost(false);
+            use.m_varScopep->subgraphSharedUse(true);
+        }
+    };
+    preserveUses(contract.boundaryUses());
+    preserveUses(contract.internalUses());
 }
 
 AstNode* cloneSharedHelperTemplate(AstCFunc* funcp) {
@@ -1048,6 +1089,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t coarseNodes = 0;
     uint64_t logicalUses = 0;
     uint64_t materializedBoundaryUses = 0;
+    uint64_t materializedCanonicalPatternEntries = 0;
+    uint64_t materializedCanonicalPatternReuses = 0;
+    uint64_t materializedCanonicalPatterns = 0;
     uint64_t materializedExternalUses = 0;
     uint64_t materializedInternalUses = 0;
     uint64_t prunedInternalUses = 0;
@@ -1077,13 +1121,28 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperParameterizations = 0;
     uint64_t sharedHelperReuses = 0;
     uint64_t sharedHelperSkippedCalls = 0;
+    uint64_t sharedHelperSkippedCallAbiIneligible = 0;
+    uint64_t sharedHelperSkippedCallContextUnsafe = 0;
+    uint64_t sharedHelperSkippedCallTargetsUnsafe = 0;
     uint64_t sharedHelperSkippedComposite = 0;
     uint64_t sharedHelperSkippedGeneratedTemps = 0;
+    uint64_t sharedHelperSkippedDpiCalls = 0;
     uint64_t sharedHelperSkippedOversized = 0;
+    uint64_t sharedHelperSkippedRefreshContext = 0;
     uint64_t sharedHelperSkippedTriggered = 0;
+    uint64_t sharedHelperArgumentCandidates = 0;
+    uint64_t sharedHelperExternalArgumentCandidates = 0;
+    uint64_t sharedHelperInternalArgumentCandidates = 0;
+    uint64_t sharedHelperMaximumArguments = 0;
+    uint64_t sharedHelperOversizedArguments = 0;
+    uint64_t sharedOrderCacheArgumentMismatches = 0;
+    uint64_t sharedOrderCacheContractMismatches = 0;
+    uint64_t sharedOrderCacheDomainMatches = 0;
+    uint64_t sharedOrderCacheDomainMismatches = 0;
     uint64_t sharedOrderCacheLogicMatches = 0;
     uint64_t sharedOrderCacheLogicMismatches = 0;
     uint64_t sharedOrderCacheLookups = 0;
+    uint64_t sharedOrderCacheNotReusable = 0;
     uint64_t sharedOrderCacheOrderCallsExecuted = 0;
     uint64_t sharedOrderCacheOrderCallsAvoided = 0;
     struct EligibleModulePhase final {
@@ -1092,6 +1151,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     };
     std::vector<EligibleModulePhase> eligibleModulePhases;
     std::vector<PendingSubgraphMaterialization> pendingMaterializations;
+    SubgraphUsePatternInterner usePatternInterner;
     std::unordered_set<AstVarScope*> postWrittenInternalVscps;
     std::unordered_set<AstVarScope*> refreshReadInternalVscps;
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
@@ -1124,6 +1184,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         orderedLogic
             += group.m_preLogic.size() + group.m_postLogic.size() + group.m_refreshLogic.size();
         UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep, "Subgraph NBA logic has no domain");
+        const VlOs::DeltaWallTime domainSignatureTimer{measure};
+        const SharedScheduleLogicSig domainSig{
+            makeSharedScheduleLogicNode(const_cast<AstSenTree*>(group.m_domainKeyp))};
+        if (measure) logicSignatureWallTime += domainSignatureTimer.deltaTime();
 
         const auto orderPhase = [&](LogicByScope& logic, const string& phase,
                                     VSubgraphPhase subgraphPhase) {
@@ -1137,11 +1201,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             const VlOs::DeltaWallTime cacheLookupTimer{measure};
             for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                 if (artifact.m_modp != group.m_boundaryScopep->modp()
-                    || artifact.m_phase != subgraphPhase
-                    // Helpers with a fully explicit ABI are reusable immediately. A helper that
-                    // retains caller context first requires an independently ordered match.
-                    || !artifact.m_orderReusable
-                    || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
+                    || artifact.m_phase != subgraphPhase) {
+                    continue;
+                }
+                // Helpers with a fully explicit ABI are reusable immediately. A helper that
+                // retains caller context first requires an independently ordered match.
+                if (!artifact.m_orderReusable) {
+                    ++sharedOrderCacheNotReusable;
                     continue;
                 }
                 ++sharedOrderCacheLookups;
@@ -1150,8 +1216,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     ++sharedOrderCacheLogicMismatches;
                     continue;
                 }
+                ++sharedOrderCacheLogicMatches;
+                if (!matchSharedScheduleLogic(artifact.m_domainSig, domainSig,
+                                              sourceToCandidate)) {
+                    ++sharedOrderCacheDomainMismatches;
+                    continue;
+                }
+                ++sharedOrderCacheDomainMatches;
                 if (!canRemapSharedScheduleContract(artifact, group.m_boundaryScopep,
                                                     sourceToCandidate)) {
+                    ++sharedOrderCacheContractMismatches;
                     continue;
                 }
                 cachedArgs.clear();
@@ -1164,8 +1238,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     cachedArgs.push_back(
                         SharedHelperArg{it->second, arg.m_read, arg.m_write, arg.m_state});
                 }
-                if (cachedArgs.size() != artifact.m_args.size()) continue;
-                ++sharedOrderCacheLogicMatches;
+                if (cachedArgs.size() != artifact.m_args.size()) {
+                    ++sharedOrderCacheArgumentMismatches;
+                    continue;
+                }
                 cachedArtifactp = &artifact;
                 break;
             }
@@ -1300,21 +1376,45 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                       ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                       : std::vector<SharedHelperArg>{};
             const bool compositeArgs = hasCompositeSharedHelperArgs(explicitArgs);
+            if (explicitBaseCandidate) {
+                sharedHelperArgumentCandidates += explicitArgs.size();
+                sharedHelperMaximumArguments
+                    = std::max<uint64_t>(sharedHelperMaximumArguments, explicitArgs.size());
+                for (const SharedHelperArg& arg : explicitArgs) {
+                    if (arg.m_state) {
+                        ++sharedHelperInternalArgumentCandidates;
+                    } else {
+                        ++sharedHelperExternalArgumentCandidates;
+                    }
+                }
+            }
+            const bool oversized = explicitArgs.size() > kMaxSharedHelperArgs;
+            const bool instanceContext = explicitBaseCandidate && oversized && !refresh;
+            const bool helperInstanceContext = instanceContext || sharedAbi.m_calls != 0;
+            const std::vector<SharedHelperArg> contextArgs
+                = instanceContext
+                      ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep, true)
+                      : std::vector<SharedHelperArg>{};
+            const std::vector<SharedHelperArg>& helperArgs
+                = instanceContext ? contextArgs : explicitArgs;
+            const bool shareCandidate
+                = explicitBaseCandidate && helperArgs.size() <= kMaxSharedHelperArgs;
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (explicitBaseCandidate && explicitArgs.size() <= kMaxSharedHelperArgs) {
+            } else if (shareCandidate) {
                 // Only share helpers after independently running V3Order and comparing their
                 // ordered bodies. A matching pre-order signature is insufficient to prove that
                 // caller-instance context and the resulting dependency contract are equivalent.
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
                     if (artifact.m_modp != group.m_boundaryScopep->modp()
-                        || artifact.m_phase != subgraphPhase) {
+                        || artifact.m_phase != subgraphPhase
+                        || artifact.m_instanceContext != helperInstanceContext) {
                         continue;
                     }
                     ++sharedHelperBodyChecks;
                     if (sameSharedScheduleInput(artifact, logicSig)
-                        && sameSharedHelperBody(artifact, sharedFuncp, explicitArgs)) {
+                        && sameSharedHelperBody(artifact, sharedFuncp, helperArgs)) {
                         matchingArtifactp = &artifact;
                         break;
                     }
@@ -1322,6 +1422,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 }
                 if (matchingArtifactp) {
                     matchingArtifactp->m_orderReusable = true;
+                    if (instanceContext) {
+                        preserveSubgraphContractUses(*matchingArtifactp->m_contractp);
+                        preserveSubgraphContractUses(contract);
+                    }
                     if (!matchingArtifactp->m_parameterized) {
                         parameterizeSharedHelper(*matchingArtifactp);
                         sharedHelperArguments += matchingArtifactp->m_args.size();
@@ -1329,26 +1433,34 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     }
                     sharedCallp->funcp(matchingArtifactp->m_funcp);
                     sharedCallp->useCallerSelf(matchingArtifactp->m_instanceContext);
-                    addSharedHelperCallArgs(sharedCallp, explicitArgs);
+                    addSharedHelperCallArgs(sharedCallp, helperArgs);
                     ++sharedHelperReuses;
                     if (sharedAbi.m_calls) ++sharedHelperCallReuses;
                     if (compositeArgs) ++sharedHelperCompositeReuses;
+                    if (instanceContext) ++sharedHelperContextReuses;
                 } else {
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                        group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
-                        sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        explicitArgs, std::make_unique<V3SubgraphContract>(contract), sharedAbi,
-                        sharedAbi.m_calls != 0, sharedAbi.m_calls == 0, false});
+                        group.m_boundaryScopep->modp(), subgraphPhase, sharedFuncp, sharedCallp,
+                        cloneSharedHelperTemplate(sharedFuncp), logicSig, domainSig, helperArgs,
+                        std::make_unique<V3SubgraphContract>(contract), sharedAbi,
+                        helperInstanceContext, !instanceContext && sharedAbi.m_calls == 0, false});
                     ++sharedHelperArtifactCount;
                     if (sharedAbi.m_calls) ++sharedHelperCallArtifacts;
                     if (compositeArgs) ++sharedHelperCompositeArtifacts;
+                    if (instanceContext) ++sharedHelperContextArtifacts;
                 }
             } else if (explicitBaseCandidate) {
+                sharedHelperOversizedArguments += explicitArgs.size();
                 ++sharedHelperSkippedOversized;
+                if (refresh && oversized) ++sharedHelperSkippedRefreshContext;
             } else if (sharedAbi.m_hasTriggeredState) {
                 ++sharedHelperSkippedTriggered;
             } else if (sharedAbi.m_calls) {
                 ++sharedHelperSkippedCalls;
+                if (abi.m_dpiCalls || sharedAbi.m_dpiCalls) ++sharedHelperSkippedDpiCalls;
+                if (!sharedAbi.m_eligible) ++sharedHelperSkippedCallAbiIneligible;
+                if (!sharedAbi.m_contextSafe) ++sharedHelperSkippedCallContextUnsafe;
+                if (!shareableCalls) ++sharedHelperSkippedCallTargetsUnsafe;
             } else if (generatedTemps) {
                 ++sharedHelperSkippedGeneratedTemps;
             }
@@ -1402,22 +1514,31 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         const std::vector<V3SubgraphContract::Use>& internalUses = contract.internalUses();
         const size_t keptInternalUses
             = std::count_if(internalUses.begin(), internalUses.end(), keepInternalUse);
-        instancep->reserveMaterializedUses(contract.boundaryUses().size()
-                                           + contract.externalUses().size() + keptInternalUses);
+        const size_t materializedUseCount
+            = contract.boundaryUses().size() + contract.externalUses().size() + keptInternalUses;
+        std::vector<AstVarScope*> materializedVscps;
+        materializedVscps.reserve(materializedUseCount);
+        V3SubgraphUsePattern materializedPattern;
+        materializedPattern.reserve(materializedUseCount);
+        const auto addMaterializedUse
+            = [&](AstVarScope* vscp, VSubgraphUseKind kind, bool read, bool write, bool cuttable) {
+                  materializedVscps.push_back(vscp);
+                  materializedPattern.emplace_back(kind, read, write, cuttable);
+              };
         for (const V3SubgraphContract::Use& use : contract.boundaryUses()) {
-            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY, use.m_read,
-                                          use.m_write, use.m_cuttable);
+            addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY, use.m_read,
+                               use.m_write, use.m_cuttable);
             ++materializedBoundaryUses;
         }
         for (const V3SubgraphContract::Use& use : contract.externalUses()) {
             const bool snapshotStorage = std::any_of(
                 group.m_snapshots.begin(), group.m_snapshots.end(),
                 [&](const auto& snapshot) { return snapshot.m_storageVscp == use.m_varScopep; });
-            instancep->addMaterializedUse(
-                use.m_varScopep,
-                snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
-                                : VSubgraphUseKind{VSubgraphUseKind::EXTERNAL},
-                use.m_read, use.m_write, use.m_cuttable);
+            addMaterializedUse(use.m_varScopep,
+                               snapshotStorage
+                                   ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
+                                   : VSubgraphUseKind{VSubgraphUseKind::EXTERNAL},
+                               use.m_read, use.m_write, use.m_cuttable);
             ++materializedExternalUses;
         }
         for (const V3SubgraphContract::Use& use : internalUses) {
@@ -1425,10 +1546,18 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 ++prunedInternalUses;
                 continue;
             }
-            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::INTERNAL, use.m_read,
-                                          use.m_write, use.m_cuttable);
+            addMaterializedUse(use.m_varScopep, VSubgraphUseKind::INTERNAL, use.m_read,
+                               use.m_write, use.m_cuttable);
             ++materializedInternalUses;
         }
+        const auto interned = usePatternInterner.intern(std::move(materializedPattern));
+        if (interned.second) {
+            ++materializedCanonicalPatterns;
+            materializedCanonicalPatternEntries += interned.first->size();
+        } else {
+            ++materializedCanonicalPatternReuses;
+        }
+        instancep->setMaterializedUses(std::move(materializedVscps), interned.first);
     }
     if (measure) materializeWallTime += deferredMaterializeTimer.deltaTime();
 
@@ -1468,11 +1597,20 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      materializedExternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA materialized internal uses",
                      materializedInternalUses);
-    const uint64_t materializedMetadataBytes = (materializedBoundaryUses + materializedExternalUses
-                                                + materializedInternalUses + 2 * snapshotSources)
-                                               * sizeof(V3SubgraphMaterializedUse);
+    const uint64_t materializedMetadataBytes
+        = (materializedBoundaryUses + materializedExternalUses + materializedInternalUses
+           + 2 * snapshotSources)
+              * sizeof(AstVarScope*)
+          + (materializedCanonicalPatternEntries + 2 * snapshotSources)
+                * sizeof(V3SubgraphUsePatternEntry);
     V3Stats::addStat("Scheduling, Subgraph NBA materialized metadata bytes",
                      materializedMetadataBytes);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized canonical pattern entries",
+                     materializedCanonicalPatternEntries);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized canonical pattern reuses",
+                     materializedCanonicalPatternReuses);
+    V3Stats::addStat("Scheduling, Subgraph NBA materialized canonical patterns",
+                     materializedCanonicalPatterns);
     V3Stats::addStat("Scheduling, Subgraph NBA pruned internal uses", prunedInternalUses);
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
@@ -1491,6 +1629,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared ABI output vars", sharedAbiOutputVars);
     V3Stats::addStat("Scheduling, Subgraph shared ABI state vars", sharedAbiStateVars);
     V3Stats::addStat("Scheduling, Subgraph shared helper arguments", sharedHelperArguments);
+    V3Stats::addStat("Scheduling, Subgraph shared helper argument candidates",
+                     sharedHelperArgumentCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared helper external argument candidates",
+                     sharedHelperExternalArgumentCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared helper internal argument candidates",
+                     sharedHelperInternalArgumentCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared helper maximum arguments",
+                     sharedHelperMaximumArguments);
+    V3Stats::addStat("Scheduling, Subgraph shared helper oversized arguments",
+                     sharedHelperOversizedArguments);
     V3Stats::addStat("Scheduling, Subgraph shared helper artifacts", sharedHelperArtifactCount);
     V3Stats::addStat("Scheduling, Subgraph shared helper body checks", sharedHelperBodyChecks);
     V3Stats::addStat("Scheduling, Subgraph shared helper body mismatches",
@@ -1510,12 +1658,22 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedHelperParameterizations);
     V3Stats::addStat("Scheduling, Subgraph shared helper reuses", sharedHelperReuses);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped calls", sharedHelperSkippedCalls);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped call ABI ineligible",
+                     sharedHelperSkippedCallAbiIneligible);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped call context unsafe",
+                     sharedHelperSkippedCallContextUnsafe);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped call targets unsafe",
+                     sharedHelperSkippedCallTargetsUnsafe);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped composite",
                      sharedHelperSkippedComposite);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped generated temps",
                      sharedHelperSkippedGeneratedTemps);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped DPI calls",
+                     sharedHelperSkippedDpiCalls);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped oversized",
                      sharedHelperSkippedOversized);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped refresh context",
+                     sharedHelperSkippedRefreshContext);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped triggered",
                      sharedHelperSkippedTriggered);
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic matches",
@@ -1523,6 +1681,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",
                      sharedOrderCacheLogicMismatches);
     V3Stats::addStat("Scheduling, Subgraph shared order cache lookups", sharedOrderCacheLookups);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache argument mismatches",
+                     sharedOrderCacheArgumentMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache contract mismatches",
+                     sharedOrderCacheContractMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache domain matches",
+                     sharedOrderCacheDomainMatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache domain mismatches",
+                     sharedOrderCacheDomainMismatches);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache not reusable",
+                     sharedOrderCacheNotReusable);
     V3Stats::addStat("Scheduling, Subgraph shared order cache order calls executed",
                      sharedOrderCacheOrderCallsExecuted);
     V3Stats::addStat("Scheduling, Subgraph shared order cache order calls avoided",

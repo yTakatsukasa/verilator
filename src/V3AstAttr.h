@@ -2083,32 +2083,32 @@ constexpr bool operator!=(VSubgraphUseKind lhs, VSubgraphUseKind rhs) { return !
 
 // ######################################################################
 
-// Compact scheduling-only dependency published by a coarse subgraph wrapper. This deliberately
-// is not an AstNode: large designs can have millions of these records, and they are discarded
-// immediately after the parent order graph is built.
-class V3SubgraphMaterializedUse final {
-public:
-    AstVarScope* m_varScopep;
+// Canonicalizable portion of a materialized subgraph dependency. Instance-specific variable
+// pointers are stored separately so repeated dependency shapes can share this metadata.
+class V3SubgraphUsePatternEntry final {
     VSubgraphUseKind m_kind;
     bool m_read : 1;
     bool m_write : 1;
     bool m_cuttable : 1;
 
-    V3SubgraphMaterializedUse(AstVarScope* varScopep, VSubgraphUseKind kind, bool read, bool write,
-                              bool cuttable)
-        : m_varScopep{varScopep}
-        , m_kind{kind}
+public:
+    V3SubgraphUsePatternEntry(VSubgraphUseKind kind, bool read, bool write, bool cuttable)
+        : m_kind{kind}
         , m_read{read}
         , m_write{write}
         , m_cuttable{cuttable} {}
-    AstVarScope* varScopep() const { return m_varScopep; }
     VSubgraphUseKind kind() const { return m_kind; }
     bool read() const { return m_read; }
     bool write() const { return m_write; }
     bool cuttable() const { return m_cuttable; }
+    bool operator==(const V3SubgraphUsePatternEntry& rhs) const {
+        return kind() == rhs.kind() && read() == rhs.read() && write() == rhs.write()
+               && cuttable() == rhs.cuttable();
+    }
 };
-static_assert(sizeof(V3SubgraphMaterializedUse) <= 2 * sizeof(void*),
-              "V3SubgraphMaterializedUse must fit in two pointers");
+static_assert(sizeof(V3SubgraphUsePatternEntry) <= 2,
+              "V3SubgraphUsePatternEntry must fit in two bytes");
+using V3SubgraphUsePattern = std::vector<V3SubgraphUsePatternEntry>;
 
 // ######################################################################
 //  VSystemCSectionType - Represents the type of a `systemc_* block (Verilator specific extension)
