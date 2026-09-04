@@ -47,6 +47,14 @@ function print_section(title, lines, count, i) {
     stages[++stage_count] = $0
     next
 }
+/Stage, Elapsed time \(sec\), [^ ]*_(descope|premit|emit)/ {
+    output_timing[++output_timing_count] = $0
+    next
+}
+/^[[:space:]]+Output, C\+\+ (bytes|files) written/ {
+    output_shape[++output_shape_count] = $0
+    next
+}
 /Scheduling, NBA elapsed time \(sec\),/ {
     nba_timing[++nba_timing_count] = $0
     next
@@ -86,6 +94,8 @@ END {
     print ""
     print_section("Configuration", config, config_count)
     print_section("Scheduling stages", stages, stage_count)
+    print_section("C++ output stages", output_timing, output_timing_count)
+    print_section("C++ output", output_shape, output_shape_count)
     print_section("NBA timing breakdown", nba_timing, nba_timing_count)
     print_section("Subgraph lowering timing breakdown", subgraph_timing,
                   subgraph_timing_count)
