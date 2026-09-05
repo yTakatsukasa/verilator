@@ -38,6 +38,20 @@ bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
     return false;
 }
 
+bool isSafeLocalCallTarget(const AstCFunc* funcp, const AstScope* boundaryScopep) {
+    return funcp && funcp->scopep() == boundaryScopep && !funcp->isStatic() && !funcp->funcPublic()
+           && !funcp->dpiContext() && !funcp->dpiExportDispatcher() && !funcp->dpiExportImpl()
+           && !funcp->dpiImportPrototype() && !funcp->dpiImportWrapper() && !funcp->isConstructor()
+           && !funcp->isDestructor() && !funcp->isVirtual() && !funcp->needProcess()
+           && !funcp->recursive() && !funcp->isCoroutine() && !funcp->isCovergroupSample();
+}
+
+bool isTaskCallTemp(const AstVarScope* vscp) {
+    // These V3Task temporaries live entirely within one call sequence, not in the parent contract.
+    const std::string& name = vscp->varp()->name();
+    return name.rfind("__Vfunc_", 0) == 0 || name.rfind("__Vtask_", 0) == 0;
+}
+
 class SubgraphContractBuilder final : public VNVisitorConst {
     using Uses = std::vector<V3SubgraphContract::Use>;
     using UseIndex = std::unordered_map<AstVarScope*, size_t>;
@@ -80,12 +94,17 @@ class SubgraphContractBuilder final : public VNVisitorConst {
         iterateChildrenConst(nodep);
         AstCFunc* const funcp = nodep->funcp();
         UASSERT_OBJ(funcp, nodep, "Subgraph contract call has no function");
-        if (!funcp->entryPoint()) iterateConst(funcp);
+        if (!funcp->entryPoint() || isSafeLocalCallTarget(funcp, m_boundaryScopep)) {
+            iterateConst(funcp);
+        }
     }
     void visit(AstNodeVarRef* nodep) override {
         AstVarScope* const vscp = nodep->varScopep();
         UASSERT_OBJ(vscp, nodep, "Subgraph contract reference has no scope");
-        if (!isUnderScope(vscp->scopep(), m_boundaryScopep)) {
+        if (vscp->varp()->isFuncLocal() || isTaskCallTemp(vscp)) {
+            iterateChildrenConst(nodep);
+            return;
+        } else if (!isUnderScope(vscp->scopep(), m_boundaryScopep)) {
             addUse(m_externalUses, m_externalUseIndex, nodep, m_cuttableBoundaryReads);
         } else if (vscp->scopep() == m_boundaryScopep && vscp->varp()->isIO()) {
             addUse(m_boundaryUses, m_boundaryUseIndex, nodep, m_cuttableBoundaryReads);

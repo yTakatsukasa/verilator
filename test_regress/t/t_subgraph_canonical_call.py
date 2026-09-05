@@ -19,13 +19,18 @@ cpp_files = [
     if not re.search(r"__(ALL|main)\.cpp$", filename)
 ]
 canonical_bodies = 0
+call_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
+        contents = file_handle.read()
         canonical_bodies += len(re.findall(
             r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
-            file_handle.read()))
+            contents))
+        call_bodies += len(re.findall(r"(?m)^void .*::__VnoInFunc_mix_[^\n]*\{$", contents))
 if canonical_bodies != 2:
     test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
+if call_bodies != 1:
+    test.error("Expected 1 canonical module-local call body, got %d" % call_bodies)
 
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)

@@ -55,6 +55,21 @@ struct PendingSubgraphMaterialization final {
 
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
+bool isSafeSharedCallTarget(const AstCFunc* funcp, const AstScope* boundaryScopep) {
+    return funcp && funcp->scopep() == boundaryScopep && !funcp->isStatic() && !funcp->funcPublic()
+           && !funcp->dpiContext() && !funcp->dpiExportDispatcher() && !funcp->dpiExportImpl()
+           && !funcp->dpiImportPrototype() && !funcp->dpiImportWrapper() && !funcp->isConstructor()
+           && !funcp->isDestructor() && !funcp->isVirtual() && !funcp->needProcess()
+           && !funcp->recursive() && !funcp->isCoroutine() && !funcp->isCovergroupSample();
+}
+
+bool isTaskCallTemp(const AstVarScope* vscp) {
+    // V3Task creates per-call result/argument temporaries with instance-specific declarations.
+    // They are local to the call sequence, so compare them by traversal slot like function locals.
+    const string& name = vscp->varp()->name();
+    return name.rfind("__Vfunc_", 0) == 0 || name.rfind("__Vtask_", 0) == 0;
+}
+
 struct SharedHelperAbiAnalysis final {
     uint64_t m_calls = 0;
     uint64_t m_constants = 0;
@@ -70,19 +85,26 @@ struct SharedHelperAbiAnalysis final {
 };
 
 class SharedHelperAbiAnalyzer final : public VNVisitor {
+    AstCFunc* const m_rootFuncp;
     AstScope* const m_boundaryScopep;
     const std::unordered_set<AstVarScope*> m_contractVscps;
     std::unordered_set<const AstCFunc*> m_visitedFuncps;
     std::unordered_map<AstVarScope*, std::pair<bool, bool>> m_accesses;
     std::unordered_set<AstVarScope*> m_hiddenVscps;
+    std::unordered_set<AstVarScope*> m_rootLocalVscps;
     SharedHelperAbiAnalysis m_result;
+    AstCFunc* m_funcp = nullptr;
 
     void visit(AstCFunc* nodep) override {
         if (!m_visitedFuncps.emplace(nodep).second) return;
-        if (!nodep->isLoose() || nodep->entryPoint() || nodep->needProcess() || nodep->recursive()
-            || nodep->isCoroutine()) {
+        if ((nodep == m_rootFuncp && !nodep->isLoose())
+            || (nodep != m_rootFuncp && !isSafeSharedCallTarget(nodep, m_boundaryScopep))
+            || (nodep == m_rootFuncp && (nodep->entryPoint() || nodep->needProcess()))
+            || nodep->recursive() || nodep->isCoroutine()) {
             m_result.m_eligible = false;
         }
+        VL_RESTORER(m_funcp);
+        m_funcp = nodep;
         iterateChildren(nodep);
     }
     void visit(AstCCall* nodep) override {
@@ -94,7 +116,7 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
             m_result.m_eligible = false;
             return;
         }
-        if (funcp->entryPoint()) {
+        if (!isSafeSharedCallTarget(funcp, m_boundaryScopep)) {
             m_result.m_eligible = false;
             return;
         }
@@ -110,10 +132,18 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
             m_result.m_eligible = false;
             return;
         }
+        if (m_funcp != m_rootFuncp && !vscp->varp()->isFuncLocal()
+            && !isUnderScope(vscp->scopep(), m_boundaryScopep)) {
+            m_result.m_eligible = false;
+        }
         auto& access = m_accesses[vscp];
         access.first |= nodep->access().isReadOrRW();
         access.second |= nodep->access().isWriteOrRW();
-        if (!vscp->varp()->isFuncLocal() && !m_contractVscps.count(vscp)) {
+        if (m_funcp == m_rootFuncp && vscp->varp()->isFuncLocal()) {
+            m_rootLocalVscps.insert(vscp);
+        }
+        if (!vscp->varp()->isFuncLocal() && !isTaskCallTemp(vscp)
+            && !m_contractVscps.count(vscp)) {
             m_hiddenVscps.insert(vscp);
         }
         const string& name = vscp->varp()->name();
@@ -135,7 +165,8 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
 public:
     SharedHelperAbiAnalyzer(AstCFunc* funcp, AstScope* boundaryScopep,
                             const V3SubgraphContract& contract)
-        : m_boundaryScopep{boundaryScopep}
+        : m_rootFuncp{funcp}
+        , m_boundaryScopep{boundaryScopep}
         , m_contractVscps{[&]() {
             std::unordered_set<AstVarScope*> result;
             const auto addUses = [&](const std::vector<V3SubgraphContract::Use>& uses) {
@@ -151,8 +182,8 @@ public:
         if (m_result.m_hiddenUses) m_result.m_eligible = false;
         for (const auto& pair : m_accesses) {
             AstVarScope* const vscp = pair.first;
-            if (vscp->varp()->isFuncLocal()) {
-                ++m_result.m_generatedTemps;
+            if (vscp->varp()->isFuncLocal() || isTaskCallTemp(vscp)) {
+                if (m_rootLocalVscps.count(vscp)) ++m_result.m_generatedTemps;
                 continue;
             }
             if (isUnderScope(vscp->scopep(), m_boundaryScopep)) {
@@ -180,11 +211,14 @@ struct SharedScheduleVarId final {
     AstVar* m_varp = nullptr;
     std::vector<const AstCell*> m_cellPath;
     size_t m_externalSlot = 0;
+    size_t m_localSlot = 0;
     bool m_external = false;
+    bool m_local = false;
 
     bool operator==(const SharedScheduleVarId& rhs) const {
         return m_varp == rhs.m_varp && m_cellPath == rhs.m_cellPath
-               && m_externalSlot == rhs.m_externalSlot && m_external == rhs.m_external;
+               && m_externalSlot == rhs.m_externalSlot && m_localSlot == rhs.m_localSlot
+               && m_external == rhs.m_external && m_local == rhs.m_local;
     }
 };
 
@@ -205,9 +239,15 @@ using SharedScheduleLogicSig = std::vector<SharedScheduleLogicNode>;
 
 SharedScheduleVarId
 makeSharedScheduleVarId(AstVarScope* vscp, AstScope* boundaryScopep,
-                        std::unordered_map<AstVarScope*, size_t>& externalSlots) {
+                        std::unordered_map<AstVarScope*, size_t>& externalSlots,
+                        std::unordered_map<AstVarScope*, size_t>& localSlots) {
     SharedScheduleVarId result;
-    if (!isUnderScope(vscp->scopep(), boundaryScopep)) {
+    if (vscp->varp()->isFuncLocal() || isTaskCallTemp(vscp)) {
+        result.m_local = true;
+        const auto inserted = localSlots.emplace(vscp, localSlots.size());
+        result.m_localSlot = inserted.first->second;
+        return result;
+    } else if (!isUnderScope(vscp->scopep(), boundaryScopep)) {
         result.m_external = true;
         const auto inserted = externalSlots.emplace(vscp, externalSlots.size());
         result.m_externalSlot = inserted.first->second;
@@ -227,6 +267,7 @@ SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic,
                                                   AstScope* boundaryScopep) {
     SharedScheduleLogicSig result;
     std::unordered_map<AstVarScope*, size_t> externalSlots;
+    std::unordered_map<AstVarScope*, size_t> localSlots;
     logic.foreachLogic([&](AstNode* logicp) {
         result.emplace_back();
         SharedScheduleLogicNode& node = result.back();
@@ -241,7 +282,7 @@ SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic,
             AstVarScope* const vscp = refp->varScopep();
             node.m_refs.push_back(SharedScheduleLogicRef{
                 static_cast<uintptr_t>(refp->access()),
-                makeSharedScheduleVarId(vscp, boundaryScopep, externalSlots), vscp});
+                makeSharedScheduleVarId(vscp, boundaryScopep, externalSlots, localSlots), vscp});
         });
     });
     return result;
@@ -284,6 +325,7 @@ matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
             }
             if (!(sourceRef.m_id == candidateRef.m_id)) {
                 return sourceRef.m_id.m_external || candidateRef.m_id.m_external
+                               || sourceRef.m_id.m_local || candidateRef.m_id.m_local
                            ? SharedScheduleMatchResult::ABI
                            : SharedScheduleMatchResult::RELATIVE_PATH;
             }
@@ -526,10 +568,44 @@ void preserveSharedInstanceUses(const SharedScheduleContractRecipe& recipe) {
     preserveRecipes(recipe.m_internalUses);
 }
 
+void prepareSharedCallClosure(AstCFunc* rootFuncp, AstScope* boundaryScopep) {
+    std::unordered_set<AstCFunc*> visitedFuncps;
+    std::function<void(AstCFunc*)> prepare = [&](AstCFunc* funcp) {
+        if (!visitedFuncps.emplace(funcp).second) return;
+        funcp->subgraphCallerSelf(true);
+        funcp->noLife(true);
+        funcp->foreach([&](AstCCall* callp) {
+            AstCFunc* const calledFuncp = callp->funcp();
+            UASSERT_OBJ(isSafeSharedCallTarget(calledFuncp, boundaryScopep), callp,
+                        "Canonical subgraph has an unsafe call target");
+            calledFuncp->entryPoint(false);
+            if (calledFuncp->isLoose()) callp->useCallerSelf(true);
+            prepare(calledFuncp);
+        });
+    };
+    prepare(rootFuncp);
+}
+
+void releaseDiscardedCallClosureEntries(const LogicByScope& logic, AstScope* boundaryScopep) {
+    std::unordered_set<AstCFunc*> visitedFuncps;
+    std::function<void(AstCFunc*)> release = [&](AstCFunc* funcp) {
+        if (!visitedFuncps.emplace(funcp).second) return;
+        if (!isSafeSharedCallTarget(funcp, boundaryScopep)) return;
+        funcp->entryPoint(false);
+        funcp->foreach([&](AstCCall* callp) { release(callp->funcp()); });
+    };
+    logic.foreachLogic([&](AstNode* logicp) {
+        logicp->foreach([&](AstCCall* callp) { release(callp->funcp()); });
+    });
+}
+
 void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
     UASSERT_OBJ(!artifact.m_parameterized, artifact.m_funcp,
                 "Shared subgraph helper parameterized twice");
-    if (artifact.m_instanceContext) preserveSharedInstanceUses(artifact.m_contractRecipe);
+    if (artifact.m_instanceContext) {
+        preserveSharedInstanceUses(artifact.m_contractRecipe);
+        prepareSharedCallClosure(artifact.m_funcp, artifact.m_funcp->scopep());
+    }
     std::unordered_map<AstVarScope*, AstVarScope*> argVscps;
     for (size_t index = 0; index < artifact.m_args.size(); ++index) {
         const SharedHelperArg& arg = artifact.m_args[index];
@@ -555,11 +631,7 @@ void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
         }
     });
     addSharedHelperCallArgs(artifact.m_firstCallp, artifact.m_args);
-    if (artifact.m_instanceContext) {
-        artifact.m_funcp->subgraphCallerSelf(true);
-    } else {
-        artifact.m_funcp->isStatic(true);
-    }
+    if (!artifact.m_instanceContext) { artifact.m_funcp->isStatic(true); }
     artifact.m_funcp->noLife(true);
     artifact.m_parameterized = true;
 }
@@ -1015,6 +1087,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 funcp = makeSharedScheduleWrapper(
                     netlistp, group.m_boundaryScopep, group.m_senTreep, cachedArtifactp->m_funcp,
                     cachedArgs, tag, slow, refresh, cachedArtifactp->m_instanceContext);
+                if (cachedArtifactp->m_instanceContext) {
+                    releaseDiscardedCallClosureEntries(logic, group.m_boundaryScopep);
+                }
                 discardSharedScheduleLogic(logic);
                 abi = cachedArtifactp->m_abi;
                 ++sharedHelperReuses;
@@ -1111,8 +1186,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             const bool generatedTemps
                 = sharedAbi.m_generatedTemps || sharedFuncp->varsp() || sharedFuncp->argsp();
-            const bool shareCandidate = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState
-                                        && !sharedAbi.m_calls && !generatedTemps;
+            const bool shareCandidate
+                = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState && !generatedTemps;
             const std::vector<SharedHelperArg> args
                 = shareCandidate ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                                  : std::vector<SharedHelperArg>{};
