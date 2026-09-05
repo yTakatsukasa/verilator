@@ -197,8 +197,21 @@ struct SharedHelperArg final {
     bool m_state = false;
 };
 
+struct SharedScheduleVarId final {
+    AstVar* m_varp = nullptr;
+    std::vector<const AstCell*> m_cellPath;
+    size_t m_externalSlot = 0;
+    bool m_external = false;
+
+    bool operator==(const SharedScheduleVarId& rhs) const {
+        return m_varp == rhs.m_varp && m_cellPath == rhs.m_cellPath
+               && m_externalSlot == rhs.m_externalSlot && m_external == rhs.m_external;
+    }
+};
+
 struct SharedScheduleLogicRef final {
     uintptr_t m_access = 0;
+    SharedScheduleVarId m_id;
     AstVarScope* m_vscp = nullptr;
 };
 
@@ -211,8 +224,30 @@ struct SharedScheduleLogicNode final {
 
 using SharedScheduleLogicSig = std::vector<SharedScheduleLogicNode>;
 
-SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic) {
+SharedScheduleVarId
+makeSharedScheduleVarId(AstVarScope* vscp, AstScope* boundaryScopep,
+                        std::unordered_map<AstVarScope*, size_t>& externalSlots) {
+    SharedScheduleVarId result;
+    if (!isUnderScope(vscp->scopep(), boundaryScopep)) {
+        result.m_external = true;
+        const auto inserted = externalSlots.emplace(vscp, externalSlots.size());
+        result.m_externalSlot = inserted.first->second;
+        return result;
+    }
+
+    result.m_varp = vscp->varp();
+    for (const AstScope* scopep = vscp->scopep(); scopep != boundaryScopep;
+         scopep = scopep->aboveScopep()) {
+        UASSERT_OBJ(scopep, vscp, "Subgraph variable has no path to boundary scope");
+        result.m_cellPath.push_back(scopep->aboveCellp());
+    }
+    return result;
+}
+
+SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic,
+                                                  AstScope* boundaryScopep) {
     SharedScheduleLogicSig result;
+    std::unordered_map<AstVarScope*, size_t> externalSlots;
     logic.foreachLogic([&](AstNode* logicp) {
         result.emplace_back();
         SharedScheduleLogicNode& node = result.back();
@@ -224,48 +259,38 @@ SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic) {
             }
         });
         logicp->foreach([&](AstVarRef* refp) {
-            node.m_refs.push_back(
-                SharedScheduleLogicRef{static_cast<uintptr_t>(refp->access()), refp->varScopep()});
+            AstVarScope* const vscp = refp->varScopep();
+            node.m_refs.push_back(SharedScheduleLogicRef{
+                static_cast<uintptr_t>(refp->access()),
+                makeSharedScheduleVarId(vscp, boundaryScopep, externalSlots), vscp});
         });
     });
     return result;
 }
 
-bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, AstScope* sourceBoundaryScopep,
-                              const LogicByScope& candidate, AstScope* targetBoundaryScopep,
+bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
+                              const SharedScheduleLogicSig& candidate,
                               std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) {
-    std::vector<AstNode*> candidateNodes;
-    candidate.foreachLogic([&](AstNode* logicp) { candidateNodes.push_back(logicp); });
-    if (source.size() != candidateNodes.size()) return false;
+    if (source.size() != candidate.size()) return false;
 
     std::unordered_map<AstVarScope*, AstVarScope*> candidateToSource;
     for (size_t nodeIndex = 0; nodeIndex < source.size(); ++nodeIndex) {
         const SharedScheduleLogicNode& sourceNode = source[nodeIndex];
-        AstNode* const candidateNodep = candidateNodes[nodeIndex];
-        if (sourceNode.m_type != static_cast<uintptr_t>(candidateNodep->type())) return false;
-
-        std::vector<uintptr_t> nodeTypes;
-        std::vector<string> constValues;
-        candidateNodep->foreach([&](AstNode* scanp) {
-            nodeTypes.push_back(static_cast<uintptr_t>(scanp->type()));
-            if (const AstConst* const constp = VN_CAST(scanp, Const)) {
-                constValues.push_back(constp->num().toString());
-            }
-        });
-        if (sourceNode.m_nodeTypes != nodeTypes || sourceNode.m_constValues != constValues) {
+        const SharedScheduleLogicNode& candidateNode = candidate[nodeIndex];
+        if (sourceNode.m_type != candidateNode.m_type
+            || sourceNode.m_nodeTypes != candidateNode.m_nodeTypes
+            || sourceNode.m_constValues != candidateNode.m_constValues) {
             return false;
         }
 
-        std::vector<AstVarRef*> refs;
-        candidateNodep->foreach([&](AstVarRef* refp) { refs.push_back(refp); });
-        if (sourceNode.m_refs.size() != refs.size()) return false;
-        for (size_t refIndex = 0; refIndex < refs.size(); ++refIndex) {
+        if (sourceNode.m_refs.size() != candidateNode.m_refs.size()) return false;
+        for (size_t refIndex = 0; refIndex < candidateNode.m_refs.size(); ++refIndex) {
             const SharedScheduleLogicRef& sourceRef = sourceNode.m_refs[refIndex];
-            AstVarScope* const candidateVscp = refs[refIndex]->varScopep();
-            if (sourceRef.m_access != static_cast<uintptr_t>(refs[refIndex]->access())
-                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())
-                || !sameSubgraphRelativeVar(sourceRef.m_vscp, sourceBoundaryScopep, candidateVscp,
-                                            targetBoundaryScopep)) {
+            const SharedScheduleLogicRef& candidateRef = candidateNode.m_refs[refIndex];
+            AstVarScope* const candidateVscp = candidateRef.m_vscp;
+            if (sourceRef.m_access != candidateRef.m_access
+                || !(sourceRef.m_id == candidateRef.m_id)
+                || !sourceRef.m_vscp->dtypep()->similarDType(candidateVscp->dtypep())) {
                 return false;
             }
             const auto sourceIt = sourceToCandidate.find(sourceRef.m_vscp);
@@ -285,14 +310,25 @@ bool matchSharedScheduleLogic(const SharedScheduleLogicSig& source, AstScope* so
     return true;
 }
 
-struct SharedHelperArtifact final {
+struct SharedScheduleKey final {
     AstNodeModule* m_modp = nullptr;
     VSubgraphPhase m_phase;
     const AstSenTree* m_domainKeyp = nullptr;
+    SharedScheduleLogicSig m_logicSig;
+
+    bool matches(const SharedScheduleKey& candidate,
+                 std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) const {
+        return m_modp == candidate.m_modp && m_phase == candidate.m_phase
+               && m_domainKeyp->sameTree(candidate.m_domainKeyp)
+               && matchSharedScheduleLogic(m_logicSig, candidate.m_logicSig, sourceToCandidate);
+    }
+};
+
+struct SharedHelperArtifact final {
+    SharedScheduleKey m_key;
     AstCFunc* m_funcp = nullptr;
     AstCCall* m_firstCallp = nullptr;
     AstNode* m_templateStmtsp = nullptr;
-    SharedScheduleLogicSig m_logicSig;
     std::vector<SharedHelperArg> m_args;
     std::unique_ptr<V3SubgraphContract> m_contractp;
     SharedHelperAbiAnalysis m_abi;
@@ -895,22 +931,23 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
             const VlOs::DeltaWallTime logicSignatureTimer{measure};
-            const SharedScheduleLogicSig logicSig = makeSharedScheduleLogicSig(logic);
+            SharedScheduleKey scheduleKey{
+                group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
+                makeSharedScheduleLogicSig(logic, group.m_boundaryScopep)};
             if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
             SharedHelperArtifact* cachedArtifactp = nullptr;
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
             std::vector<SharedHelperArg> cachedArgs;
             const VlOs::DeltaWallTime cacheLookupTimer{measure};
             for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
-                if (artifact.m_modp != group.m_boundaryScopep->modp()
-                    || artifact.m_phase != subgraphPhase
-                    || !artifact.m_domainKeyp->sameTree(group.m_domainKeyp)) {
+                if (artifact.m_key.m_modp != scheduleKey.m_modp
+                    || artifact.m_key.m_phase != scheduleKey.m_phase
+                    || !artifact.m_key.m_domainKeyp->sameTree(scheduleKey.m_domainKeyp)) {
                     continue;
                 }
                 ++sharedOrderCacheLookups;
                 sourceToCandidate.clear();
-                if (!matchSharedScheduleLogic(artifact.m_logicSig, artifact.m_funcp->scopep(),
-                                              logic, group.m_boundaryScopep, sourceToCandidate)) {
+                if (!artifact.m_key.matches(scheduleKey, sourceToCandidate)) {
                     ++sharedOrderCacheLogicMismatches;
                     continue;
                 }
@@ -1082,8 +1119,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             } else if (canonicalContextCandidate && !contextCompositeArgs
                        && contextArgs.size() <= kMaxSharedHelperArgs) {
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                    group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp, sharedFuncp,
-                    sharedCallp, nullptr, logicSig, contextArgs,
+                    std::move(scheduleKey), sharedFuncp, sharedCallp, nullptr, contextArgs,
                     std::make_unique<V3SubgraphContract>(contract), abi, true, false});
                 ++sharedHelperArtifactCount;
                 ++canonicalContextArtifacts;
@@ -1091,8 +1127,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                        && args.size() <= kMaxSharedHelperArgs) {
                 SharedHelperArtifact* matchingArtifactp = nullptr;
                 for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
-                    if (artifact.m_modp != group.m_boundaryScopep->modp()
-                        || artifact.m_phase != subgraphPhase || artifact.m_instanceContext) {
+                    if (artifact.m_key.m_modp != group.m_boundaryScopep->modp()
+                        || artifact.m_key.m_phase != subgraphPhase || artifact.m_instanceContext) {
                         continue;
                     }
                     ++sharedHelperBodyChecks;
@@ -1113,9 +1149,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     ++sharedHelperReuses;
                 } else {
                     sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                        group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
-                        sharedFuncp, sharedCallp, cloneSharedHelperTemplate(sharedFuncp), logicSig,
-                        args, std::make_unique<V3SubgraphContract>(contract), abi, false, false});
+                        std::move(scheduleKey), sharedFuncp, sharedCallp,
+                        cloneSharedHelperTemplate(sharedFuncp), args,
+                        std::make_unique<V3SubgraphContract>(contract), abi, false, false});
                     ++sharedHelperArtifactCount;
                 }
             } else if ((canonicalContextCandidate && contextCompositeArgs)
