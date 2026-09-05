@@ -1127,22 +1127,17 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = canonicalContextCandidate
                       ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep, true)
                       : std::vector<SharedHelperArg>{};
-            const bool contextCompositeArgs = std::any_of(
-                contextArgs.begin(), contextArgs.end(), [](const SharedHelperArg& arg) {
-                    AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
-                    return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
-                });
             const bool compositeArgs
                 = std::any_of(args.begin(), args.end(), [](const SharedHelperArg& arg) {
                       AstNodeDType* const dtypep = arg.m_vscp->dtypep()->skipRefp();
                       return !VN_IS(dtypep, BasicDType) || dtypep->isWide();
                   });
-            // Composite and very wide ABIs require additional alias/lifetime validation. Start
-            // with the small scalar case and leave the wrapper unchanged for all other helpers.
+            // Canonical external slots have already been checked for one-to-one aliasing, dtype,
+            // and access equivalence. Read-only composite arguments use constref; writable ones
+            // use output or inout. The exact-key fallback remains scalar-only.
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
-            } else if (canonicalContextCandidate && !contextCompositeArgs
-                       && contextArgs.size() <= kMaxSharedHelperArgs) {
+            } else if (canonicalContextCandidate && contextArgs.size() <= kMaxSharedHelperArgs) {
                 SharedScheduleContractRecipe contractRecipe
                     = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
@@ -1160,8 +1155,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp, args,
                                          std::move(contractRecipe), abi, false, false});
                 ++sharedHelperArtifactCount;
-            } else if ((canonicalContextCandidate && contextCompositeArgs)
-                       || (!canonicalContextCandidate && compositeArgs)) {
+            } else if (!canonicalContextCandidate && compositeArgs) {
                 ++sharedHelperSkippedComposite;
             } else if (shareCandidate) {
                 ++sharedHelperSkippedOversized;
