@@ -21,9 +21,9 @@ cpp_files = [
 canonical_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
-        canonical_bodies += len(re.findall(
-            r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
-            file_handle.read()))
+        canonical_bodies += len(
+            re.findall(r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
+                       file_handle.read()))
 if canonical_bodies != 2:
     test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
 
@@ -33,7 +33,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper arguments\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped composite\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               2)
 
 test.passes()

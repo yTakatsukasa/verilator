@@ -23,9 +23,8 @@ call_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
         contents = file_handle.read()
-        canonical_bodies += len(re.findall(
-            r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
-            contents))
+        canonical_bodies += len(
+            re.findall(r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$", contents))
         call_bodies += len(re.findall(r"(?m)^void .*::__VnoInFunc_mix_[^\n]*\{$", contents))
 if canonical_bodies != 2:
     test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
@@ -33,19 +32,16 @@ if call_bodies != 1:
     test.error("Expected 1 canonical module-local call body, got %d" % call_bodies)
 
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph NBA contract instance bindings\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph NBA contract recipe fallbacks\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph NBA contract uses not expanded\s+(\d+)", 14)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract instance bindings\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract recipe fallbacks\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract uses not expanded\s+(\d+)", 14)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph NBA contract metadata bytes avoided\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped calls\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               2)
 
 test.passes()
