@@ -33,6 +33,14 @@ if call_bodies != 1:
     test.error("Expected 1 canonical module-local call body, got %d" % call_bodies)
 
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA contract instance bindings\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA contract recipe fallbacks\s+(\d+)", 0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA contract uses not expanded\s+(\d+)", 14)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph NBA contract metadata bytes avoided\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)

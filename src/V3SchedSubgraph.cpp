@@ -51,6 +51,9 @@ struct PendingSubgraphMaterialization final {
     AstSubgraphInstance* m_instancep = nullptr;
     const SubgraphGroup* m_groupp = nullptr;
     std::unique_ptr<V3SubgraphContract> m_contractp;
+    size_t m_artifactIndex = std::numeric_limits<size_t>::max();
+    size_t m_externalBindingsBegin = 0;
+    size_t m_externalBindingsCount = 0;
 };
 
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
@@ -227,6 +230,41 @@ struct SharedScheduleVarId final {
     }
 };
 
+class SharedScheduleScopeResolver final {
+    std::unordered_map<const AstScope*, std::vector<AstScope*>> m_children;
+
+public:
+    explicit SharedScheduleScopeResolver(AstNetlist* netlistp) {
+        netlistp->foreach([&](AstScope* scopep) {
+            if (scopep->aboveScopep()) m_children[scopep->aboveScopep()].push_back(scopep);
+        });
+    }
+
+    AstVarScope* bind(AstScope* boundaryScopep, const SharedScheduleVarId& id) const {
+        if (id.m_external || id.m_local) return nullptr;
+        AstScope* scopep = boundaryScopep;
+        for (auto it = id.m_cellPath.rbegin(); it != id.m_cellPath.rend(); ++it) {
+            const auto childrenIt = m_children.find(scopep);
+            if (childrenIt == m_children.end()) return nullptr;
+            AstScope* childp = nullptr;
+            for (AstScope* const candidatep : childrenIt->second) {
+                if (candidatep->aboveCellp() != *it) continue;
+                if (childp) return nullptr;
+                childp = candidatep;
+            }
+            if (!childp) return nullptr;
+            scopep = childp;
+        }
+        AstVarScope* resultp = nullptr;
+        for (AstVarScope* vscp = scopep->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp() != id.m_varp) continue;
+            if (resultp) return nullptr;
+            resultp = vscp;
+        }
+        return resultp;
+    }
+};
+
 struct SharedScheduleLogicRef final {
     uintptr_t m_access = 0;
     SharedScheduleVarId m_id;
@@ -375,22 +413,10 @@ const SharedScheduleLogicRef* findSharedScheduleLogicRef(const SharedScheduleLog
     return nullptr;
 }
 
-AstVarScope* bindSharedScheduleVar(const SharedScheduleLogicSig& signature,
-                                   const SharedScheduleVarId& id) {
-    AstVarScope* resultp = nullptr;
-    for (const SharedScheduleLogicNode& node : signature) {
-        for (const SharedScheduleLogicRef& ref : node.m_refs) {
-            if (!(ref.m_id == id)) continue;
-            UASSERT_OBJ(!resultp || resultp == ref.m_vscp, ref.m_vscp,
-                        "Canonical subgraph ID has ambiguous bindings");
-            resultp = ref.m_vscp;
-        }
-    }
-    return resultp;
-}
-
 struct SharedScheduleUseRecipe final {
     SharedScheduleVarId m_id;
+    // Order-introduced external dependencies, such as __VnbaTriggered, are absent from the input
+    // logic signature and retain their exact source binding. All other uses bind relatively.
     AstVarScope* m_sourceVscp = nullptr;
     bool m_relative = false;
     bool m_read = false;
@@ -408,53 +434,96 @@ struct SharedScheduleContractRecipe final {
                                              const SharedScheduleLogicSig& signature) {
         SharedScheduleContractRecipe result;
         result.m_post = contract.post();
-        const auto makeUses
-            = [&](const std::vector<V3SubgraphContract::Use>& uses,
-                  std::vector<SharedScheduleUseRecipe>& recipes, bool requireRelative) {
-                  recipes.reserve(uses.size());
-                  for (const V3SubgraphContract::Use& use : uses) {
-                      const SharedScheduleLogicRef* const refp
-                          = findSharedScheduleLogicRef(signature, use.m_varScopep);
-                      UASSERT_OBJ(refp || !requireRelative, use.m_varScopep,
-                                  "Canonical subgraph contract use has no relative identity");
-                      recipes.push_back(SharedScheduleUseRecipe{
-                          refp ? refp->m_id : SharedScheduleVarId{}, use.m_varScopep,
-                          refp != nullptr, use.m_read, use.m_write, use.m_cuttable});
-                  }
-              };
+        const auto makeUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
+                                  std::vector<SharedScheduleUseRecipe>& recipes,
+                                  bool requireRelative) {
+            recipes.reserve(uses.size());
+            for (const V3SubgraphContract::Use& use : uses) {
+                const SharedScheduleLogicRef* const refp
+                    = findSharedScheduleLogicRef(signature, use.m_varScopep);
+                SharedScheduleVarId id;
+                if (refp) {
+                    id = refp->m_id;
+                } else if (requireRelative) {
+                    std::unordered_map<AstVarScope*, size_t> externalSlots;
+                    std::unordered_map<AstVarScope*, size_t> localSlots;
+                    id = makeSharedScheduleVarId(use.m_varScopep, contract.boundaryScopep(),
+                                                 externalSlots, localSlots);
+                    UASSERT_OBJ(!id.m_external && !id.m_local, use.m_varScopep,
+                                "Canonical subgraph contract use has no relative identity");
+                }
+                recipes.push_back(SharedScheduleUseRecipe{std::move(id), use.m_varScopep,
+                                                          refp || requireRelative, use.m_read,
+                                                          use.m_write, use.m_cuttable});
+            }
+        };
         makeUses(contract.boundaryUses(), result.m_boundaryUses, true);
         makeUses(contract.externalUses(), result.m_externalUses, false);
         makeUses(contract.internalUses(), result.m_internalUses, true);
         return result;
     }
 
-    bool canBind(const SharedScheduleLogicSig& signature) const {
-        const auto usesBind = [&](const std::vector<SharedScheduleUseRecipe>& uses) {
-            return std::all_of(uses.begin(), uses.end(), [&](const SharedScheduleUseRecipe& use) {
-                return !use.m_relative || bindSharedScheduleVar(signature, use.m_id);
+    bool shareable() const {
+        const auto relativeUses = [](const std::vector<SharedScheduleUseRecipe>& uses,
+                                     bool external) {
+            return std::all_of(uses.begin(), uses.end(), [&](const auto& use) {
+                return use.m_relative && use.m_id.m_external == external && !use.m_id.m_local;
             });
         };
-        return usesBind(m_boundaryUses) && usesBind(m_externalUses) && usesBind(m_internalUses);
+        const bool externalUsesShareable
+            = std::all_of(m_externalUses.begin(), m_externalUses.end(), [](const auto& use) {
+                  return !use.m_relative || (use.m_id.m_external && !use.m_id.m_local);
+              });
+        return relativeUses(m_boundaryUses, false) && externalUsesShareable
+               && relativeUses(m_internalUses, false);
     }
 
-    V3SubgraphContract bind(AstScope* boundaryScopep, AstSenTree* domainp,
-                            const SharedScheduleLogicSig& signature) const {
-        const auto bindUses = [&](const std::vector<SharedScheduleUseRecipe>& recipes) {
-            std::vector<V3SubgraphContract::Use> uses;
-            uses.reserve(recipes.size());
-            for (const SharedScheduleUseRecipe& recipe : recipes) {
-                AstVarScope* const vscp = recipe.m_relative
-                                              ? bindSharedScheduleVar(signature, recipe.m_id)
-                                              : recipe.m_sourceVscp;
-                UASSERT_OBJ(vscp, boundaryScopep, "Canonical subgraph contract failed to bind");
-                uses.push_back(V3SubgraphContract::Use{vscp, recipe.m_read, recipe.m_write,
-                                                       recipe.m_cuttable});
-            }
-            return uses;
+    bool validateBinding(AstScope* boundaryScopep,
+                         const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate,
+                         const SharedScheduleScopeResolver& resolver, VSubgraphPhase phase) const {
+        const bool post = phase == VSubgraphPhase{VSubgraphPhase::POST};
+        const bool boundaryCuttable = post || phase == VSubgraphPhase{VSubgraphPhase::REFRESH};
+        const auto validSemantics
+            = [](const std::vector<SharedScheduleUseRecipe>& uses, bool cuttableReads) {
+                  return std::all_of(uses.begin(), uses.end(), [&](const auto& use) {
+                      return (use.m_read || use.m_write)
+                             && use.m_cuttable == (use.m_read && cuttableReads);
+                  });
+              };
+        if (!shareable() || m_post != post || !validSemantics(m_boundaryUses, boundaryCuttable)
+            || !validSemantics(m_externalUses, boundaryCuttable)
+            || !validSemantics(m_internalUses, post)) {
+            return false;
+        }
+        const auto validateRelative = [&](const std::vector<SharedScheduleUseRecipe>& uses) {
+            return std::all_of(uses.begin(), uses.end(), [&](const auto& use) {
+                AstVarScope* const resolvedVscp = resolver.bind(boundaryScopep, use.m_id);
+                const auto it = sourceToCandidate.find(use.m_sourceVscp);
+                return resolvedVscp
+                       && (it == sourceToCandidate.end() || it->second == resolvedVscp);
+            });
         };
-        return V3SubgraphContract::fromUses(boundaryScopep, domainp, m_post,
-                                            bindUses(m_boundaryUses), bindUses(m_externalUses),
-                                            bindUses(m_internalUses));
+        const bool externalValid
+            = std::all_of(m_externalUses.begin(), m_externalUses.end(), [&](const auto& use) {
+                  return use.m_relative ? sourceToCandidate.count(use.m_sourceVscp)
+                                        : use.m_sourceVscp != nullptr;
+              });
+        return externalValid && validateRelative(m_boundaryUses)
+               && validateRelative(m_internalUses);
+    }
+
+    void
+    appendExternalBindings(const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate,
+                           std::vector<AstVarScope*>& result) const {
+        result.reserve(result.size() + m_externalUses.size());
+        for (const SharedScheduleUseRecipe& use : m_externalUses) {
+            const auto it = sourceToCandidate.find(use.m_sourceVscp);
+            AstVarScope* const vscp = use.m_relative
+                                          ? (it == sourceToCandidate.end() ? nullptr : it->second)
+                                          : use.m_sourceVscp;
+            UASSERT_OBJ(vscp, use.m_sourceVscp, "Canonical external contract failed to bind");
+            result.push_back(vscp);
+        }
     }
 };
 
@@ -567,6 +636,21 @@ void preserveSharedInstanceUses(const SharedScheduleContractRecipe& recipe) {
         for (const SharedScheduleUseRecipe& use : uses) {
             use.m_sourceVscp->optimizeLifePost(false);
             use.m_sourceVscp->subgraphSharedUse(true);
+        }
+    };
+    preserveRecipes(recipe.m_boundaryUses);
+    preserveRecipes(recipe.m_internalUses);
+}
+
+void preserveSharedInstanceUses(const SharedScheduleContractRecipe& recipe,
+                                AstScope* boundaryScopep,
+                                const SharedScheduleScopeResolver& resolver) {
+    const auto preserveRecipes = [&](const std::vector<SharedScheduleUseRecipe>& uses) {
+        for (const SharedScheduleUseRecipe& use : uses) {
+            AstVarScope* const vscp = resolver.bind(boundaryScopep, use.m_id);
+            UASSERT_OBJ(vscp, boundaryScopep, "Canonical subgraph use failed to resolve");
+            vscp->optimizeLifePost(false);
+            vscp->subgraphSharedUse(true);
         }
     };
     preserveRecipes(recipe.m_boundaryUses);
@@ -928,6 +1012,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t contractBoundaryUses = 0;
     uint64_t contractExternalUses = 0;
     uint64_t contractInternalUses = 0;
+    uint64_t contractInstanceBindings = 0;
+    uint64_t contractRecipeFallbacks = 0;
+    uint64_t contractUsesNotExpanded = 0;
     uint64_t contracts = 0;
     uint64_t coarseNodes = 0;
     uint64_t logicalUses = 0;
@@ -978,10 +1065,12 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         VSubgraphPhase m_phase;
     };
     std::vector<EligibleModulePhase> eligibleModulePhases;
+    std::vector<AstVarScope*> contractExternalBindings;
     std::vector<PendingSubgraphMaterialization> pendingMaterializations;
     std::unordered_set<AstVarScope*> postWrittenInternalVscps;
     std::unordered_set<AstVarScope*> refreshReadInternalVscps;
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
+    const SharedScheduleScopeResolver scopeResolver{netlistp};
     const auto noteSharedAbi = [&](const SharedHelperAbiAnalysis& abi,
                                    VSubgraphPhase subgraphPhase, AstNodeModule* modp) {
         ++sharedAbiAnalyses;
@@ -1020,10 +1109,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 makeSharedScheduleLogicSig(logic, group.m_boundaryScopep)};
             if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
             SharedHelperArtifact* cachedArtifactp = nullptr;
+            size_t cachedArtifactIndex = std::numeric_limits<size_t>::max();
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
             std::vector<SharedHelperArg> cachedArgs;
             const VlOs::DeltaWallTime cacheLookupTimer{measure};
-            for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
+            for (size_t artifactIndex = 0; artifactIndex < sharedHelperArtifacts.size();
+                 ++artifactIndex) {
+                SharedHelperArtifact& artifact = sharedHelperArtifacts[artifactIndex];
                 if (artifact.m_key.m_modp != scheduleKey.m_modp) continue;
                 if (artifact.m_key.m_phase != scheduleKey.m_phase) {
                     ++sharedOrderCacheMissPhase;
@@ -1054,8 +1146,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     }
                     continue;
                 }
-                if (!artifact.m_contractRecipe.canBind(scheduleKey.m_logicSig)) {
+                if (!artifact.m_contractRecipe.validateBinding(
+                        group.m_boundaryScopep, sourceToCandidate, scopeResolver, subgraphPhase)) {
                     ++sharedOrderCacheMissAbi;
+                    ++contractRecipeFallbacks;
                     continue;
                 }
                 cachedArgs.clear();
@@ -1071,6 +1165,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 }
                 ++sharedOrderCacheLogicMatches;
                 cachedArtifactp = &artifact;
+                cachedArtifactIndex = artifactIndex;
                 break;
             }
             if (measure) cacheLookupWallTime += cacheLookupTimer.deltaTime();
@@ -1078,13 +1173,21 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             const bool refresh = subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH};
             AstCFunc* funcp = nullptr;
             std::unique_ptr<V3SubgraphContract> contractp;
+            const size_t externalBindingsBegin = contractExternalBindings.size();
+            size_t externalBindingsCount = 0;
             SharedHelperAbiAnalysis abi;
             if (cachedArtifactp) {
                 const VlOs::DeltaWallTime cacheReuseTimer{measure};
-                contractp
-                    = std::make_unique<V3SubgraphContract>(cachedArtifactp->m_contractRecipe.bind(
-                        group.m_boundaryScopep, group.m_senTreep, scheduleKey.m_logicSig));
-                if (cachedArtifactp->m_instanceContext) { preserveSharedInstanceUses(*contractp); }
+                const SharedScheduleContractRecipe& recipe = cachedArtifactp->m_contractRecipe;
+                recipe.appendExternalBindings(sourceToCandidate, contractExternalBindings);
+                externalBindingsCount = contractExternalBindings.size() - externalBindingsBegin;
+                contractInstanceBindings += externalBindingsCount;
+                contractUsesNotExpanded += recipe.m_boundaryUses.size()
+                                           + recipe.m_externalUses.size()
+                                           + recipe.m_internalUses.size();
+                if (cachedArtifactp->m_instanceContext) {
+                    preserveSharedInstanceUses(recipe, group.m_boundaryScopep, scopeResolver);
+                }
                 if (!cachedArtifactp->m_parameterized) {
                     parameterizeSharedHelper(*cachedArtifactp);
                     sharedHelperArguments += cachedArtifactp->m_args.size();
@@ -1153,19 +1256,33 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             if (!funcp) return;
             const VlOs::DeltaWallTime contractAccountingTimer{measure};
-            const V3SubgraphContract& contract = *contractp;
-            contractBoundaryUses += contract.boundaryUses().size();
-            contractExternalUses += contract.externalUses().size();
-            contractInternalUses += contract.internalUses().size();
-            for (const V3SubgraphContract::Use& use : contract.internalUses()) {
-                if (V3SubgraphContract::isDelayedState(use.m_varScopep)) {
-                    parentAccessedVscps.insert(use.m_varScopep);
+            const auto accountInternalUse = [&](AstVarScope* vscp, bool read, bool write) {
+                if (V3SubgraphContract::isDelayedState(vscp)) { parentAccessedVscps.insert(vscp); }
+                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST} && write) {
+                    postWrittenInternalVscps.insert(vscp);
                 }
-                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST} && use.m_write) {
-                    postWrittenInternalVscps.insert(use.m_varScopep);
+                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH} && read) {
+                    refreshReadInternalVscps.insert(vscp);
                 }
-                if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::REFRESH} && use.m_read) {
-                    refreshReadInternalVscps.insert(use.m_varScopep);
+            };
+            if (cachedArtifactp) {
+                const SharedScheduleContractRecipe& recipe = cachedArtifactp->m_contractRecipe;
+                contractBoundaryUses += recipe.m_boundaryUses.size();
+                contractExternalUses += recipe.m_externalUses.size();
+                contractInternalUses += recipe.m_internalUses.size();
+                for (const SharedScheduleUseRecipe& use : recipe.m_internalUses) {
+                    AstVarScope* const vscp = scopeResolver.bind(group.m_boundaryScopep, use.m_id);
+                    UASSERT_OBJ(vscp, group.m_boundaryScopep,
+                                "Canonical internal contract failed to resolve");
+                    accountInternalUse(vscp, use.m_read, use.m_write);
+                }
+            } else {
+                const V3SubgraphContract& contract = *contractp;
+                contractBoundaryUses += contract.boundaryUses().size();
+                contractExternalUses += contract.externalUses().size();
+                contractInternalUses += contract.internalUses().size();
+                for (const V3SubgraphContract::Use& use : contract.internalUses()) {
+                    accountInternalUse(use.m_varScopep, use.m_read, use.m_write);
                 }
             }
             ++contracts;
@@ -1186,7 +1303,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     sharedFuncp = localCallp->funcp();
                     sharedCallp = localCallp;
                     sharedAbi
-                        = SharedHelperAbiAnalyzer{sharedFuncp, group.m_boundaryScopep, contract}
+                        = SharedHelperAbiAnalyzer{sharedFuncp, group.m_boundaryScopep, *contractp}
                               .result();
                 }
             }
@@ -1220,7 +1337,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 // The cached artifact was already validated and accounted for above.
             } else if (canonicalContextCandidate && contextArgs.size() <= kMaxSharedHelperArgs) {
                 SharedScheduleContractRecipe contractRecipe
-                    = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
+                    = SharedScheduleContractRecipe::make(*contractp, scheduleKey.m_logicSig);
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
                     std::move(scheduleKey), sharedFuncp, sharedCallp, contextArgs,
                     std::move(contractRecipe), abi, true, false});
@@ -1231,7 +1348,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 // Keep unsupported helper shapes reusable only through their exact schedule key.
                 // Canonical helpers above never clone or compare an already ordered C++ body.
                 SharedScheduleContractRecipe contractRecipe
-                    = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
+                    = SharedScheduleContractRecipe::make(*contractp, scheduleKey.m_logicSig);
                 sharedHelperArtifacts.push_back(
                     SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp, args,
                                          std::move(contractRecipe), abi, false, false});
@@ -1267,8 +1384,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 wrapperp->addStmtsp(instancep);
             }
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
-            pendingMaterializations.push_back(
-                PendingSubgraphMaterialization{instancep, &group, std::move(contractp)});
+            pendingMaterializations.push_back(PendingSubgraphMaterialization{
+                instancep, &group, std::move(contractp), cachedArtifactIndex,
+                externalBindingsBegin, externalBindingsCount});
             if (measure) materializeWallTime += materializeTimer.deltaTime();
         };
 
@@ -1289,40 +1407,90 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     for (PendingSubgraphMaterialization& pending : pendingMaterializations) {
         AstSubgraphInstance* const instancep = pending.m_instancep;
         const SubgraphGroup& group = *pending.m_groupp;
-        const V3SubgraphContract& contract = *pending.m_contractp;
-        const auto keepInternalUse = [&](const V3SubgraphContract::Use& use) {
-            const bool delayedState = V3SubgraphContract::isDelayedState(use.m_varScopep);
-            const bool parentAccessed = parentAccessedVscps.count(use.m_varScopep);
+        const auto keepInternalUse = [&](AstVarScope* vscp, bool write) {
+            const bool delayedState = V3SubgraphContract::isDelayedState(vscp);
+            const bool parentAccessed = parentAccessedVscps.count(vscp);
             const bool publishRead = instancep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
-            return delayedState || (parentAccessed && (publishRead || use.m_write));
+            return delayedState || (parentAccessed && (publishRead || write));
         };
-        const std::vector<V3SubgraphContract::Use>& internalUses = contract.internalUses();
-        const size_t keptInternalUses
-            = std::count_if(internalUses.begin(), internalUses.end(), keepInternalUse);
-        instancep->reserveMaterializedUses(contract.boundaryUses().size()
-                                           + contract.externalUses().size() + keptInternalUses);
-        for (const V3SubgraphContract::Use& use : contract.boundaryUses()) {
-            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY, use.m_read,
+        const auto addExternalUse = [&](AstVarScope* vscp, bool read, bool write, bool cuttable) {
+            const bool snapshotStorage = std::any_of(
+                group.m_snapshots.begin(), group.m_snapshots.end(),
+                [&](const auto& snapshot) { return snapshot.m_storageVscp == vscp; });
+            instancep->addMaterializedUse(
+                vscp,
+                snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
+                                : VSubgraphUseKind{VSubgraphUseKind::EXTERNAL},
+                read, write, cuttable);
+            ++materializedExternalUses;
+        };
+        if (pending.m_contractp) {
+            const V3SubgraphContract& contract = *pending.m_contractp;
+            const std::vector<V3SubgraphContract::Use>& internalUses = contract.internalUses();
+            const size_t keptInternalUses
+                = std::count_if(internalUses.begin(), internalUses.end(), [&](const auto& use) {
+                      return keepInternalUse(use.m_varScopep, use.m_write);
+                  });
+            instancep->reserveMaterializedUses(contract.boundaryUses().size()
+                                               + contract.externalUses().size()
+                                               + keptInternalUses);
+            for (const V3SubgraphContract::Use& use : contract.boundaryUses()) {
+                instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::BOUNDARY,
+                                              use.m_read, use.m_write, use.m_cuttable);
+                ++materializedBoundaryUses;
+            }
+            for (const V3SubgraphContract::Use& use : contract.externalUses()) {
+                addExternalUse(use.m_varScopep, use.m_read, use.m_write, use.m_cuttable);
+            }
+            for (const V3SubgraphContract::Use& use : internalUses) {
+                if (!keepInternalUse(use.m_varScopep, use.m_write)) {
+                    ++prunedInternalUses;
+                    continue;
+                }
+                instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::INTERNAL,
+                                              use.m_read, use.m_write, use.m_cuttable);
+                ++materializedInternalUses;
+            }
+            continue;
+        }
+
+        UASSERT_OBJ(pending.m_artifactIndex < sharedHelperArtifacts.size(), instancep,
+                    "Canonical subgraph contract has no artifact");
+        const SharedScheduleContractRecipe& recipe
+            = sharedHelperArtifacts[pending.m_artifactIndex].m_contractRecipe;
+        size_t keptInternalUses = 0;
+        for (const SharedScheduleUseRecipe& use : recipe.m_internalUses) {
+            AstVarScope* const vscp = scopeResolver.bind(group.m_boundaryScopep, use.m_id);
+            UASSERT_OBJ(vscp, instancep, "Canonical internal contract failed to resolve");
+            keptInternalUses += keepInternalUse(vscp, use.m_write);
+        }
+        UASSERT_OBJ(pending.m_externalBindingsCount == recipe.m_externalUses.size(), instancep,
+                    "Canonical external contract binding count mismatch");
+        UASSERT_OBJ(pending.m_externalBindingsBegin + pending.m_externalBindingsCount
+                        <= contractExternalBindings.size(),
+                    instancep, "Canonical external contract binding range is invalid");
+        instancep->reserveMaterializedUses(recipe.m_boundaryUses.size()
+                                           + recipe.m_externalUses.size() + keptInternalUses);
+        for (const SharedScheduleUseRecipe& use : recipe.m_boundaryUses) {
+            AstVarScope* const vscp = scopeResolver.bind(group.m_boundaryScopep, use.m_id);
+            UASSERT_OBJ(vscp, instancep, "Canonical boundary contract failed to resolve");
+            instancep->addMaterializedUse(vscp, VSubgraphUseKind::BOUNDARY, use.m_read,
                                           use.m_write, use.m_cuttable);
             ++materializedBoundaryUses;
         }
-        for (const V3SubgraphContract::Use& use : contract.externalUses()) {
-            const bool snapshotStorage = std::any_of(
-                group.m_snapshots.begin(), group.m_snapshots.end(),
-                [&](const auto& snapshot) { return snapshot.m_storageVscp == use.m_varScopep; });
-            instancep->addMaterializedUse(
-                use.m_varScopep,
-                snapshotStorage ? VSubgraphUseKind{VSubgraphUseKind::SNAPSHOT_STORAGE}
-                                : VSubgraphUseKind{VSubgraphUseKind::EXTERNAL},
-                use.m_read, use.m_write, use.m_cuttable);
-            ++materializedExternalUses;
+        for (size_t index = 0; index < recipe.m_externalUses.size(); ++index) {
+            const SharedScheduleUseRecipe& use = recipe.m_externalUses[index];
+            addExternalUse(contractExternalBindings[pending.m_externalBindingsBegin + index],
+                           use.m_read, use.m_write, use.m_cuttable);
         }
-        for (const V3SubgraphContract::Use& use : internalUses) {
-            if (!keepInternalUse(use)) {
+        for (const SharedScheduleUseRecipe& use : recipe.m_internalUses) {
+            AstVarScope* const vscp = scopeResolver.bind(group.m_boundaryScopep, use.m_id);
+            UASSERT_OBJ(vscp, instancep, "Canonical internal contract failed to resolve");
+            if (!keepInternalUse(vscp, use.m_write)) {
                 ++prunedInternalUses;
                 continue;
             }
-            instancep->addMaterializedUse(use.m_varScopep, VSubgraphUseKind::INTERNAL, use.m_read,
+            instancep->addMaterializedUse(vscp, VSubgraphUseKind::INTERNAL, use.m_read,
                                           use.m_write, use.m_cuttable);
             ++materializedInternalUses;
         }
@@ -1350,7 +1518,18 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph NBA contract boundary uses", contractBoundaryUses);
     V3Stats::addStat("Scheduling, Subgraph NBA contract external uses", contractExternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract instance bindings",
+                     contractInstanceBindings);
     V3Stats::addStat("Scheduling, Subgraph NBA contract internal uses", contractInternalUses);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract recipe fallbacks",
+                     contractRecipeFallbacks);
+    V3Stats::addStat("Scheduling, Subgraph NBA contract uses not expanded",
+                     contractUsesNotExpanded);
+    // External uses retain one pointer-sized instance binding; boundary and internal uses retain
+    // no per-instance Use record. Exclude container/object overhead for a conservative figure.
+    V3Stats::addStat("Scheduling, Subgraph NBA contract metadata bytes avoided",
+                     contractUsesNotExpanded * sizeof(V3SubgraphContract::Use)
+                         - contractInstanceBindings * sizeof(AstVarScope*));
     V3Stats::addStat("Scheduling, Subgraph NBA contracts", contracts);
     V3Stats::addStat("Scheduling, Subgraph NBA coarse nodes", coarseNodes);
     V3Stats::addStat("Scheduling, Subgraph NBA logical uses", logicalUses);
