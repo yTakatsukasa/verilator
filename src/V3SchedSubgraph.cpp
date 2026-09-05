@@ -415,7 +415,6 @@ struct SharedHelperArtifact final {
     SharedScheduleKey m_key;
     AstCFunc* m_funcp = nullptr;
     AstCCall* m_firstCallp = nullptr;
-    AstNode* m_templateStmtsp = nullptr;
     std::vector<SharedHelperArg> m_args;
     SharedScheduleContractRecipe m_contractRecipe;
     SharedHelperAbiAnalysis m_abi;
@@ -563,57 +562,6 @@ void parameterizeSharedHelper(SharedHelperArtifact& artifact) {
     }
     artifact.m_funcp->noLife(true);
     artifact.m_parameterized = true;
-}
-
-bool sameSharedHelperBody(const SharedHelperArtifact& artifact, AstCFunc* candidateFuncp,
-                          const std::vector<SharedHelperArg>& candidateArgs) {
-    if (artifact.m_args.size() != candidateArgs.size()) return false;
-    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
-        const SharedHelperArg& source = artifact.m_args[index];
-        const SharedHelperArg& candidate = candidateArgs[index];
-        if (source.m_read != candidate.m_read || source.m_write != candidate.m_write
-            || source.m_state != candidate.m_state
-            || !source.m_vscp->dtypep()->similarDType(candidate.m_vscp->dtypep())) {
-            return false;
-        }
-    }
-
-    // Compare alpha-equivalent bodies by temporarily mapping candidate variables to the
-    // canonical argument order. Constants and every other AST property remain exact.
-    std::unordered_map<AstVarScope*, AstVarScope*> remap;
-    for (size_t index = 0; index < artifact.m_args.size(); ++index) {
-        remap.emplace(candidateArgs[index].m_vscp, artifact.m_args[index].m_vscp);
-    }
-    struct RestoreRef final {
-        AstNodeVarRef* m_refp;
-        AstVarScope* m_vscp;
-        AstVar* m_varp;
-        VSelfPointerText m_selfPointer;
-    };
-    std::vector<RestoreRef> restores;
-    candidateFuncp->foreach([&](AstNodeVarRef* refp) {
-        const auto it = remap.find(refp->varScopep());
-        if (it == remap.end()) return;
-        restores.push_back(RestoreRef{refp, refp->varScopep(), refp->varp(), refp->selfPointer()});
-        refp->varp(it->second->varp());
-        refp->varScopep(it->second);
-        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
-    });
-    const bool same = candidateFuncp->stmtsp()->sameTree(artifact.m_templateStmtsp);
-    for (const RestoreRef& restore : restores) {
-        restore.m_refp->varp(restore.m_varp);
-        restore.m_refp->varScopep(restore.m_vscp);
-        restore.m_refp->selfPointer(restore.m_selfPointer);
-    }
-    return same;
-}
-
-AstNode* cloneSharedHelperTemplate(AstCFunc* funcp) {
-    AstNode* const templatep = funcp->stmtsp()->cloneTree(true);
-    templatep->foreach([&](AstNodeVarRef* refp) {
-        refp->selfPointer(VSelfPointerText{VSelfPointerText::Empty()});
-    });
-    return templatep;
 }
 
 AstCCall* soleLocalHelperCall(AstCFunc* funcp) {
@@ -1069,7 +1017,6 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     cachedArgs, tag, slow, refresh, cachedArtifactp->m_instanceContext);
                 discardSharedScheduleLogic(logic);
                 abi = cachedArtifactp->m_abi;
-                ++sharedHelperBodyChecks;
                 ++sharedHelperReuses;
                 ++sharedOrderCacheOrderCallsAvoided;
                 if (cachedArtifactp->m_instanceContext) {
@@ -1199,43 +1146,20 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 SharedScheduleContractRecipe contractRecipe
                     = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                    std::move(scheduleKey), sharedFuncp, sharedCallp, nullptr, contextArgs,
+                    std::move(scheduleKey), sharedFuncp, sharedCallp, contextArgs,
                     std::move(contractRecipe), abi, true, false});
                 ++sharedHelperArtifactCount;
                 ++canonicalContextArtifacts;
             } else if (!canonicalContextCandidate && shareCandidate && !compositeArgs
                        && args.size() <= kMaxSharedHelperArgs) {
-                SharedHelperArtifact* matchingArtifactp = nullptr;
-                for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
-                    if (artifact.m_key.m_modp != group.m_boundaryScopep->modp()
-                        || artifact.m_key.m_phase != subgraphPhase || artifact.m_instanceContext) {
-                        continue;
-                    }
-                    ++sharedHelperBodyChecks;
-                    if (sameSharedHelperBody(artifact, sharedFuncp, args)) {
-                        matchingArtifactp = &artifact;
-                        break;
-                    }
-                    ++sharedHelperBodyMismatches;
-                }
-                if (matchingArtifactp) {
-                    if (!matchingArtifactp->m_parameterized) {
-                        parameterizeSharedHelper(*matchingArtifactp);
-                        sharedHelperArguments += matchingArtifactp->m_args.size();
-                        ++sharedHelperParameterizations;
-                    }
-                    sharedCallp->funcp(matchingArtifactp->m_funcp);
-                    addSharedHelperCallArgs(sharedCallp, args);
-                    ++sharedHelperReuses;
-                } else {
-                    SharedScheduleContractRecipe contractRecipe
-                        = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
-                    sharedHelperArtifacts.push_back(
-                        SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp,
-                                             cloneSharedHelperTemplate(sharedFuncp), args,
-                                             std::move(contractRecipe), abi, false, false});
-                    ++sharedHelperArtifactCount;
-                }
+                // Keep unsupported helper shapes reusable only through their exact schedule key.
+                // Canonical helpers above never clone or compare an already ordered C++ body.
+                SharedScheduleContractRecipe contractRecipe
+                    = SharedScheduleContractRecipe::make(contract, scheduleKey.m_logicSig);
+                sharedHelperArtifacts.push_back(
+                    SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp, args,
+                                         std::move(contractRecipe), abi, false, false});
+                ++sharedHelperArtifactCount;
             } else if ((canonicalContextCandidate && contextCompositeArgs)
                        || (!canonicalContextCandidate && compositeArgs)) {
                 ++sharedHelperSkippedComposite;
@@ -1328,11 +1252,6 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     }
     if (measure) materializeWallTime += deferredMaterializeTimer.deltaTime();
 
-    for (SharedHelperArtifact& artifact : sharedHelperArtifacts) {
-        if (artifact.m_templateStmtsp) artifact.m_templateStmtsp->deleteTree();
-        artifact.m_templateStmtsp = nullptr;
-    }
-
     V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), cache lookup",
                          cacheLookupWallTime);
     V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), cache reuse",
@@ -1375,6 +1294,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);
     V3Stats::addStat("Scheduling, Subgraph canonical context artifacts",
                      canonicalContextArtifacts);
+    V3Stats::addStat("Scheduling, Subgraph canonical C++ bodies", canonicalContextArtifacts);
     V3Stats::addStat("Scheduling, Subgraph canonical context reuses", canonicalContextReuses);
     V3Stats::addStat("Scheduling, Subgraph canonical order calls avoided",
                      canonicalOrderCallsAvoided);
