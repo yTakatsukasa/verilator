@@ -57,6 +57,10 @@ private:
 public:
     static V3SubgraphContract make(AstCFunc* funcp, AstScope* boundaryScopep, AstSenTree* domainp,
                                    bool post, bool refresh);
+    static V3SubgraphContract fromUses(AstScope* boundaryScopep, AstSenTree* domainp, bool post,
+                                       std::vector<Use>&& boundaryUses,
+                                       std::vector<Use>&& externalUses,
+                                       std::vector<Use>&& internalUses);
     static V3SubgraphContract
     remap(const V3SubgraphContract& source, AstScope* boundaryScopep, AstSenTree* domainp,
           const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToTarget);

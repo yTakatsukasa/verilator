@@ -136,6 +136,15 @@ V3SubgraphContract V3SubgraphContract::make(AstCFunc* funcp, AstScope* boundaryS
         std::move(internalUses)};
 }
 
+V3SubgraphContract V3SubgraphContract::fromUses(AstScope* boundaryScopep, AstSenTree* domainp,
+                                                bool post, std::vector<Use>&& boundaryUses,
+                                                std::vector<Use>&& externalUses,
+                                                std::vector<Use>&& internalUses) {
+    return V3SubgraphContract{
+        boundaryScopep,         domainp, post, std::move(boundaryUses), std::move(externalUses),
+        std::move(internalUses)};
+}
+
 V3SubgraphContract
 V3SubgraphContract::remap(const V3SubgraphContract& source, AstScope* boundaryScopep,
                           AstSenTree* domainp,
