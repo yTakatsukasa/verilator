@@ -38,12 +38,17 @@ bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
     return false;
 }
 
+bool isDpiCallTarget(const AstCFunc* funcp) {
+    return funcp
+           && (funcp->dpiContext() || funcp->dpiExportDispatcher() || funcp->dpiExportImpl()
+               || funcp->dpiImportPrototype() || funcp->dpiImportWrapper());
+}
+
 bool isSafeLocalCallTarget(const AstCFunc* funcp, const AstScope* boundaryScopep) {
     return funcp && funcp->scopep() == boundaryScopep && !funcp->isStatic() && !funcp->funcPublic()
-           && !funcp->dpiContext() && !funcp->dpiExportDispatcher() && !funcp->dpiExportImpl()
-           && !funcp->dpiImportPrototype() && !funcp->dpiImportWrapper() && !funcp->isConstructor()
-           && !funcp->isDestructor() && !funcp->isVirtual() && !funcp->needProcess()
-           && !funcp->recursive() && !funcp->isCoroutine() && !funcp->isCovergroupSample();
+           && !isDpiCallTarget(funcp) && !funcp->isConstructor() && !funcp->isDestructor()
+           && !funcp->isVirtual() && !funcp->needProcess() && !funcp->recursive()
+           && !funcp->isCoroutine() && !funcp->isCovergroupSample();
 }
 
 bool isTaskCallTemp(const AstVarScope* vscp) {

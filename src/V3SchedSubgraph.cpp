@@ -55,12 +55,17 @@ struct PendingSubgraphMaterialization final {
 
 bool isUnderScope(const AstScope* scopep, const AstScope* basep);
 
+bool isDpiCallTarget(const AstCFunc* funcp) {
+    return funcp
+           && (funcp->dpiContext() || funcp->dpiExportDispatcher() || funcp->dpiExportImpl()
+               || funcp->dpiImportPrototype() || funcp->dpiImportWrapper());
+}
+
 bool isSafeSharedCallTarget(const AstCFunc* funcp, const AstScope* boundaryScopep) {
     return funcp && funcp->scopep() == boundaryScopep && !funcp->isStatic() && !funcp->funcPublic()
-           && !funcp->dpiContext() && !funcp->dpiExportDispatcher() && !funcp->dpiExportImpl()
-           && !funcp->dpiImportPrototype() && !funcp->dpiImportWrapper() && !funcp->isConstructor()
-           && !funcp->isDestructor() && !funcp->isVirtual() && !funcp->needProcess()
-           && !funcp->recursive() && !funcp->isCoroutine() && !funcp->isCovergroupSample();
+           && !isDpiCallTarget(funcp) && !funcp->isConstructor() && !funcp->isDestructor()
+           && !funcp->isVirtual() && !funcp->needProcess() && !funcp->recursive()
+           && !funcp->isCoroutine() && !funcp->isCovergroupSample();
 }
 
 bool isTaskCallTemp(const AstVarScope* vscp) {
@@ -111,7 +116,7 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
         ++m_result.m_calls;
         iterateChildren(nodep);
         AstCFunc* const funcp = nodep->funcp();
-        if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiContext()) {
+        if (isDpiCallTarget(funcp)) {
             ++m_result.m_dpiCalls;
             m_result.m_eligible = false;
             return;
@@ -953,6 +958,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperReuses = 0;
     uint64_t sharedHelperSkippedCalls = 0;
     uint64_t sharedHelperSkippedComposite = 0;
+    uint64_t sharedHelperSkippedDpiCalls = 0;
     uint64_t sharedHelperSkippedGeneratedTemps = 0;
     uint64_t sharedHelperSkippedOversized = 0;
     uint64_t sharedHelperSkippedTriggered = 0;
@@ -1234,6 +1240,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 ++sharedHelperSkippedComposite;
             } else if (shareCandidate) {
                 ++sharedHelperSkippedOversized;
+            } else if (sharedAbi.m_dpiCalls) {
+                ++sharedHelperSkippedDpiCalls;
             } else if (sharedAbi.m_hasTriggeredState) {
                 ++sharedHelperSkippedTriggered;
             } else if (sharedAbi.m_calls) {
@@ -1390,6 +1398,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped calls", sharedHelperSkippedCalls);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped composite",
                      sharedHelperSkippedComposite);
+    V3Stats::addStat("Scheduling, Subgraph shared helper skipped DPI calls",
+                     sharedHelperSkippedDpiCalls);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped generated temps",
                      sharedHelperSkippedGeneratedTemps);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped oversized",

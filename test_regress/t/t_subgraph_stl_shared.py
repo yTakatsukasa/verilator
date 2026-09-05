@@ -66,6 +66,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped DPI calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 9)
