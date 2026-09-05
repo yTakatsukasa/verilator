@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Canonical subgraph schedule uses the calling instance context
+# DESCRIPTION: Verilator: Canonical subgraph module-local call sharing
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -12,6 +12,7 @@ import vltest_bootstrap
 test.scenarios("vlt")
 
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
+test.execute()
 
 cpp_files = [
     filename for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp")
@@ -26,11 +27,11 @@ for filename in cpp_files:
 if canonical_bodies != 2:
     test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
 
-test.execute()
-
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped calls\s+(\d+)", 0)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
 
