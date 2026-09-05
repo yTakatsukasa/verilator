@@ -1121,7 +1121,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             // relative variable identity, so sibling paths are never alpha-renamed together.
             static constexpr size_t kMaxSharedHelperArgs = 8;
             const bool canonicalContextCandidate
-                = shareCandidate && !refresh && sharedFuncp->isLoose() && !sharedFuncp->isStatic()
+                = shareCandidate && sharedFuncp->isLoose() && !sharedFuncp->isStatic()
                   && sharedFuncp->scopep() == group.m_boundaryScopep;
             const std::vector<SharedHelperArg> contextArgs
                 = canonicalContextCandidate
