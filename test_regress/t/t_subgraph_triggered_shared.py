@@ -21,6 +21,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 11)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence instances\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence max class size\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential reuses\s+(\d+)",
+               11)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph canonical contract local trigger uses\s+(\d+)", 7)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 8)

@@ -528,6 +528,20 @@ struct SharedScheduleKey final {
     }
 };
 
+struct PreclassifiedSubgraphPhase final {
+    SubgraphGroup* m_groupp = nullptr;
+    LogicByScope* m_logicp = nullptr;
+    const char* m_phaseName = nullptr;
+    VSubgraphPhase m_phase;
+    SharedScheduleKey m_key;
+    size_t m_classIndex = std::numeric_limits<size_t>::max();
+};
+
+struct SubgraphScheduleEquivalenceClass final {
+    size_t m_representativeIndex = std::numeric_limits<size_t>::max();
+    uint64_t m_members = 0;
+};
+
 const SharedScheduleLogicRef* findSharedScheduleLogicRef(const SharedScheduleLogicSig& signature,
                                                          AstVarScope* vscp) {
     for (const SharedScheduleLogicNode& node : signature) {
@@ -1197,6 +1211,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedBoundaryAbiExternalSlots = 0;
     uint64_t sharedBoundaryAbiInstanceStorageBindings = 0;
     uint64_t sharedBoundaryAbiSlots = 0;
+    uint64_t sharedScheduleEquivalenceMaxClassSize = 0;
     uint64_t canonicalContractDirectExternalUses = 0;
     uint64_t canonicalContractDirectGlobalTriggerUses = 0;
     uint64_t canonicalContractDirectOtherUses = 0;
@@ -1283,7 +1298,72 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             ++sharedAbiModulePhaseCandidates;
         }
     };
+    std::vector<PreclassifiedSubgraphPhase> phaseWorks;
+    phaseWorks.reserve(3 * groups.size());
+    const VlOs::DeltaWallTime logicSignatureTimer{measure};
+    const auto addPhaseWork = [&](SubgraphGroup& group, LogicByScope& logic, const char* phaseName,
+                                  VSubgraphPhase phase) {
+        if (logic.empty()) return;
+        V3Hash logicHash;
+        SharedScheduleLogicSig logicSig
+            = makeSharedScheduleLogicSig(logic, group.m_boundaryScopep, logicHash);
+        SharedScheduleBoundaryAbi boundaryAbi
+            = makeSharedScheduleBoundaryAbi(group.m_boundaryScopep);
+        ++sharedBoundaryAbiAnalyses;
+        sharedBoundaryAbiSlots += boundaryAbi.size();
+        const uint64_t instanceStorageBindings
+            = std::count_if(boundaryAbi.begin(), boundaryAbi.end(),
+                            [](const auto& slot) { return slot.m_storageVscp != nullptr; });
+        sharedBoundaryAbiInstanceStorageBindings += instanceStorageBindings;
+        sharedBoundaryAbiExternalSlots += boundaryAbi.size() - instanceStorageBindings;
+        phaseWorks.push_back(PreclassifiedSubgraphPhase{
+            &group, &logic, phaseName, phase,
+            SharedScheduleKey{group.m_boundaryScopep->modp(), phase, group.m_domainKeyp, logicHash,
+                              std::move(boundaryAbi), std::move(logicSig)}});
+    };
+    for (SubgraphGroup& group : groups) {
+        addPhaseWork(group, group.m_preLogic, "pre", VSubgraphPhase::PRE);
+        addPhaseWork(group, group.m_postLogic, "post", VSubgraphPhase::POST);
+        addPhaseWork(group, group.m_refreshLogic, "refresh", VSubgraphPhase::REFRESH);
+    }
+    std::vector<SubgraphScheduleEquivalenceClass> equivalenceClasses;
+    std::unordered_multimap<V3Hash, size_t> equivalenceClassBuckets;
+    for (size_t workIndex = 0; workIndex < phaseWorks.size(); ++workIndex) {
+        PreclassifiedSubgraphPhase& work = phaseWorks[workIndex];
+        const auto bucketRange = equivalenceClassBuckets.equal_range(work.m_key.bucketHash());
+        for (auto bucketIt = bucketRange.first; bucketIt != bucketRange.second; ++bucketIt) {
+            const size_t classIndex = bucketIt->second;
+            SubgraphScheduleEquivalenceClass& equivalenceClass = equivalenceClasses[classIndex];
+            const SharedScheduleKey& representativeKey
+                = phaseWorks[equivalenceClass.m_representativeIndex].m_key;
+            if (representativeKey.m_modp != work.m_key.m_modp
+                || representativeKey.m_phase != work.m_key.m_phase
+                || representativeKey.m_logicHash != work.m_key.m_logicHash
+                || !representativeKey.m_domainKeyp->sameTree(work.m_key.m_domainKeyp)) {
+                continue;
+            }
+            std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
+            if (representativeKey.matchLogic(work.m_key, sourceToCandidate)
+                != SharedScheduleMatchResult::MATCH) {
+                continue;
+            }
+            work.m_classIndex = classIndex;
+            ++equivalenceClass.m_members;
+            break;
+        }
+        if (work.m_classIndex == std::numeric_limits<size_t>::max()) {
+            work.m_classIndex = equivalenceClasses.size();
+            equivalenceClasses.push_back(SubgraphScheduleEquivalenceClass{workIndex, 1});
+            equivalenceClassBuckets.emplace(work.m_key.bucketHash(), work.m_classIndex);
+        }
+    }
+    for (const SubgraphScheduleEquivalenceClass& equivalenceClass : equivalenceClasses) {
+        sharedScheduleEquivalenceMaxClassSize
+            = std::max(sharedScheduleEquivalenceMaxClassSize, equivalenceClass.m_members);
+    }
+    if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
     unsigned groupIndex = 0;
+    size_t phaseWorkIndex = 0;
     for (SubgraphGroup& group : groups) {
         orderedLogic
             += group.m_preLogic.size() + group.m_postLogic.size() + group.m_refreshLogic.size();
@@ -1292,25 +1372,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         const auto orderPhase = [&](LogicByScope& logic, const string& phase,
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
+            UASSERT(phaseWorkIndex < phaseWorks.size(), "Missing preclassified subgraph phase");
+            PreclassifiedSubgraphPhase& phaseWork = phaseWorks[phaseWorkIndex++];
+            UASSERT_OBJ(phaseWork.m_groupp == &group && phaseWork.m_logicp == &logic
+                            && phaseWork.m_phaseName == phase
+                            && phaseWork.m_phase == subgraphPhase,
+                        group.m_boundaryScopep, "Preclassified subgraph phase order changed");
             const SubgraphInstanceTriggerBinding triggerBinding{
                 SubgraphLocalTriggerId{0}, group.m_senTreep, group.m_domainKeyp};
-            const VlOs::DeltaWallTime logicSignatureTimer{measure};
-            V3Hash logicHash;
-            SharedScheduleLogicSig logicSig
-                = makeSharedScheduleLogicSig(logic, group.m_boundaryScopep, logicHash);
-            SharedScheduleBoundaryAbi boundaryAbi
-                = makeSharedScheduleBoundaryAbi(group.m_boundaryScopep);
-            ++sharedBoundaryAbiAnalyses;
-            sharedBoundaryAbiSlots += boundaryAbi.size();
-            const uint64_t instanceStorageBindings
-                = std::count_if(boundaryAbi.begin(), boundaryAbi.end(),
-                                [](const auto& slot) { return slot.m_storageVscp != nullptr; });
-            sharedBoundaryAbiInstanceStorageBindings += instanceStorageBindings;
-            sharedBoundaryAbiExternalSlots += boundaryAbi.size() - instanceStorageBindings;
-            SharedScheduleKey scheduleKey{
-                group.m_boundaryScopep->modp(), subgraphPhase,      group.m_domainKeyp, logicHash,
-                std::move(boundaryAbi),         std::move(logicSig)};
-            if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
+            SharedScheduleKey scheduleKey = std::move(phaseWork.m_key);
             SharedHelperArtifact* cachedArtifactp = nullptr;
             size_t cachedArtifactIndex = std::numeric_limits<size_t>::max();
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
@@ -1645,6 +1715,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         orderPhase(group.m_refreshLogic, "refresh", VSubgraphPhase::REFRESH);
         ++groupIndex;
     }
+    UASSERT(phaseWorkIndex == phaseWorks.size(), "Unused preclassified subgraph phase");
 
     for (AstVarScope* const vscp : refreshReadInternalVscps) {
         if (postWrittenInternalVscps.count(vscp)) parentAccessedVscps.insert(vscp);
@@ -1797,6 +1868,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph NBA refresh helpers", refreshHelpers);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot instances", snapshotInstances);
     V3Stats::addStat("Scheduling, Subgraph NBA snapshot sources", snapshotSources);
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence classes",
+                     equivalenceClasses.size());
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence instances", phaseWorks.size());
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence max class size",
+                     sharedScheduleEquivalenceMaxClassSize);
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence potential reuses",
+                     phaseWorks.size() - equivalenceClasses.size());
     V3Stats::addStat("Scheduling, Subgraph canonical context artifacts",
                      canonicalContextArtifacts);
     V3Stats::addStat("Scheduling, Subgraph canonical contract direct external uses",
