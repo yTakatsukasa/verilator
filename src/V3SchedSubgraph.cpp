@@ -511,7 +511,6 @@ matchSharedScheduleLogic(const SharedScheduleLogicSig& source,
 struct SharedScheduleKey final {
     AstNodeModule* m_modp = nullptr;
     VSubgraphPhase m_phase;
-    const AstSenTree* m_domainKeyp = nullptr;
     V3Hash m_logicHash;
     SharedScheduleBoundaryAbi m_boundaryAbi;
     SharedScheduleLogicSig m_logicSig;
@@ -1223,6 +1222,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedBoundaryAbiInstanceStorageBindings = 0;
     uint64_t sharedBoundaryAbiSlots = 0;
     uint64_t sharedScheduleEquivalenceBindingRejects = 0;
+    uint64_t sharedScheduleEquivalenceCrossDomainMembers = 0;
+    uint64_t sharedScheduleEquivalenceCrossDomainReuses = 0;
     uint64_t sharedScheduleEquivalenceFallbackOrderCalls = 0;
     uint64_t sharedScheduleEquivalenceFreshOrderCalls = 0;
     uint64_t sharedScheduleEquivalenceMaxClassSize = 0;
@@ -1335,7 +1336,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         sharedBoundaryAbiExternalSlots += boundaryAbi.size() - instanceStorageBindings;
         phaseWorks.push_back(PreclassifiedSubgraphPhase{
             &group, &logic, phaseName, phase,
-            SharedScheduleKey{group.m_boundaryScopep->modp(), phase, group.m_domainKeyp, logicHash,
+            SharedScheduleKey{group.m_boundaryScopep->modp(), phase, logicHash,
                               std::move(boundaryAbi), std::move(logicSig)}});
     };
     for (SubgraphGroup& group : groups) {
@@ -1358,16 +1359,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         for (auto bucketIt = bucketRange.first; bucketIt != bucketRange.second; ++bucketIt) {
             const size_t classIndex = bucketIt->second;
             SubgraphScheduleEquivalenceClass& equivalenceClass = equivalenceClasses[classIndex];
-            const SharedScheduleKey& representativeKey
-                = phaseWorks[equivalenceClass.m_representativeIndex].m_key;
+            const PreclassifiedSubgraphPhase& representativeWork
+                = phaseWorks[equivalenceClass.m_representativeIndex];
+            const SharedScheduleKey& representativeKey = representativeWork.m_key;
             if (representativeKey.m_modp != work.m_key.m_modp
                 || representativeKey.m_phase != work.m_key.m_phase
                 || representativeKey.m_logicHash != work.m_key.m_logicHash) {
                 ++sharedOrderCacheHashCollisions;
-                continue;
-            }
-            if (!representativeKey.m_domainKeyp->sameTree(work.m_key.m_domainKeyp)) {
-                ++sharedOrderCacheMissDomain;
                 continue;
             }
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
@@ -1391,6 +1389,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             work.m_classIndex = classIndex;
             ++equivalenceClass.m_members;
+            if (!representativeWork.m_groupp->m_domainKeyp->sameTree(
+                    work.m_groupp->m_domainKeyp)) {
+                ++sharedScheduleEquivalenceCrossDomainMembers;
+            }
             break;
         }
         if (work.m_classIndex == std::numeric_limits<size_t>::max()) {
@@ -1426,6 +1428,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = equivalenceClasses[phaseWork.m_classIndex];
             const bool classRepresentative
                 = equivalenceClass.m_representativeIndex == currentWorkIndex;
+            const PreclassifiedSubgraphPhase& representativeWork
+                = phaseWorks[equivalenceClass.m_representativeIndex];
+            const bool crossDomainClassMember
+                = !representativeWork.m_groupp->m_domainKeyp->sameTree(group.m_domainKeyp);
             const SubgraphInstanceTriggerBinding triggerBinding{
                 SubgraphLocalTriggerId{0}, group.m_senTreep, group.m_domainKeyp};
             AstSenTree* const instanceSenTreep = triggerBinding.bind(triggerBinding.m_id);
@@ -1443,8 +1449,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 SharedHelperArtifact& artifact = sharedHelperArtifacts[artifactIndex];
                 UASSERT_OBJ(artifact.m_key.m_modp == scheduleKey.m_modp
                                 && artifact.m_key.m_phase == scheduleKey.m_phase
-                                && artifact.m_key.m_logicHash == scheduleKey.m_logicHash
-                                && artifact.m_key.m_domainKeyp->sameTree(scheduleKey.m_domainKeyp),
+                                && artifact.m_key.m_logicHash == scheduleKey.m_logicHash,
                             group.m_boundaryScopep,
                             "Preclassified subgraph representative key changed");
                 ++sharedOrderCacheLookups;
@@ -1491,6 +1496,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                         cachedArtifactp = &artifact;
                         cachedArtifactIndex = artifactIndex;
                         ++sharedScheduleEquivalenceReuses;
+                        if (crossDomainClassMember) {
+                            ++sharedScheduleEquivalenceCrossDomainReuses;
+                        }
                     }
                 }
             }
@@ -1658,8 +1666,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = shareCandidate ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                                  : std::vector<SharedHelperArg>{};
             // A canonical context helper keeps boundary-local state behind the caller's instance
-            // pointer. It is keyed by module specialization, phase, event domain, and exact
-            // relative variable identity, so sibling paths are never alpha-renamed together.
+            // pointer. It is keyed by module specialization, phase, and exact relative variable
+            // identity. The caller wrapper retains the exact instance event domain.
             static constexpr size_t kMaxSharedHelperArgs = 8;
             const bool canonicalContextCandidate
                 = shareCandidate && sharedFuncp->isLoose() && !sharedFuncp->isStatic()
@@ -1920,6 +1928,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedScheduleEquivalenceBindingRejects);
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence classes",
                      equivalenceClasses.size());
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence cross domain members",
+                     sharedScheduleEquivalenceCrossDomainMembers);
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence cross domain reuses",
+                     sharedScheduleEquivalenceCrossDomainReuses);
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence fallback order calls",
                      sharedScheduleEquivalenceFallbackOrderCalls);
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence fresh order calls",
