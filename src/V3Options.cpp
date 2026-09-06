@@ -1412,6 +1412,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-debug-self-test", OnOff, &m_debugSelfTest).undocumented();
     DECL_OPTION("-debug-sigsegv", CbCall, throwSigsegv).undocumented();  // See also --debug-abort
     DECL_OPTION("-debug-stack-check", OnOff, &m_debugStackCheck).undocumented();
+    DECL_OPTION("-debug-subgraph-fresh-order", OnOff, &m_debugSubgraphFreshOrder).undocumented();
     DECL_OPTION("-debug-width", OnOff, &m_debugWidth).undocumented();
     DECL_OPTION("-decoration", CbCall, [this, fl]() { decorations(fl, "medium"); });
     DECL_OPTION("-decorations", CbVal, [this, fl](const char* optp) { decorations(fl, optp); });

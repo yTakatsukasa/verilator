@@ -1140,6 +1140,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     if (!v3Global.opt.subgraphSchedule()) return;
 
     const bool measure = v3Global.opt.stats();
+    const bool freshOrder = v3Global.opt.debugSubgraphFreshOrder();
     double cacheLookupWallTime = 0.0;
     double cacheReuseWallTime = 0.0;
     double collectWallTime = 0.0;
@@ -1223,6 +1224,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedBoundaryAbiSlots = 0;
     uint64_t sharedScheduleEquivalenceBindingRejects = 0;
     uint64_t sharedScheduleEquivalenceFallbackOrderCalls = 0;
+    uint64_t sharedScheduleEquivalenceFreshOrderCalls = 0;
     uint64_t sharedScheduleEquivalenceMaxClassSize = 0;
     uint64_t sharedScheduleEquivalenceRepresentativeOrderCalls = 0;
     uint64_t sharedScheduleEquivalenceReuses = 0;
@@ -1435,7 +1437,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
             std::vector<SharedHelperArg> cachedArgs;
             const VlOs::DeltaWallTime cacheLookupTimer{measure};
-            if (!classRepresentative
+            if (!freshOrder && !classRepresentative
                 && equivalenceClass.m_artifactIndex != std::numeric_limits<size_t>::max()) {
                 const size_t artifactIndex = equivalenceClass.m_artifactIndex;
                 SharedHelperArtifact& artifact = sharedHelperArtifacts[artifactIndex];
@@ -1541,7 +1543,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 }
                 if (measure) cacheReuseWallTime += cacheReuseTimer.deltaTime();
             } else {
-                if (classRepresentative) {
+                if (freshOrder) {
+                    ++sharedScheduleEquivalenceFreshOrderCalls;
+                } else if (classRepresentative) {
                     ++sharedScheduleEquivalenceRepresentativeOrderCalls;
                 } else {
                     ++sharedScheduleEquivalenceFallbackOrderCalls;
@@ -1918,6 +1922,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      equivalenceClasses.size());
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence fallback order calls",
                      sharedScheduleEquivalenceFallbackOrderCalls);
+    V3Stats::addStat("Scheduling, Subgraph schedule equivalence fresh order calls",
+                     sharedScheduleEquivalenceFreshOrderCalls);
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence instances", phaseWorks.size());
     V3Stats::addStat("Scheduling, Subgraph schedule equivalence max class size",
                      sharedScheduleEquivalenceMaxClassSize);
