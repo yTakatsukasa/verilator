@@ -52,7 +52,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation refs\s
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 2)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
 
 test.passes()

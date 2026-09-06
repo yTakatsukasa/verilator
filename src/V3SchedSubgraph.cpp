@@ -36,6 +36,24 @@ struct SubgraphSnapshot final {
     AstVarScope* m_storageVscp = nullptr;
 };
 
+struct SubgraphLocalTriggerId final {
+    uint32_t m_value = 0;
+
+    bool operator==(const SubgraphLocalTriggerId& rhs) const { return m_value == rhs.m_value; }
+};
+
+struct SubgraphInstanceTriggerBinding final {
+    SubgraphLocalTriggerId m_id;
+    AstSenTree* m_senTreep = nullptr;
+    const AstSenTree* m_parentDomainp = nullptr;
+
+    AstSenTree* bind(SubgraphLocalTriggerId id) const {
+        UASSERT(id == m_id, "Unknown subgraph-local trigger ID");
+        UASSERT(m_senTreep && m_parentDomainp, "Incomplete subgraph trigger binding");
+        return m_senTreep;
+    }
+};
+
 struct SubgraphGroup final {
     AstScope* m_boundaryScopep = nullptr;
     AstSenTree* m_senTreep = nullptr;
@@ -575,6 +593,7 @@ struct SharedScheduleContractRecipe final {
 
 struct SharedHelperArtifact final {
     SharedScheduleKey m_key;
+    SubgraphLocalTriggerId m_triggerId;
     AstCFunc* m_funcp = nullptr;
     AstCCall* m_firstCallp = nullptr;
     std::vector<SharedHelperArg> m_args;
@@ -1107,6 +1126,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperSkippedGeneratedTemps = 0;
     uint64_t sharedHelperSkippedOversized = 0;
     uint64_t sharedHelperSkippedTriggered = 0;
+    uint64_t sharedLocalTriggerIds = 0;
+    uint64_t sharedLocalTriggerInstanceBindings = 0;
     uint64_t sharedOrderCacheLogicMatches = 0;
     uint64_t sharedOrderCacheLogicMismatches = 0;
     uint64_t sharedOrderCacheLookups = 0;
@@ -1167,6 +1188,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         const auto orderPhase = [&](LogicByScope& logic, const string& phase,
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
+            const SubgraphInstanceTriggerBinding triggerBinding{
+                SubgraphLocalTriggerId{0}, group.m_senTreep, group.m_domainKeyp};
             const VlOs::DeltaWallTime logicSignatureTimer{measure};
             V3Hash logicHash;
             SharedScheduleLogicSig logicSig
@@ -1241,6 +1264,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     continue;
                 }
                 ++sharedOrderCacheLogicMatches;
+                UASSERT_OBJ(triggerBinding.bind(artifact.m_triggerId) == group.m_senTreep,
+                            group.m_boundaryScopep,
+                            "Canonical subgraph trigger binding changed its instance domain");
                 cachedArtifactp = &artifact;
                 cachedArtifactIndex = artifactIndex;
                 break;
@@ -1336,6 +1362,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 }
             }
             if (!funcp) return;
+            ++sharedLocalTriggerInstanceBindings;
             const VlOs::DeltaWallTime contractAccountingTimer{measure};
             const auto accountInternalUse = [&](AstVarScope* vscp, bool read, bool write) {
                 if (V3SubgraphContract::isDelayedState(vscp)) { parentAccessedVscps.insert(vscp); }
@@ -1425,13 +1452,14 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 canonicalContractDirectGlobalTriggerUses += directGlobalTriggerUses;
                 canonicalContractDirectOtherUses += directExternalUses - directGlobalTriggerUses;
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
-                    std::move(scheduleKey), sharedFuncp, sharedCallp, contextArgs,
-                    std::move(contractRecipe), abi, true, false});
+                    std::move(scheduleKey), SubgraphLocalTriggerId{0}, sharedFuncp, sharedCallp,
+                    contextArgs, std::move(contractRecipe), abi, true, false});
                 sharedHelperArtifactBuckets.emplace(
                     sharedHelperArtifacts.back().m_key.bucketHash(),
                     sharedHelperArtifacts.size() - 1);
                 ++sharedHelperArtifactCount;
                 ++canonicalContextArtifacts;
+                ++sharedLocalTriggerIds;
             } else if (!canonicalContextCandidate && shareCandidate && !compositeArgs
                        && args.size() <= kMaxSharedHelperArgs) {
                 // Keep unsupported helper shapes reusable only through their exact schedule key.
@@ -1443,13 +1471,14 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 canonicalContractDirectExternalUses += directExternalUses;
                 canonicalContractDirectGlobalTriggerUses += directGlobalTriggerUses;
                 canonicalContractDirectOtherUses += directExternalUses - directGlobalTriggerUses;
-                sharedHelperArtifacts.push_back(
-                    SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp, args,
-                                         std::move(contractRecipe), abi, false, false});
+                sharedHelperArtifacts.push_back(SharedHelperArtifact{
+                    std::move(scheduleKey), SubgraphLocalTriggerId{0}, sharedFuncp, sharedCallp,
+                    args, std::move(contractRecipe), abi, false, false});
                 sharedHelperArtifactBuckets.emplace(
                     sharedHelperArtifacts.back().m_key.bucketHash(),
                     sharedHelperArtifacts.size() - 1);
                 ++sharedHelperArtifactCount;
+                ++sharedLocalTriggerIds;
             } else if (!canonicalContextCandidate && compositeArgs) {
                 ++sharedHelperSkippedComposite;
             } else if (shareCandidate) {
@@ -1694,6 +1723,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedHelperSkippedOversized);
     V3Stats::addStat("Scheduling, Subgraph shared helper skipped triggered",
                      sharedHelperSkippedTriggered);
+    V3Stats::addStat("Scheduling, Subgraph shared local trigger IDs", sharedLocalTriggerIds);
+    V3Stats::addStat("Scheduling, Subgraph shared local trigger instance bindings",
+                     sharedLocalTriggerInstanceBindings);
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic matches",
                      sharedOrderCacheLogicMatches);
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",

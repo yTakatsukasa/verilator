@@ -27,6 +27,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)",
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped oversized\s+(\d+)", 0)
 # Trigger guards stay in per-instance wrappers, not in shared process helpers.
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggered\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 8)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)", 19)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 11)
 test.file_grep(test.stats,

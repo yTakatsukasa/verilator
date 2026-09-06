@@ -78,6 +78,9 @@ test.file_grep(test.stats,
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped DPI calls\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)", 15)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash collisions\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash lookups\s+(\d+)", 15)
