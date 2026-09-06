@@ -59,11 +59,22 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI module-phase candidates\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI state vars\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph canonical contract direct external uses\s+(\d+)", 4)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph canonical contract direct global trigger uses\s+(\d+)",
+               4)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph canonical contract direct other uses\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper arguments\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation checks\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation refs\s+([1-9]\d*)")
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped DPI calls\s+(\d+)", 0)
