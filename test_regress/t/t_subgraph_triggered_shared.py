@@ -27,9 +27,17 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)",
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped oversized\s+(\d+)", 0)
 # Trigger guards stay in per-instance wrappers, not in shared process helpers.
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggered\s+(\d+)", 0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 11)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared order cache hash collisions\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash lookups\s+(\d+)", 19)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared order cache hash max candidates\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash misses\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",

@@ -18,6 +18,7 @@
 
 #include "V3SchedSubgraph.h"
 
+#include "V3Hash.h"
 #include "V3Stats.h"
 #include "V3SubgraphContract.h"
 
@@ -230,6 +231,17 @@ struct SharedScheduleVarId final {
     }
 };
 
+V3Hash hashSharedScheduleVarId(const SharedScheduleVarId& id) {
+    V3Hash hash{id.m_varp};
+    hash += static_cast<uint64_t>(id.m_cellPath.size());
+    for (const AstCell* const cellp : id.m_cellPath) hash += cellp;
+    hash += static_cast<uint64_t>(id.m_externalSlot);
+    hash += static_cast<uint64_t>(id.m_localSlot);
+    hash += static_cast<uint32_t>(id.m_external);
+    hash += static_cast<uint32_t>(id.m_local);
+    return hash;
+}
+
 class SharedScheduleScopeResolver final {
     std::unordered_map<const AstScope*, std::vector<AstScope*>> m_children;
 
@@ -307,26 +319,35 @@ makeSharedScheduleVarId(AstVarScope* vscp, AstScope* boundaryScopep,
 }
 
 SharedScheduleLogicSig makeSharedScheduleLogicSig(const LogicByScope& logic,
-                                                  AstScope* boundaryScopep) {
+                                                  AstScope* boundaryScopep, V3Hash& logicHash) {
     SharedScheduleLogicSig result;
     std::unordered_map<AstVarScope*, size_t> externalSlots;
     std::unordered_map<AstVarScope*, size_t> localSlots;
+    logicHash += static_cast<uint64_t>(logic.size());
     logic.foreachLogic([&](AstNode* logicp) {
         result.emplace_back();
         SharedScheduleLogicNode& node = result.back();
         node.m_type = static_cast<uintptr_t>(logicp->type());
+        logicHash += static_cast<uint64_t>(node.m_type);
         logicp->foreach([&](AstNode* scanp) {
             node.m_nodeTypes.push_back(static_cast<uintptr_t>(scanp->type()));
+            logicHash += static_cast<uint64_t>(node.m_nodeTypes.back());
             if (const AstConst* const constp = VN_CAST(scanp, Const)) {
                 node.m_constValues.push_back(constp->num().toString());
+                logicHash += node.m_constValues.back();
             }
         });
+        logicHash += static_cast<uint64_t>(node.m_nodeTypes.size());
+        logicHash += static_cast<uint64_t>(node.m_constValues.size());
         logicp->foreach([&](AstVarRef* refp) {
             AstVarScope* const vscp = refp->varScopep();
             node.m_refs.push_back(SharedScheduleLogicRef{
                 static_cast<uintptr_t>(refp->access()),
                 makeSharedScheduleVarId(vscp, boundaryScopep, externalSlots, localSlots), vscp});
+            logicHash += static_cast<uint64_t>(node.m_refs.back().m_access);
+            logicHash += hashSharedScheduleVarId(node.m_refs.back().m_id);
         });
+        logicHash += static_cast<uint64_t>(node.m_refs.size());
     });
     return result;
 }
@@ -393,7 +414,15 @@ struct SharedScheduleKey final {
     AstNodeModule* m_modp = nullptr;
     VSubgraphPhase m_phase;
     const AstSenTree* m_domainKeyp = nullptr;
+    V3Hash m_logicHash;
     SharedScheduleLogicSig m_logicSig;
+
+    V3Hash bucketHash() const {
+        V3Hash hash{m_modp};
+        hash += static_cast<uint32_t>(m_phase);
+        hash += m_logicHash;
+        return hash;
+    }
 
     SharedScheduleMatchResult
     matchLogic(const SharedScheduleKey& candidate,
@@ -1052,6 +1081,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedOrderCacheLogicMatches = 0;
     uint64_t sharedOrderCacheLogicMismatches = 0;
     uint64_t sharedOrderCacheLookups = 0;
+    uint64_t sharedOrderCacheHashCandidates = 0;
+    uint64_t sharedOrderCacheHashCollisions = 0;
+    uint64_t sharedOrderCacheHashLookups = 0;
+    uint64_t sharedOrderCacheHashMisses = 0;
+    uint64_t sharedOrderCacheHashMaxCandidates = 0;
     uint64_t sharedOrderCacheMissAbi = 0;
     uint64_t sharedOrderCacheMissDomain = 0;
     uint64_t sharedOrderCacheMissDTypeAccess = 0;
@@ -1070,6 +1104,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     std::unordered_set<AstVarScope*> postWrittenInternalVscps;
     std::unordered_set<AstVarScope*> refreshReadInternalVscps;
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
+    std::unordered_multimap<V3Hash, size_t> sharedHelperArtifactBuckets;
     const SharedScheduleScopeResolver scopeResolver{netlistp};
     const auto noteSharedAbi = [&](const SharedHelperAbiAnalysis& abi,
                                    VSubgraphPhase subgraphPhase, AstNodeModule* modp) {
@@ -1104,21 +1139,33 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                                     VSubgraphPhase subgraphPhase) {
             if (logic.empty()) return;
             const VlOs::DeltaWallTime logicSignatureTimer{measure};
-            SharedScheduleKey scheduleKey{
-                group.m_boundaryScopep->modp(), subgraphPhase, group.m_domainKeyp,
-                makeSharedScheduleLogicSig(logic, group.m_boundaryScopep)};
+            V3Hash logicHash;
+            SharedScheduleLogicSig logicSig
+                = makeSharedScheduleLogicSig(logic, group.m_boundaryScopep, logicHash);
+            SharedScheduleKey scheduleKey{group.m_boundaryScopep->modp(), subgraphPhase,
+                                          group.m_domainKeyp, logicHash, std::move(logicSig)};
             if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
             SharedHelperArtifact* cachedArtifactp = nullptr;
             size_t cachedArtifactIndex = std::numeric_limits<size_t>::max();
             std::unordered_map<AstVarScope*, AstVarScope*> sourceToCandidate;
             std::vector<SharedHelperArg> cachedArgs;
             const VlOs::DeltaWallTime cacheLookupTimer{measure};
-            for (size_t artifactIndex = 0; artifactIndex < sharedHelperArtifacts.size();
-                 ++artifactIndex) {
+            ++sharedOrderCacheHashLookups;
+            const auto bucketRange
+                = sharedHelperArtifactBuckets.equal_range(scheduleKey.bucketHash());
+            const uint64_t bucketCandidates
+                = static_cast<uint64_t>(std::distance(bucketRange.first, bucketRange.second));
+            sharedOrderCacheHashCandidates += bucketCandidates;
+            sharedOrderCacheHashMaxCandidates
+                = std::max(sharedOrderCacheHashMaxCandidates, bucketCandidates);
+            if (!bucketCandidates) ++sharedOrderCacheHashMisses;
+            for (auto bucketIt = bucketRange.first; bucketIt != bucketRange.second; ++bucketIt) {
+                const size_t artifactIndex = bucketIt->second;
                 SharedHelperArtifact& artifact = sharedHelperArtifacts[artifactIndex];
-                if (artifact.m_key.m_modp != scheduleKey.m_modp) continue;
-                if (artifact.m_key.m_phase != scheduleKey.m_phase) {
-                    ++sharedOrderCacheMissPhase;
+                if (artifact.m_key.m_modp != scheduleKey.m_modp
+                    || artifact.m_key.m_phase != scheduleKey.m_phase
+                    || artifact.m_key.m_logicHash != scheduleKey.m_logicHash) {
+                    ++sharedOrderCacheHashCollisions;
                     continue;
                 }
                 if (!artifact.m_key.m_domainKeyp->sameTree(scheduleKey.m_domainKeyp)) {
@@ -1130,6 +1177,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 const SharedScheduleMatchResult match
                     = artifact.m_key.matchLogic(scheduleKey, sourceToCandidate);
                 if (match != SharedScheduleMatchResult::MATCH) {
+                    ++sharedOrderCacheHashCollisions;
                     ++sharedOrderCacheLogicMismatches;
                     switch (match) {
                     case SharedScheduleMatchResult::ABI: ++sharedOrderCacheMissAbi; break;
@@ -1341,6 +1389,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
                     std::move(scheduleKey), sharedFuncp, sharedCallp, contextArgs,
                     std::move(contractRecipe), abi, true, false});
+                sharedHelperArtifactBuckets.emplace(
+                    sharedHelperArtifacts.back().m_key.bucketHash(),
+                    sharedHelperArtifacts.size() - 1);
                 ++sharedHelperArtifactCount;
                 ++canonicalContextArtifacts;
             } else if (!canonicalContextCandidate && shareCandidate && !compositeArgs
@@ -1352,6 +1403,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 sharedHelperArtifacts.push_back(
                     SharedHelperArtifact{std::move(scheduleKey), sharedFuncp, sharedCallp, args,
                                          std::move(contractRecipe), abi, false, false});
+                sharedHelperArtifactBuckets.emplace(
+                    sharedHelperArtifacts.back().m_key.bucketHash(),
+                    sharedHelperArtifacts.size() - 1);
                 ++sharedHelperArtifactCount;
             } else if (!canonicalContextCandidate && compositeArgs) {
                 ++sharedHelperSkippedComposite;
@@ -1590,6 +1644,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared order cache logic mismatches",
                      sharedOrderCacheLogicMismatches);
     V3Stats::addStat("Scheduling, Subgraph shared order cache lookups", sharedOrderCacheLookups);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache hash candidates",
+                     sharedOrderCacheHashCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache hash collisions",
+                     sharedOrderCacheHashCollisions);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache hash lookups",
+                     sharedOrderCacheHashLookups);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache hash max candidates",
+                     sharedOrderCacheHashMaxCandidates);
+    V3Stats::addStat("Scheduling, Subgraph shared order cache hash misses",
+                     sharedOrderCacheHashMisses);
     V3Stats::addStat("Scheduling, Subgraph shared order cache miss ABI", sharedOrderCacheMissAbi);
     V3Stats::addStat("Scheduling, Subgraph shared order cache miss domain",
                      sharedOrderCacheMissDomain);
