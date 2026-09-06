@@ -335,6 +335,56 @@ struct SharedScheduleLogicNode final {
 
 using SharedScheduleLogicSig = std::vector<SharedScheduleLogicNode>;
 
+struct SharedScheduleBoundaryAbiSlot final {
+    string m_name;
+    AstNodeDType* m_dtypep = nullptr;
+    AstVarScope* m_storageVscp = nullptr;
+    bool m_read = false;
+    bool m_write = false;
+};
+
+using SharedScheduleBoundaryAbi = std::vector<SharedScheduleBoundaryAbiSlot>;
+
+SharedScheduleBoundaryAbi makeSharedScheduleBoundaryAbi(AstScope* boundaryScopep) {
+    SharedScheduleBoundaryAbi result;
+    for (AstNode* memberp = boundaryScopep->modp()->stmtsp(); memberp;
+         memberp = memberp->nextp()) {
+        AstVar* const varp = VN_CAST(memberp, Var);
+        if (!varp) continue;
+        if (!varp->isIO() || !varp->direction().isNonOutput()) continue;
+        AstVarScope* storageVscp = nullptr;
+        for (AstVarScope* vscp = boundaryScopep->varsp(); vscp;
+             vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (vscp->varp()->origName() != varp->origName()) continue;
+            UASSERT_OBJ(!storageVscp, vscp, "Duplicate subgraph boundary input storage");
+            storageVscp = vscp;
+        }
+        result.push_back(SharedScheduleBoundaryAbiSlot{
+            varp->origName(), varp->dtypep(), storageVscp, varp->direction().isNonOutput(),
+            varp->direction().isWritable()});
+    }
+    std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.m_name != rhs.m_name) return lhs.m_name < rhs.m_name;
+        return lhs.m_dtypep < rhs.m_dtypep;
+    });
+    return result;
+}
+
+bool matchSharedScheduleBoundaryAbi(const SharedScheduleBoundaryAbi& source,
+                                    const SharedScheduleBoundaryAbi& candidate) {
+    if (source.size() != candidate.size()) return false;
+    for (size_t index = 0; index < source.size(); ++index) {
+        const SharedScheduleBoundaryAbiSlot& sourceSlot = source[index];
+        const SharedScheduleBoundaryAbiSlot& candidateSlot = candidate[index];
+        if (sourceSlot.m_name != candidateSlot.m_name || sourceSlot.m_read != candidateSlot.m_read
+            || sourceSlot.m_write != candidateSlot.m_write
+            || !sourceSlot.m_dtypep->similarDType(candidateSlot.m_dtypep)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 SharedScheduleVarId
 makeSharedScheduleVarId(AstVarScope* vscp, AstScope* boundaryScopep,
                         std::unordered_map<AstVarScope*, size_t>& externalSlots,
@@ -458,6 +508,7 @@ struct SharedScheduleKey final {
     VSubgraphPhase m_phase;
     const AstSenTree* m_domainKeyp = nullptr;
     V3Hash m_logicHash;
+    SharedScheduleBoundaryAbi m_boundaryAbi;
     SharedScheduleLogicSig m_logicSig;
 
     V3Hash bucketHash() const {
@@ -470,6 +521,9 @@ struct SharedScheduleKey final {
     SharedScheduleMatchResult
     matchLogic(const SharedScheduleKey& candidate,
                std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate) const {
+        if (!matchSharedScheduleBoundaryAbi(m_boundaryAbi, candidate.m_boundaryAbi)) {
+            return SharedScheduleMatchResult::ABI;
+        }
         return matchSharedScheduleLogic(m_logicSig, candidate.m_logicSig, sourceToCandidate);
     }
 };
@@ -1139,6 +1193,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t canonicalContextArtifacts = 0;
     uint64_t canonicalContextReuses = 0;
     uint64_t canonicalOrderCallsAvoided = 0;
+    uint64_t sharedBoundaryAbiAnalyses = 0;
+    uint64_t sharedBoundaryAbiExternalSlots = 0;
+    uint64_t sharedBoundaryAbiInstanceStorageBindings = 0;
+    uint64_t sharedBoundaryAbiSlots = 0;
     uint64_t canonicalContractDirectExternalUses = 0;
     uint64_t canonicalContractDirectGlobalTriggerUses = 0;
     uint64_t canonicalContractDirectOtherUses = 0;
@@ -1240,8 +1298,18 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             V3Hash logicHash;
             SharedScheduleLogicSig logicSig
                 = makeSharedScheduleLogicSig(logic, group.m_boundaryScopep, logicHash);
-            SharedScheduleKey scheduleKey{group.m_boundaryScopep->modp(), subgraphPhase,
-                                          group.m_domainKeyp, logicHash, std::move(logicSig)};
+            SharedScheduleBoundaryAbi boundaryAbi
+                = makeSharedScheduleBoundaryAbi(group.m_boundaryScopep);
+            ++sharedBoundaryAbiAnalyses;
+            sharedBoundaryAbiSlots += boundaryAbi.size();
+            const uint64_t instanceStorageBindings
+                = std::count_if(boundaryAbi.begin(), boundaryAbi.end(),
+                                [](const auto& slot) { return slot.m_storageVscp != nullptr; });
+            sharedBoundaryAbiInstanceStorageBindings += instanceStorageBindings;
+            sharedBoundaryAbiExternalSlots += boundaryAbi.size() - instanceStorageBindings;
+            SharedScheduleKey scheduleKey{
+                group.m_boundaryScopep->modp(), subgraphPhase,      group.m_domainKeyp, logicHash,
+                std::move(boundaryAbi),         std::move(logicSig)};
             if (measure) logicSignatureWallTime += logicSignatureTimer.deltaTime();
             SharedHelperArtifact* cachedArtifactp = nullptr;
             size_t cachedArtifactIndex = std::numeric_limits<size_t>::max();
@@ -1743,6 +1811,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph canonical context reuses", canonicalContextReuses);
     V3Stats::addStat("Scheduling, Subgraph canonical order calls avoided",
                      canonicalOrderCallsAvoided);
+    V3Stats::addStat("Scheduling, Subgraph shared boundary ABI analyses",
+                     sharedBoundaryAbiAnalyses);
+    V3Stats::addStat("Scheduling, Subgraph shared boundary ABI external slots",
+                     sharedBoundaryAbiExternalSlots);
+    V3Stats::addStat("Scheduling, Subgraph shared boundary ABI instance storage bindings",
+                     sharedBoundaryAbiInstanceStorageBindings);
+    V3Stats::addStat("Scheduling, Subgraph shared boundary ABI slots", sharedBoundaryAbiSlots);
     V3Stats::addStat("Scheduling, Subgraph shared ABI analyses", sharedAbiAnalyses);
     V3Stats::addStat("Scheduling, Subgraph shared ABI constants", sharedAbiConstants);
     V3Stats::addStat("Scheduling, Subgraph shared ABI DPI calls", sharedAbiDpiCalls);
