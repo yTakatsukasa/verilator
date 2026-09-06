@@ -20,13 +20,12 @@ test.file_grep(test.stats,
 test.file_grep(test.stats,
                r"Scheduling, Subgraph schedule equivalence cross domain reuses\s+(\d+)", 2)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)",
-               2)
+               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 2)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared exact parent domain wrapper bindings\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
+               2)
 
 test.passes()

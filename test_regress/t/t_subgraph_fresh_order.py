@@ -21,14 +21,13 @@ test.compile(verilator_flags2=[
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence fresh order calls\s+(\d+)",
+               6)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence fresh order calls\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)",
+               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               6)
 
 test.passes()

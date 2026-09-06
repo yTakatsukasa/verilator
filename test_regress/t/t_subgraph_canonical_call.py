@@ -38,35 +38,30 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract uses not expanded
 test.file_grep(test.stats,
                r"Scheduling, Subgraph NBA contract metadata bytes avoided\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical contract direct external uses\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical contract direct global trigger uses\s+(\d+)",
+test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract direct external uses\s+(\d+)",
                2)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical contract direct other uses\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical contract local trigger uses\s+(\d+)", 2)
+               r"Scheduling, Subgraph canonical contract direct global trigger uses\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract direct other uses\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract local trigger uses\s+(\d+)",
+               2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI analyses\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI external slots\s+(\d+)",
-               12)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph shared boundary ABI instance storage bindings\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI external slots\s+(\d+)", 12)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared boundary ABI instance storage bindings\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI slots\s+(\d+)", 12)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation checks\s+(\d+)", 2)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation refs\s+([1-9]\d*)")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)",
+               6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
+               2)
 
 test.passes()
