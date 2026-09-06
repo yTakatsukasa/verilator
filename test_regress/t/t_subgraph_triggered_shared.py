@@ -21,8 +21,12 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 11)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph canonical contract local trigger uses\s+(\d+)", 7)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped oversized\s+(\d+)", 0)
 # Trigger guards stay in per-instance wrappers, not in shared process helpers.

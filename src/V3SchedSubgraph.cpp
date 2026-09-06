@@ -31,6 +31,8 @@ namespace V3Sched {
 
 namespace {
 
+bool isGlobalTriggerState(const AstVarScope* vscp);
+
 struct SubgraphSnapshot final {
     AstVarScope* m_sourceVscp = nullptr;
     AstVarScope* m_storageVscp = nullptr;
@@ -51,6 +53,20 @@ struct SubgraphInstanceTriggerBinding final {
         UASSERT(id == m_id, "Unknown subgraph-local trigger ID");
         UASSERT(m_senTreep && m_parentDomainp, "Incomplete subgraph trigger binding");
         return m_senTreep;
+    }
+
+    AstVarScope* triggerStateVscp(SubgraphLocalTriggerId id) const {
+        AstSenTree* const senTreep = bind(id);
+        AstVarScope* resultp = nullptr;
+        senTreep->foreach([&](AstNodeVarRef* refp) {
+            AstVarScope* const vscp = refp->varScopep();
+            if (!isGlobalTriggerState(vscp)) return;
+            UASSERT_OBJ(!resultp || resultp == vscp, refp,
+                        "Subgraph instance trigger uses multiple trigger vectors");
+            resultp = vscp;
+        });
+        UASSERT_OBJ(resultp, senTreep, "Subgraph instance trigger has no trigger vector");
+        return resultp;
     }
 };
 
@@ -110,6 +126,7 @@ struct SharedHelperAbiAnalysis final {
     uint64_t m_dpiCalls = 0;
     uint64_t m_externalVars = 0;
     uint64_t m_generatedTemps = 0;
+    uint64_t m_globalTriggerRefs = 0;
     uint64_t m_hiddenUses = 0;
     uint64_t m_inputVars = 0;
     uint64_t m_outputVars = 0;
@@ -180,6 +197,7 @@ class SharedHelperAbiAnalyzer final : public VNVisitor {
             && !m_contractVscps.count(vscp)) {
             m_hiddenVscps.insert(vscp);
         }
+        if (isGlobalTriggerState(vscp)) ++m_result.m_globalTriggerRefs;
         const string& name = vscp->varp()->name();
         const string::size_type dot = name.rfind("__DOT__");
         const string leafName = dot == string::npos ? name : name.substr(dot + 7);
@@ -469,9 +487,12 @@ const SharedScheduleLogicRef* findSharedScheduleLogicRef(const SharedScheduleLog
 
 struct SharedScheduleUseRecipe final {
     SharedScheduleVarId m_id;
-    // Order-introduced external dependencies, such as __VnbaTriggered, are absent from the input
-    // logic signature and retain their exact source binding. All other uses bind relatively.
+    SubgraphLocalTriggerId m_triggerId;
+    // Order-introduced trigger dependencies are absent from the input logic signature. Represent
+    // them by a subgraph-local trigger ID and bind them to each instance's concrete trigger
+    // vector.
     AstVarScope* m_sourceVscp = nullptr;
+    bool m_localTrigger = false;
     bool m_relative = false;
     bool m_read = false;
     bool m_write = false;
@@ -485,32 +506,35 @@ struct SharedScheduleContractRecipe final {
     bool m_post = false;
 
     static SharedScheduleContractRecipe make(const V3SubgraphContract& contract,
-                                             const SharedScheduleLogicSig& signature) {
+                                             const SharedScheduleLogicSig& signature,
+                                             SubgraphLocalTriggerId triggerId) {
         SharedScheduleContractRecipe result;
         result.m_post = contract.post();
-        const auto makeUses = [&](const std::vector<V3SubgraphContract::Use>& uses,
-                                  std::vector<SharedScheduleUseRecipe>& recipes,
-                                  bool requireRelative) {
-            recipes.reserve(uses.size());
-            for (const V3SubgraphContract::Use& use : uses) {
-                const SharedScheduleLogicRef* const refp
-                    = findSharedScheduleLogicRef(signature, use.m_varScopep);
-                SharedScheduleVarId id;
-                if (refp) {
-                    id = refp->m_id;
-                } else if (requireRelative) {
-                    std::unordered_map<AstVarScope*, size_t> externalSlots;
-                    std::unordered_map<AstVarScope*, size_t> localSlots;
-                    id = makeSharedScheduleVarId(use.m_varScopep, contract.boundaryScopep(),
-                                                 externalSlots, localSlots);
-                    UASSERT_OBJ(!id.m_external && !id.m_local, use.m_varScopep,
-                                "Canonical subgraph contract use has no relative identity");
-                }
-                recipes.push_back(SharedScheduleUseRecipe{std::move(id), use.m_varScopep,
-                                                          refp || requireRelative, use.m_read,
-                                                          use.m_write, use.m_cuttable});
-            }
-        };
+        const auto makeUses
+            = [&](const std::vector<V3SubgraphContract::Use>& uses,
+                  std::vector<SharedScheduleUseRecipe>& recipes, bool requireRelative) {
+                  recipes.reserve(uses.size());
+                  for (const V3SubgraphContract::Use& use : uses) {
+                      const SharedScheduleLogicRef* const refp
+                          = findSharedScheduleLogicRef(signature, use.m_varScopep);
+                      SharedScheduleVarId id;
+                      if (refp) {
+                          id = refp->m_id;
+                      } else if (requireRelative) {
+                          std::unordered_map<AstVarScope*, size_t> externalSlots;
+                          std::unordered_map<AstVarScope*, size_t> localSlots;
+                          id = makeSharedScheduleVarId(use.m_varScopep, contract.boundaryScopep(),
+                                                       externalSlots, localSlots);
+                          UASSERT_OBJ(!id.m_external && !id.m_local, use.m_varScopep,
+                                      "Canonical subgraph contract use has no relative identity");
+                      }
+                      const bool localTrigger
+                          = !refp && !requireRelative && isGlobalTriggerState(use.m_varScopep);
+                      recipes.push_back(SharedScheduleUseRecipe{
+                          std::move(id), triggerId, use.m_varScopep, localTrigger,
+                          refp || requireRelative, use.m_read, use.m_write, use.m_cuttable});
+                  }
+              };
         makeUses(contract.boundaryUses(), result.m_boundaryUses, true);
         makeUses(contract.externalUses(), result.m_externalUses, false);
         makeUses(contract.internalUses(), result.m_internalUses, true);
@@ -526,7 +550,8 @@ struct SharedScheduleContractRecipe final {
         };
         const bool externalUsesShareable
             = std::all_of(m_externalUses.begin(), m_externalUses.end(), [](const auto& use) {
-                  return !use.m_relative || (use.m_id.m_external && !use.m_id.m_local);
+                  return use.m_localTrigger || !use.m_relative
+                         || (use.m_id.m_external && !use.m_id.m_local);
               });
         return relativeUses(m_boundaryUses, false) && externalUsesShareable
                && relativeUses(m_internalUses, false);
@@ -541,10 +566,15 @@ struct SharedScheduleContractRecipe final {
             return !use.m_relative && isGlobalTriggerState(use.m_sourceVscp);
         });
     }
+    uint64_t localTriggerUses() const {
+        return std::count_if(m_externalUses.begin(), m_externalUses.end(),
+                             [](const auto& use) { return use.m_localTrigger; });
+    }
 
     bool validateBinding(AstScope* boundaryScopep,
                          const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate,
-                         const SharedScheduleScopeResolver& resolver, VSubgraphPhase phase) const {
+                         const SharedScheduleScopeResolver& resolver, VSubgraphPhase phase,
+                         const SubgraphInstanceTriggerBinding& triggerBinding) const {
         const bool post = phase == VSubgraphPhase{VSubgraphPhase::POST};
         const bool boundaryCuttable = post || phase == VSubgraphPhase{VSubgraphPhase::REFRESH};
         const auto validSemantics
@@ -569,7 +599,12 @@ struct SharedScheduleContractRecipe final {
         };
         const bool externalValid
             = std::all_of(m_externalUses.begin(), m_externalUses.end(), [&](const auto& use) {
-                  return use.m_relative ? sourceToCandidate.count(use.m_sourceVscp)
+                  if (use.m_localTrigger) {
+                      AstVarScope* const instanceVscp
+                          = triggerBinding.triggerStateVscp(use.m_triggerId);
+                      return use.m_sourceVscp->dtypep()->similarDType(instanceVscp->dtypep());
+                  }
+                  return use.m_relative ? sourceToCandidate.count(use.m_sourceVscp) != 0
                                         : use.m_sourceVscp != nullptr;
               });
         return externalValid && validateRelative(m_boundaryUses)
@@ -578,13 +613,16 @@ struct SharedScheduleContractRecipe final {
 
     void
     appendExternalBindings(const std::unordered_map<AstVarScope*, AstVarScope*>& sourceToCandidate,
+                           const SubgraphInstanceTriggerBinding& triggerBinding,
                            std::vector<AstVarScope*>& result) const {
         result.reserve(result.size() + m_externalUses.size());
         for (const SharedScheduleUseRecipe& use : m_externalUses) {
             const auto it = sourceToCandidate.find(use.m_sourceVscp);
-            AstVarScope* const vscp = use.m_relative
-                                          ? (it == sourceToCandidate.end() ? nullptr : it->second)
-                                          : use.m_sourceVscp;
+            AstVarScope* const vscp
+                = use.m_localTrigger
+                      ? triggerBinding.triggerStateVscp(use.m_triggerId)
+                      : (use.m_relative ? (it == sourceToCandidate.end() ? nullptr : it->second)
+                                        : use.m_sourceVscp);
             UASSERT_OBJ(vscp, use.m_sourceVscp, "Canonical external contract failed to bind");
             result.push_back(vscp);
         }
@@ -754,6 +792,7 @@ void releaseDiscardedCallClosureEntries(const LogicByScope& logic, AstScope* bou
 }
 
 struct SharedHelperIsolationAnalysis final {
+    uint64_t m_globalTriggerRefs = 0;
     uint64_t m_refs = 0;
     uint64_t m_unboundRefs = 0;
 };
@@ -781,6 +820,7 @@ SharedHelperIsolationAnalysis parameterizeSharedHelper(SharedHelperArtifact& art
     SharedHelperIsolationAnalysis isolation;
     artifact.m_funcp->foreach([&](AstNodeVarRef* refp) {
         ++isolation.m_refs;
+        if (isGlobalTriggerState(refp->varScopep())) ++isolation.m_globalTriggerRefs;
         const bool bound
             = refp->varp()->isFuncLocal()
               || (artifact.m_instanceContext
@@ -789,6 +829,8 @@ SharedHelperIsolationAnalysis parameterizeSharedHelper(SharedHelperArtifact& art
     });
     UASSERT_OBJ(!isolation.m_unboundRefs, artifact.m_funcp,
                 "Shared subgraph helper retained an implicit nonlocal reference");
+    UASSERT_OBJ(!isolation.m_globalTriggerRefs, artifact.m_funcp,
+                "Shared subgraph helper retained a concrete global trigger reference");
     addSharedHelperCallArgs(artifact.m_firstCallp, artifact.m_args);
     if (!artifact.m_instanceContext) { artifact.m_funcp->isStatic(true); }
     artifact.m_funcp->noLife(true);
@@ -1100,12 +1142,14 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t canonicalContractDirectExternalUses = 0;
     uint64_t canonicalContractDirectGlobalTriggerUses = 0;
     uint64_t canonicalContractDirectOtherUses = 0;
+    uint64_t canonicalContractLocalTriggerUses = 0;
     uint64_t sharedAbiAnalyses = 0;
     uint64_t sharedAbiConstants = 0;
     uint64_t sharedAbiDpiCalls = 0;
     uint64_t sharedAbiEligibleHelpers = 0;
     uint64_t sharedAbiExternalVars = 0;
     uint64_t sharedAbiGeneratedTemps = 0;
+    uint64_t sharedAbiGlobalTriggerRefs = 0;
     uint64_t sharedAbiHiddenUses = 0;
     uint64_t sharedAbiInputVars = 0;
     uint64_t sharedAbiModulePhaseCandidates = 0;
@@ -1118,6 +1162,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperParameterizations = 0;
     uint64_t sharedHelperReuses = 0;
     uint64_t sharedHelperIsolationChecks = 0;
+    uint64_t sharedHelperIsolationGlobalTriggerRefs = 0;
     uint64_t sharedHelperIsolationRefs = 0;
     uint64_t sharedHelperIsolationUnboundRefs = 0;
     uint64_t sharedHelperSkippedCalls = 0;
@@ -1163,6 +1208,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         sharedAbiDpiCalls += abi.m_dpiCalls;
         sharedAbiExternalVars += abi.m_externalVars;
         sharedAbiGeneratedTemps += abi.m_generatedTemps;
+        sharedAbiGlobalTriggerRefs += abi.m_globalTriggerRefs;
         sharedAbiHiddenUses += abi.m_hiddenUses;
         sharedAbiInputVars += abi.m_inputVars;
         sharedAbiOutputVars += abi.m_outputVars;
@@ -1246,8 +1292,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     }
                     continue;
                 }
-                if (!artifact.m_contractRecipe.validateBinding(
-                        group.m_boundaryScopep, sourceToCandidate, scopeResolver, subgraphPhase)) {
+                if (!artifact.m_contractRecipe.validateBinding(group.m_boundaryScopep,
+                                                               sourceToCandidate, scopeResolver,
+                                                               subgraphPhase, triggerBinding)) {
                     ++sharedOrderCacheMissAbi;
                     ++contractRecipeFallbacks;
                     continue;
@@ -1282,7 +1329,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             if (cachedArtifactp) {
                 const VlOs::DeltaWallTime cacheReuseTimer{measure};
                 const SharedScheduleContractRecipe& recipe = cachedArtifactp->m_contractRecipe;
-                recipe.appendExternalBindings(sourceToCandidate, contractExternalBindings);
+                recipe.appendExternalBindings(sourceToCandidate, triggerBinding,
+                                              contractExternalBindings);
                 externalBindingsCount = contractExternalBindings.size() - externalBindingsBegin;
                 contractInstanceBindings += externalBindingsCount;
                 contractUsesNotExpanded += recipe.m_boundaryUses.size()
@@ -1295,6 +1343,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     const SharedHelperIsolationAnalysis isolation
                         = parameterizeSharedHelper(*cachedArtifactp);
                     ++sharedHelperIsolationChecks;
+                    sharedHelperIsolationGlobalTriggerRefs += isolation.m_globalTriggerRefs;
                     sharedHelperIsolationRefs += isolation.m_refs;
                     sharedHelperIsolationUnboundRefs += isolation.m_unboundRefs;
                     sharedHelperArguments += cachedArtifactp->m_args.size();
@@ -1417,8 +1466,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             }
             const bool generatedTemps
                 = sharedAbi.m_generatedTemps || sharedFuncp->varsp() || sharedFuncp->argsp();
-            const bool shareCandidate
-                = sharedAbi.m_eligible && !sharedAbi.m_hasTriggeredState && !generatedTemps;
+            const bool shareCandidate = sharedAbi.m_eligible && !sharedAbi.m_globalTriggerRefs
+                                        && !sharedAbi.m_hasTriggeredState && !generatedTemps;
             const std::vector<SharedHelperArg> args
                 = shareCandidate ? collectSharedHelperArgs(sharedFuncp, group.m_boundaryScopep)
                                  : std::vector<SharedHelperArg>{};
@@ -1444,13 +1493,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             if (cachedArtifactp) {
                 // The cached artifact was already validated and accounted for above.
             } else if (canonicalContextCandidate && contextArgs.size() <= kMaxSharedHelperArgs) {
-                SharedScheduleContractRecipe contractRecipe
-                    = SharedScheduleContractRecipe::make(*contractp, scheduleKey.m_logicSig);
+                SharedScheduleContractRecipe contractRecipe = SharedScheduleContractRecipe::make(
+                    *contractp, scheduleKey.m_logicSig, triggerBinding.m_id);
                 const uint64_t directExternalUses = contractRecipe.directExternalUses();
                 const uint64_t directGlobalTriggerUses = contractRecipe.directGlobalTriggerUses();
+                UASSERT_OBJ(directGlobalTriggerUses == contractRecipe.localTriggerUses(), funcp,
+                            "Canonical global trigger use has no local trigger ID");
                 canonicalContractDirectExternalUses += directExternalUses;
                 canonicalContractDirectGlobalTriggerUses += directGlobalTriggerUses;
                 canonicalContractDirectOtherUses += directExternalUses - directGlobalTriggerUses;
+                canonicalContractLocalTriggerUses += contractRecipe.localTriggerUses();
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
                     std::move(scheduleKey), SubgraphLocalTriggerId{0}, sharedFuncp, sharedCallp,
                     contextArgs, std::move(contractRecipe), abi, true, false});
@@ -1464,13 +1516,16 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                        && args.size() <= kMaxSharedHelperArgs) {
                 // Keep unsupported helper shapes reusable only through their exact schedule key.
                 // Canonical helpers above never clone or compare an already ordered C++ body.
-                SharedScheduleContractRecipe contractRecipe
-                    = SharedScheduleContractRecipe::make(*contractp, scheduleKey.m_logicSig);
+                SharedScheduleContractRecipe contractRecipe = SharedScheduleContractRecipe::make(
+                    *contractp, scheduleKey.m_logicSig, triggerBinding.m_id);
                 const uint64_t directExternalUses = contractRecipe.directExternalUses();
                 const uint64_t directGlobalTriggerUses = contractRecipe.directGlobalTriggerUses();
+                UASSERT_OBJ(directGlobalTriggerUses == contractRecipe.localTriggerUses(), funcp,
+                            "Canonical global trigger use has no local trigger ID");
                 canonicalContractDirectExternalUses += directExternalUses;
                 canonicalContractDirectGlobalTriggerUses += directGlobalTriggerUses;
                 canonicalContractDirectOtherUses += directExternalUses - directGlobalTriggerUses;
+                canonicalContractLocalTriggerUses += contractRecipe.localTriggerUses();
                 sharedHelperArtifacts.push_back(SharedHelperArtifact{
                     std::move(scheduleKey), SubgraphLocalTriggerId{0}, sharedFuncp, sharedCallp,
                     args, std::move(contractRecipe), abi, false, false});
@@ -1682,6 +1737,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      canonicalContractDirectGlobalTriggerUses);
     V3Stats::addStat("Scheduling, Subgraph canonical contract direct other uses",
                      canonicalContractDirectOtherUses);
+    V3Stats::addStat("Scheduling, Subgraph canonical contract local trigger uses",
+                     canonicalContractLocalTriggerUses);
     V3Stats::addStat("Scheduling, Subgraph canonical C++ bodies", canonicalContextArtifacts);
     V3Stats::addStat("Scheduling, Subgraph canonical context reuses", canonicalContextReuses);
     V3Stats::addStat("Scheduling, Subgraph canonical order calls avoided",
@@ -1692,6 +1749,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStat("Scheduling, Subgraph shared ABI eligible helpers", sharedAbiEligibleHelpers);
     V3Stats::addStat("Scheduling, Subgraph shared ABI external vars", sharedAbiExternalVars);
     V3Stats::addStat("Scheduling, Subgraph shared ABI generated temps", sharedAbiGeneratedTemps);
+    V3Stats::addStat("Scheduling, Subgraph shared ABI global trigger refs",
+                     sharedAbiGlobalTriggerRefs);
     V3Stats::addStat("Scheduling, Subgraph shared ABI hidden uses", sharedAbiHiddenUses);
     V3Stats::addStat("Scheduling, Subgraph shared ABI input vars", sharedAbiInputVars);
     V3Stats::addStat("Scheduling, Subgraph shared ABI module-phase candidates",
@@ -1705,6 +1764,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedHelperBodyMismatches);
     V3Stats::addStat("Scheduling, Subgraph shared helper isolation checks",
                      sharedHelperIsolationChecks);
+    V3Stats::addStat("Scheduling, Subgraph shared helper isolation global trigger refs",
+                     sharedHelperIsolationGlobalTriggerRefs);
     V3Stats::addStat("Scheduling, Subgraph shared helper isolation refs",
                      sharedHelperIsolationRefs);
     V3Stats::addStat("Scheduling, Subgraph shared helper isolation unbound refs",
