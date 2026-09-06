@@ -94,6 +94,11 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared exact parent domain reused body wrappers\s+(\d+)",
+               9)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared exact parent domain wrapper bindings\s+(\d+)", 15)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped DPI calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 6)
 test.file_grep(test.stats,

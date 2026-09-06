@@ -41,6 +41,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 11)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared exact parent domain reused body wrappers\s+(\d+)",
+               11)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph shared exact parent domain wrapper bindings\s+(\d+)", 19)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped oversized\s+(\d+)", 0)
 # Trigger guards stay in per-instance wrappers, not in shared process helpers.
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggered\s+(\d+)", 0)

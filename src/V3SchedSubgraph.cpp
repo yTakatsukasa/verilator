@@ -55,6 +55,11 @@ struct SubgraphInstanceTriggerBinding final {
         return m_senTreep;
     }
 
+    const AstSenTree* parentDomain(SubgraphLocalTriggerId id) const {
+        bind(id);
+        return m_parentDomainp;
+    }
+
     AstVarScope* triggerStateVscp(SubgraphLocalTriggerId id) const {
         AstSenTree* const senTreep = bind(id);
         AstVarScope* resultp = nullptr;
@@ -755,10 +760,14 @@ void addSharedHelperCallArgs(AstCCall* callp, const std::vector<SharedHelperArg>
     }
 }
 
-AstCFunc* makeSharedScheduleWrapper(AstNetlist* netlistp, AstScope* scopep, AstSenTree* senTreep,
-                                    AstCFunc* sharedFuncp,
+AstCFunc* makeSharedScheduleWrapper(AstNetlist* netlistp, AstScope* scopep,
+                                    const SubgraphInstanceTriggerBinding& triggerBinding,
+                                    SubgraphLocalTriggerId triggerId, AstCFunc* sharedFuncp,
                                     const std::vector<SharedHelperArg>& args, const string& tag,
                                     bool slow, bool refresh, bool instanceContext) {
+    AstSenTree* const senTreep = triggerBinding.bind(triggerId);
+    UASSERT_OBJ(triggerBinding.parentDomain(triggerId), scopep,
+                "Shared subgraph wrapper has no exact parent domain");
     AstCFunc* const funcp = new AstCFunc{netlistp->fileline(), "_eval_body__" + tag, scopep, ""};
     funcp->dontCombine(true);
     funcp->isStatic(false);
@@ -1249,6 +1258,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperSkippedGeneratedTemps = 0;
     uint64_t sharedHelperSkippedOversized = 0;
     uint64_t sharedHelperSkippedTriggered = 0;
+    uint64_t sharedExactParentDomainReusedBodyWrappers = 0;
+    uint64_t sharedExactParentDomainWrapperBindings = 0;
     uint64_t sharedLocalTriggerIds = 0;
     uint64_t sharedLocalTriggerInstanceBindings = 0;
     uint64_t sharedOrderCacheLogicMatches = 0;
@@ -1415,6 +1426,9 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = equivalenceClass.m_representativeIndex == currentWorkIndex;
             const SubgraphInstanceTriggerBinding triggerBinding{
                 SubgraphLocalTriggerId{0}, group.m_senTreep, group.m_domainKeyp};
+            AstSenTree* const instanceSenTreep = triggerBinding.bind(triggerBinding.m_id);
+            UASSERT_OBJ(triggerBinding.parentDomain(triggerBinding.m_id) == group.m_domainKeyp,
+                        group.m_boundaryScopep, "Subgraph wrapper lost its exact parent domain");
             SharedScheduleKey scheduleKey = std::move(phaseWork.m_key);
             SharedHelperArtifact* cachedArtifactp = nullptr;
             size_t cachedArtifactIndex = std::numeric_limits<size_t>::max();
@@ -1509,9 +1523,11 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     sharedHelperArguments += cachedArtifactp->m_args.size();
                     ++sharedHelperParameterizations;
                 }
-                funcp = makeSharedScheduleWrapper(
-                    netlistp, group.m_boundaryScopep, group.m_senTreep, cachedArtifactp->m_funcp,
-                    cachedArgs, tag, slow, refresh, cachedArtifactp->m_instanceContext);
+                funcp = makeSharedScheduleWrapper(netlistp, group.m_boundaryScopep, triggerBinding,
+                                                  cachedArtifactp->m_triggerId,
+                                                  cachedArtifactp->m_funcp, cachedArgs, tag, slow,
+                                                  refresh, cachedArtifactp->m_instanceContext);
+                ++sharedExactParentDomainReusedBodyWrappers;
                 if (cachedArtifactp->m_instanceContext) {
                     releaseDiscardedCallClosureEntries(logic, group.m_boundaryScopep);
                 }
@@ -1568,7 +1584,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                     if (refresh) removeSingleDomainGuard(funcp);
                     util::splitCheck(funcp);
                     contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::make(
-                        funcp, group.m_boundaryScopep, group.m_senTreep,
+                        funcp, group.m_boundaryScopep, instanceSenTreep,
                         subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh));
                     abi = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, *contractp}
                               .result();
@@ -1613,7 +1629,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
 
             const VlOs::DeltaWallTime helperSharingTimer{measure};
             AstActive* const wrapperp
-                = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
+                = new AstActive{group.m_filelinep, "subgraph", instanceSenTreep};
+            ++sharedExactParentDomainWrapperBindings;
             AstCCall* const callExprp = new AstCCall{funcp->fileline(), funcp};
             callExprp->dtypeSetVoid();
             AstNode* const callp = callExprp->makeStmt();
@@ -1945,6 +1962,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedAbiModulePhaseCandidates);
     V3Stats::addStat("Scheduling, Subgraph shared ABI output vars", sharedAbiOutputVars);
     V3Stats::addStat("Scheduling, Subgraph shared ABI state vars", sharedAbiStateVars);
+    V3Stats::addStat("Scheduling, Subgraph shared exact parent domain reused body wrappers",
+                     sharedExactParentDomainReusedBodyWrappers);
+    V3Stats::addStat("Scheduling, Subgraph shared exact parent domain wrapper bindings",
+                     sharedExactParentDomainWrapperBindings);
     V3Stats::addStat("Scheduling, Subgraph shared helper arguments", sharedHelperArguments);
     V3Stats::addStat("Scheduling, Subgraph shared helper artifacts", sharedHelperArtifactCount);
     V3Stats::addStat("Scheduling, Subgraph shared helper body checks", sharedHelperBodyChecks);
