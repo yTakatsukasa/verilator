@@ -33,10 +33,18 @@ test.file_grep(test.stats, r"Scheduling, Subgraph canonical C\+\+ bodies\s+(\d+)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence binding rejects\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule equivalence fallback order calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence instances\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence max class size\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential reuses\s+(\d+)",
                4)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)",
+               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 4)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)", 2)
 
