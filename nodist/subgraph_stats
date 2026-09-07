@@ -71,7 +71,7 @@ function print_section(title, lines, count, i) {
     subgraph_shape[++subgraph_shape_count] = $0
     next
 }
-/Scheduling, Subgraph (schedule equivalence|shared order cache) / {
+/Scheduling, Subgraph (schedule equivalence|schedule reuse|shared order cache) / {
     cache[++cache_count] = $0
     next
 }

@@ -50,9 +50,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
                4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
-               0)
+               4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
                2)
 

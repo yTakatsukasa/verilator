@@ -47,11 +47,14 @@ test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract local trigg
                2)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI analyses\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI analyses\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI analyses avoided\s+(\d+)",
+               5)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI binding checks\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI external slots\s+(\d+)", 12)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared boundary ABI instance storage bindings\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI slots\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared boundary ABI slots\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation checks\s+(\d+)", 2)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)

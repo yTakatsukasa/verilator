@@ -49,22 +49,24 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped triggere
 test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)",
                19)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash collisions\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 13)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash collisions\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash lookups\s+(\d+)", 19)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash max candidates\s+(\d+)",
-               1)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash misses\s+(\d+)", 8)
+               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash misses\s+(\d+)", 7)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)",
-               11)
+               13)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
                11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 19)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding scans\s+(\d+)",
+               13)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
-               0)
+               11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",

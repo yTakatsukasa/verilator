@@ -79,6 +79,14 @@ test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential
 test.file_grep(test.stats,
                r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 9)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule equivalence unavailable artifact classes\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule reuse binding rejects, unshareable recipe\s+(\d+)",
+               0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule reuse blocked instances, unsafe call\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper arguments\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
@@ -109,9 +117,11 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
                9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 15)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding scans\s+(\d+)",
+               9)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
-               0)
+               9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss ABI\s+(\d+)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss domain\s+(\d+)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss dtype/access\s+(\d+)")
