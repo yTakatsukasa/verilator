@@ -62,10 +62,9 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 11)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 19)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic template analyses\s+(\d+)", 19)
+               r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                11)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
