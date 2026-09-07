@@ -106,13 +106,12 @@ test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash misses
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
+               9)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 15)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
+               0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss ABI\s+(\d+)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss domain\s+(\d+)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss dtype/access\s+(\d+)")
