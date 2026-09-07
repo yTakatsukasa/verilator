@@ -17,12 +17,13 @@ test.execute()
 test.file_grep(test.stats,
                r"Scheduling, Subgraph schedule equivalence unavailable artifact classes\s+(\d+)",
                1)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence unavailable artifacts\s+(\d+)",
-               2)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse blocked classes, oversized arguments\s+(\d+)", 1)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse blocked instances, oversized arguments\s+(\d+)",
-               2)
+               r"Scheduling, Subgraph schedule equivalence unavailable artifacts\s+(\d+)", 2)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph schedule reuse blocked classes, oversized arguments\s+(\d+)", 1)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph schedule reuse blocked instances, oversized arguments\s+(\d+)", 2)
 
 test.passes()
