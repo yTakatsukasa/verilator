@@ -54,7 +54,7 @@ test.file_grep(test.stats,
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI analyses\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI DPI calls\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI eligible helpers\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI external vars\s+([1-9]\d*)")
+test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI external vars\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI module-phase candidates\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI state vars\s+([1-9]\d*)")
@@ -95,6 +95,7 @@ test.file_grep(test.stats,
                r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation refs\s+([1-9]\d*)")
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph shared helper lifted trigger guards\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
 test.file_grep(test.stats,

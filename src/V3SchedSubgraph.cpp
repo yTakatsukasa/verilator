@@ -1191,6 +1191,23 @@ void removeSingleDomainGuard(AstCFunc* funcp) {
     funcp->addStmtsp(bodyp);
 }
 
+bool liftExactInstanceTriggerGuard(AstCFunc* funcp, AstSenTree* senTreep) {
+    AstIf* const guardp = VN_CAST(funcp->stmtsp(), If);
+    if (!guardp || guardp->nextp() || guardp->elsesp() || !guardp->thensp()) return false;
+
+    // Only lift the complete outer guard when it is exactly the instance domain. Any additional
+    // trigger expression remains in the ordered helper and keeps it ineligible for sharing.
+    AstIf* const expectedp = util::createIfFromSenTree(senTreep);
+    const bool exact = guardp->condp()->sameTree(expectedp->condp());
+    expectedp->deleteTree();
+    if (!exact) return false;
+
+    AstNode* const bodyp = guardp->thensp()->unlinkFrBackWithNext();
+    guardp->unlinkFrBack()->deleteTree();
+    funcp->addStmtsp(bodyp);
+    return true;
+}
+
 void prepareSubgraphSnapshots(std::vector<SubgraphGroup>& groups,
                               const std::unordered_set<AstVarScope*>& regionWrittenVscps,
                               uint64_t& snapshotInstances, uint64_t& snapshotSources) {
@@ -1441,6 +1458,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     uint64_t sharedHelperIsolationGlobalTriggerRefs = 0;
     uint64_t sharedHelperIsolationRefs = 0;
     uint64_t sharedHelperIsolationUnboundRefs = 0;
+    uint64_t sharedHelperLiftedTriggerGuards = 0;
     uint64_t sharedHelperSkippedCalls = 0;
     uint64_t sharedHelperSkippedComposite = 0;
     uint64_t sharedHelperSkippedDpiCalls = 0;
@@ -1831,10 +1849,13 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 if (funcp) {
                     const VlOs::DeltaWallTime contractAbiTimer{measure};
                     if (refresh) removeSingleDomainGuard(funcp);
-                    util::splitCheck(funcp);
                     contractp = std::make_unique<V3SubgraphContract>(V3SubgraphContract::make(
                         funcp, group.m_boundaryScopep, instanceSenTreep,
                         subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST}, refresh));
+                    if (!refresh && liftExactInstanceTriggerGuard(funcp, instanceSenTreep)) {
+                        ++sharedHelperLiftedTriggerGuards;
+                    }
+                    util::splitCheck(funcp);
                     abi = SharedHelperAbiAnalyzer{funcp, group.m_boundaryScopep, *contractp}
                               .result();
                     if (measure) contractAbiWallTime += contractAbiTimer.deltaTime();
@@ -2354,6 +2375,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                      sharedHelperIsolationRefs);
     V3Stats::addStat("Scheduling, Subgraph shared helper isolation unbound refs",
                      sharedHelperIsolationUnboundRefs);
+    V3Stats::addStat("Scheduling, Subgraph shared helper lifted trigger guards",
+                     sharedHelperLiftedTriggerGuards);
     V3Stats::addStat("Scheduling, Subgraph shared helper parameterizations",
                      sharedHelperParameterizations);
     V3Stats::addStat("Scheduling, Subgraph shared helper reuses", sharedHelperReuses);
