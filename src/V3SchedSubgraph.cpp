@@ -88,6 +88,37 @@ struct SubgraphGroup final {
     std::vector<SubgraphSnapshot> m_snapshots;
 };
 
+// State shared by independently ordered event domains is not helper-private. In particular,
+// readers of the old value must precede NBA commits in another domain of the same boundary.
+class SubgraphCrossDomainUses final {
+    std::unordered_set<const AstScope*> m_multiDomainScopes;
+    std::unordered_map<const AstVarScope*, const SubgraphGroup*> m_firstGroups;
+    std::unordered_set<const AstVarScope*> m_shared;
+
+public:
+    explicit SubgraphCrossDomainUses(const std::vector<SubgraphGroup>& groups) {
+        std::unordered_map<const AstScope*, const AstSenTree*> firstDomains;
+        for (const SubgraphGroup& group : groups) {
+            if (group.m_senTreep->hasCombo()) continue;
+            const auto inserted = firstDomains.emplace(group.m_boundaryScopep, group.m_domainKeyp);
+            if (!inserted.second && inserted.first->second != group.m_domainKeyp) {
+                m_multiDomainScopes.insert(group.m_boundaryScopep);
+            }
+        }
+    }
+
+    void note(const SubgraphGroup& group, const AstVarScope* vscp) {
+        // POST-to-REFRESH uses are tracked separately; only compare clocked domains here.
+        if (group.m_senTreep->hasCombo()) return;
+        if (!m_multiDomainScopes.count(group.m_boundaryScopep)) return;
+        const auto inserted = m_firstGroups.emplace(vscp, &group);
+        if (!inserted.second && inserted.first->second != &group) m_shared.insert(vscp);
+    }
+
+    bool contains(const AstVarScope* vscp) const { return m_shared.count(vscp); }
+    size_t size() const { return m_shared.size(); }
+};
+
 struct PendingSubgraphMaterialization final {
     AstSubgraphInstance* m_instancep = nullptr;
     const SubgraphGroup* m_groupp = nullptr;
@@ -1501,6 +1532,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     std::vector<PendingSubgraphMaterialization> pendingMaterializations;
     std::unordered_set<AstVarScope*> postWrittenInternalVscps;
     std::unordered_set<AstVarScope*> refreshReadInternalVscps;
+    SubgraphCrossDomainUses crossDomainUses{groups};
     std::vector<SharedHelperArtifact> sharedHelperArtifacts;
     const SharedScheduleScopeResolver scopeResolver{netlistp};
     const auto noteSharedAbi = [&](const SharedHelperAbiAnalysis& abi,
@@ -1871,6 +1903,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             ++sharedLocalTriggerInstanceBindings;
             const VlOs::DeltaWallTime contractAccountingTimer{measure};
             const auto accountInternalUse = [&](AstVarScope* vscp, bool read, bool write) {
+                crossDomainUses.note(group, vscp);
                 if (V3SubgraphContract::isDelayedState(vscp)) { parentAccessedVscps.insert(vscp); }
                 if (subgraphPhase == VSubgraphPhase{VSubgraphPhase::POST} && write) {
                     postWrittenInternalVscps.insert(vscp);
@@ -2083,8 +2116,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
         if (postWrittenInternalVscps.count(vscp)) parentAccessedVscps.insert(vscp);
     }
     // Materialize only internal uses that the parent graph consumes. Delaying this until all
-    // contracts are known preserves POST-to-REFRESH dependencies without allocating metadata for
-    // helper-private state.
+    // contracts are known preserves POST-to-REFRESH and cross-domain dependencies without
+    // allocating metadata for helper-private state.
     const VlOs::DeltaWallTime deferredMaterializeTimer{measure};
     for (PendingSubgraphMaterialization& pending : pendingMaterializations) {
         AstSubgraphInstance* const instancep = pending.m_instancep;
@@ -2093,7 +2126,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
             const bool delayedState = V3SubgraphContract::isDelayedState(vscp);
             const bool parentAccessed = parentAccessedVscps.count(vscp);
             const bool publishRead = instancep->phase() == VSubgraphPhase{VSubgraphPhase::REFRESH};
-            return delayedState || (parentAccessed && (publishRead || write));
+            return delayedState || crossDomainUses.contains(vscp)
+                   || (parentAccessed && (publishRead || write));
         };
         const auto addExternalUse = [&](AstVarScope* vscp, bool read, bool write, bool cuttable) {
             const bool snapshotStorage = std::any_of(
@@ -2200,6 +2234,8 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
     V3Stats::addStatPerf("Scheduling, Subgraph NBA elapsed time (sec), snapshots",
                          snapshotsWallTime);
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
+    V3Stats::addStat("Scheduling, Subgraph NBA cross domain internal variables",
+                     crossDomainUses.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph NBA contract boundary uses", contractBoundaryUses);
     V3Stats::addStat("Scheduling, Subgraph NBA contract external uses", contractExternalUses);

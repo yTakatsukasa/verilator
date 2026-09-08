@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Subgraph template instance connection semantics
+# DESCRIPTION: Verilator: Preserve cross-domain state dependencies without schedule reuse
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -10,10 +10,11 @@
 import vltest_bootstrap
 
 test.scenarios("vlt")
+test.top_filename = "t/t_subgraph_template_inputs.v"
 
-# Sharing counts are deliberately separate from this semantic baseline. Enable
-# template-count assertions when the independent template path is introduced.
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--binary"])
+test.compile(verilator_flags2=[
+    "--subgraph-schedule", "--debug-subgraph-fresh-order", "--stats", "--binary"
+])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)",
