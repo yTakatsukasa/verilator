@@ -56,11 +56,32 @@ public:
         Type m_type;
         Id m_initializer = NONE;
     };
+    struct Trigger final {
+        Id m_slot = NONE;
+        std::string m_edge;
+    };
+    struct Process final {
+        Id m_body = NONE;
+        std::vector<Id> m_triggers;  // OR of local trigger IDs; empty for unclocked phases
+        std::vector<Id> m_reads;
+        std::vector<Id> m_writes;
+    };
+    struct Schedule final {
+        std::vector<Id> m_constants;  // Specialization parameters, initialized before procedures
+        std::vector<Trigger> m_triggers;
+        std::vector<Process> m_static;
+        std::vector<Process> m_initial;
+        std::vector<Process> m_pre;  // Read current state, write pending NBA storage
+        std::vector<Id> m_commitSlots;  // Commit only after every triggered PRE has completed
+        std::vector<Process> m_refresh;  // Combinational processes in dataflow order
+        std::string m_rejection;
+    };
     struct Module final {
         std::string m_name;
         std::vector<Slot> m_slots;
         std::vector<Node> m_nodes;  // Postorder; references are one-based indices
         Id m_body = NONE;
+        Schedule m_schedule;
     };
     struct Instance final {
         std::string m_path;

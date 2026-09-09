@@ -26,6 +26,12 @@ test.file_grep(test.stats, r"Scheduling, Subgraph template instance bindings\s+(
 test.file_grep(test.stats, r"Scheduling, Subgraph template instance bindings rejected\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph template port bindings\s+(\d+)", 28)
 test.file_grep(test.stats, r"Scheduling, Subgraph template open ports\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedule builds\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedules built\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedules rejected\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedules activated\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph template local triggers\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph template NBA shadow slots\s+(\d+)", 3)
 
 template_file = test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates.json"
 test.files_identical(template_file,
@@ -70,5 +76,24 @@ for node in module["nodes"]:
         trigger = module["nodes"][node["operands"][0] - 1]
         if trigger["kind"] != "VARREF" or trigger["slot"] not in (slots["clk_a"], slots["clk_b"]):
             test.error("Template trigger must reference a local clock slot")
+
+schedule = module["schedule"]
+if schedule["rejection"] or len(schedule["pre"]) != 2 or len(schedule["refresh"]) != 2:
+    test.error("Expected one schedule containing both clock domains and refresh")
+if schedule["triggers"] != [{
+        "slot": slots["clk_a"],
+        "edge": "POS"
+}, {
+        "slot": slots["clk_b"],
+        "edge": "POS"
+}]:
+    test.error("Parent clock aliases must not merge formal triggers")
+if set(schedule["commit"]) != {slots["a"], slots["b"], slots["shadow"]}:
+    test.error("All NBA destinations need pending storage and a separate commit phase")
+pre_a, pre_b = schedule["pre"]
+if pre_a["triggers"] != [1] or pre_b["triggers"] != [2]:
+    test.error("PRE activation lost its exact local trigger")
+if not {slots["a"], slots["b"]}.issubset(pre_a["reads"]) or slots["shadow"] not in pre_b["reads"]:
+    test.error("Cross-domain old-state reads must survive independent scheduling")
 
 test.passes()

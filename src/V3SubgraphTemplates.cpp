@@ -26,6 +26,7 @@
 
 #include "V3File.h"
 #include "V3Stats.h"
+#include "V3SubgraphSchedule.h"
 
 #include <map>
 #include <unordered_map>
@@ -351,12 +352,81 @@ void dumpNodes(V3OutJsonFile& out, const std::vector<Templates::Node>& nodes) {
     out.end();
 }
 
+void dumpIds(V3OutJsonFile& out, const char* name, const std::vector<Id>& ids) {
+    out.begin(name, '[');
+    for (const Id id : ids) out.put(static_cast<int>(id));
+    out.end();
+}
+
+void dumpProcesses(V3OutJsonFile& out, const char* name,
+                   const std::vector<Templates::Process>& processes) {
+    out.begin(name, '[');
+    for (const Templates::Process& process : processes) {
+        out.begin().put("body", static_cast<int>(process.m_body));
+        dumpIds(out, "triggers", process.m_triggers);
+        dumpIds(out, "reads", process.m_reads);
+        dumpIds(out, "writes", process.m_writes);
+        out.end();
+    }
+    out.end();
+}
+
+void dumpSchedule(V3OutJsonFile& out, const Templates::Schedule& schedule) {
+    out.begin("schedule").put("rejection", schedule.m_rejection);
+    dumpIds(out, "constants", schedule.m_constants);
+    out.begin("triggers", '[');
+    for (const Templates::Trigger& trigger : schedule.m_triggers) {
+        out.begin()
+            .put("slot", static_cast<int>(trigger.m_slot))
+            .put("edge", trigger.m_edge)
+            .end();
+    }
+    out.end();
+    dumpProcesses(out, "static", schedule.m_static);
+    dumpProcesses(out, "initial", schedule.m_initial);
+    dumpProcesses(out, "pre", schedule.m_pre);
+    dumpIds(out, "commit", schedule.m_commitSlots);
+    dumpProcesses(out, "refresh", schedule.m_refresh);
+    out.end();
+}
+
 }  // namespace
 
 V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
     const VlOs::DeltaWallTime timer{v3Global.opt.stats()};
     std::unordered_map<const AstNodeModule*, Id> ids;
     const TemplateCaptureVisitor visitor{netlistp, m_modules, ids};
+    {
+        const VlOs::DeltaWallTime scheduleTimer{v3Global.opt.stats()};
+        uint64_t schedules = 0;
+        uint64_t triggers = 0;
+        uint64_t shadows = 0;
+        std::map<std::string, uint64_t> rejections;
+        for (Module& module : m_modules) {
+            module.m_schedule = V3SubgraphSchedule::build(module);
+            if (module.m_schedule.m_rejection.empty()) {
+                ++schedules;
+                triggers += module.m_schedule.m_triggers.size();
+                shadows += module.m_schedule.m_commitSlots.size();
+            } else {
+                ++rejections[module.m_schedule.m_rejection];
+            }
+        }
+        V3Stats::addStat("Scheduling, Subgraph template schedule builds", m_modules.size());
+        V3Stats::addStat("Scheduling, Subgraph template schedules built", schedules);
+        V3Stats::addStat("Scheduling, Subgraph template schedules rejected",
+                         m_modules.size() - schedules);
+        V3Stats::addStat("Scheduling, Subgraph template local triggers", triggers);
+        V3Stats::addStat("Scheduling, Subgraph template NBA shadow slots", shadows);
+        // Plan construction is not yet a replacement for the ordinary runtime scheduling path.
+        V3Stats::addStat("Scheduling, Subgraph template schedules activated", 0);
+        for (const auto& pair : rejections) {
+            V3Stats::addStat("Scheduling, Subgraph template schedule rejection, " + pair.first,
+                             pair.second);
+        }
+        V3Stats::addStatPerf("Scheduling, Subgraph template schedule time (sec)",
+                             scheduleTimer.deltaTime());
+    }
     if (!ids.empty()) {
         collectInstances(netlistp->topModulep(), nullptr, "TOP", ids, m_modules, m_instances);
     }
@@ -405,6 +475,31 @@ void V3SubgraphTemplates::check() const {
         for (const Slot& slot : module.m_slots) {
             UASSERT(slot.m_initializer <= module.m_nodes.size(), "Invalid template initializer");
         }
+        const Schedule& schedule = module.m_schedule;
+        const auto checkSlots = [&](const std::vector<Id>& slots) {
+            for (const Id slot : slots) {
+                UASSERT(slot && slot <= module.m_slots.size(), "Invalid schedule storage slot");
+            }
+        };
+        for (const Trigger& trigger : schedule.m_triggers) {
+            UASSERT(trigger.m_slot && trigger.m_slot <= module.m_slots.size(),
+                    "Invalid local trigger slot");
+        }
+        for (const std::vector<Process>* const processesp :
+             {&schedule.m_static, &schedule.m_initial, &schedule.m_pre, &schedule.m_refresh}) {
+            for (const Process& process : *processesp) {
+                UASSERT(process.m_body && process.m_body <= module.m_nodes.size(),
+                        "Invalid schedule body");
+                checkSlots(process.m_reads);
+                checkSlots(process.m_writes);
+                for (const Id trigger : process.m_triggers) {
+                    UASSERT(trigger && trigger <= schedule.m_triggers.size(),
+                            "Invalid process local trigger");
+                }
+            }
+        }
+        checkSlots(schedule.m_commitSlots);
+        checkSlots(schedule.m_constants);
     }
     for (const Instance& instance : m_instances) {
         UASSERT(instance.m_template && instance.m_template <= m_modules.size(),
@@ -435,6 +530,7 @@ void V3SubgraphTemplates::dump(const std::string& filename) const {
             .put("body", static_cast<int>(module.m_body));
         dumpSlots(out, "slots", module.m_slots);
         dumpNodes(out, module.m_nodes);
+        dumpSchedule(out, module.m_schedule);
         out.end();
     }
     out.end().begin("instances", '[');
