@@ -212,11 +212,72 @@ class ScheduleBuilder final {
         m_schedule.m_refresh = std::move(ordered);
     }
 
+    void makeAbi() {
+        std::vector<Id> current(m_module.m_slots.size() + 1, Templates::NONE);
+        std::vector<Id> pending(current.size(), Templates::NONE);
+        const std::set<Id> constants{m_schedule.m_constants.begin(), m_schedule.m_constants.end()};
+        for (size_t index = 1; index < current.size(); ++index) {
+            const Id slot = static_cast<Id>(index);
+            if (constants.count(slot)) continue;
+            m_schedule.m_storage.push_back({slot, false});
+            current[slot] = static_cast<Id>(m_schedule.m_storage.size());
+        }
+        for (const Id slot : m_schedule.m_commitSlots) {
+            m_schedule.m_storage.push_back({slot, true});
+            pending[slot] = static_cast<Id>(m_schedule.m_storage.size());
+        }
+        for (const std::string phase : {"static", "initial", "pre", "commit", "refresh"}) {
+            const std::vector<Templates::Process>& processes
+                = phase == "static"    ? m_schedule.m_static
+                  : phase == "initial" ? m_schedule.m_initial
+                  : phase == "refresh" ? m_schedule.m_refresh
+                                       : m_schedule.m_pre;
+            for (size_t index = 0; index < processes.size(); ++index) {
+                const Templates::Process& process = processes[index];
+                Templates::Schedule::Entry entry;
+                entry.m_phase = phase;
+                entry.m_process = static_cast<Id>(index + 1);
+                entry.m_triggers = process.m_triggers;
+                std::map<Id, Templates::Schedule::Use> uses;
+                const auto read = [&](Id storage) {
+                    if (storage) uses[storage].m_read = true;
+                };
+                const auto write = [&](Id storage) {
+                    UASSERT(storage, "Attempt to write a template constant");
+                    uses[storage].m_write = true;
+                };
+                if (phase == "commit") {
+                    for (const Id slot : process.m_writes) {
+                        read(pending[slot]);
+                        write(current[slot]);
+                    }
+                } else {
+                    for (const Id slot : process.m_reads) read(current[slot]);
+                    for (const Id slot : process.m_writes) {
+                        if (phase == "pre") {
+                            // Retain old values on paths which perform no NBA assignment.
+                            read(current[slot]);
+                            write(pending[slot]);
+                        } else {
+                            write(current[slot]);
+                        }
+                    }
+                }
+                for (auto& pair : uses) {
+                    pair.second.m_storage = pair.first;
+                    entry.m_uses.push_back(pair.second);
+                }
+                m_schedule.m_entries.push_back(std::move(entry));
+            }
+        }
+    }
+
 public:
     explicit ScheduleBuilder(const Templates::Module& module)
         : m_module{module} {
         procedures();
         if (m_rejection.empty()) orderRefresh();
+        if (m_rejection.empty()) makeAbi();
     }
     Templates::Schedule take() {
         if (!m_rejection.empty()) {

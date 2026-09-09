@@ -67,6 +67,21 @@ public:
         std::vector<Id> m_writes;
     };
     struct Schedule final {
+        struct Storage final {
+            Id m_slot = NONE;  // Type and source declaration in Module::m_slots
+            bool m_pending = false;  // Separate NBA storage, never a current-state alias
+        };
+        struct Use final {
+            Id m_storage = NONE;  // One-based in m_storage
+            bool m_read = false;
+            bool m_write = false;
+        };
+        struct Entry final {
+            std::string m_phase;
+            Id m_process = NONE;  // One-based in the phase's process list; commit uses m_pre
+            std::vector<Id> m_triggers;
+            std::vector<Use> m_uses;
+        };
         std::vector<Id> m_constants;  // Specialization parameters, initialized before procedures
         std::vector<Trigger> m_triggers;
         std::vector<Process> m_static;
@@ -74,6 +89,9 @@ public:
         std::vector<Process> m_pre;  // Read current state, write pending NBA storage
         std::vector<Id> m_commitSlots;  // Commit only after every triggered PRE has completed
         std::vector<Process> m_refresh;  // Combinational processes in dataflow order
+        std::vector<Storage>
+            m_storage;  // Per-instance layout; parameters remain template constants
+        std::vector<Entry> m_entries;  // Shared phase ABI, independent of parent connectivity
         std::string m_rejection;
     };
     struct Module final {
@@ -94,6 +112,9 @@ public:
         std::vector<Node> m_nodes;  // Parent expressions, separate from the template body
         std::vector<Connection> m_connections;
         std::string m_bindingRejection;  // Nonempty means the whole instance needs fallback
+        std::vector<Id>
+            m_triggerActuals;  // Expression root per local trigger, not a global trigger ID
+        std::string m_abiRejection;  // ABI preparation failure; separate from execution activation
     };
 
 private:

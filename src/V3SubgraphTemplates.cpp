@@ -287,6 +287,32 @@ public:
     }
 };
 
+// Bind local events without merging formal triggers that happen to alias in the parent.
+void bindTriggers(const Templates::Module& module, Templates::Instance& instance) {
+    if (!instance.m_bindingRejection.empty()) {
+        instance.m_abiRejection = "port " + instance.m_bindingRejection;
+        return;
+    }
+    if (!module.m_schedule.m_rejection.empty()) {
+        instance.m_abiRejection = "schedule " + module.m_schedule.m_rejection;
+        return;
+    }
+    std::map<Id, Id> actuals;
+    for (const Templates::Instance::Connection& connection : instance.m_connections) {
+        actuals.emplace(connection.m_formal, connection.m_actual);
+    }
+    for (const Templates::Trigger& trigger : module.m_schedule.m_triggers) {
+        const auto it = actuals.find(trigger.m_slot);
+        UASSERT(it != actuals.end(), "Local trigger is not an input port");
+        if (!it->second) {
+            instance.m_abiRejection = "open trigger";
+            instance.m_triggerActuals.clear();
+            return;
+        }
+        instance.m_triggerActuals.push_back(it->second);
+    }
+}
+
 // Traverse physical instance membership without copying template bodies. Cell/module pointers
 // exist only during capture; later passes may freely replace or delete their AST nodes.
 void collectInstances(const AstNodeModule* modp, const AstCell* cellp, const std::string& path,
@@ -300,6 +326,7 @@ void collectInstances(const AstNodeModule* modp, const AstCell* cellp, const std
         instance.m_template = it->second;
         TemplateBuilder builder{cellp, modules[it->second - 1]};
         builder.bind(instance);
+        bindTriggers(modules[it->second - 1], instance);
         instances.push_back(std::move(instance));
     }
     for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
@@ -387,6 +414,29 @@ void dumpSchedule(V3OutJsonFile& out, const Templates::Schedule& schedule) {
     dumpProcesses(out, "pre", schedule.m_pre);
     dumpIds(out, "commit", schedule.m_commitSlots);
     dumpProcesses(out, "refresh", schedule.m_refresh);
+    out.begin("storage", '[');
+    for (const Templates::Schedule::Storage& storage : schedule.m_storage) {
+        out.begin()
+            .put("slot", static_cast<int>(storage.m_slot))
+            .put("pending", storage.m_pending)
+            .end();
+    }
+    out.end().begin("entries", '[');
+    for (const Templates::Schedule::Entry& entry : schedule.m_entries) {
+        out.begin().put("phase", entry.m_phase).put("process", static_cast<int>(entry.m_process));
+        dumpIds(out, "triggers", entry.m_triggers);
+        out.begin("uses", '[');
+        for (const Templates::Schedule::Use& use : entry.m_uses) {
+            out.begin()
+                .put("storage", static_cast<int>(use.m_storage))
+                .put("read", use.m_read)
+                .put("write", use.m_write)
+                .end();
+        }
+        out.end();
+        out.end();
+    }
+    out.end();
     out.end();
 }
 
@@ -401,6 +451,8 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
         uint64_t schedules = 0;
         uint64_t triggers = 0;
         uint64_t shadows = 0;
+        uint64_t storage = 0;
+        uint64_t entries = 0;
         std::map<std::string, uint64_t> rejections;
         for (Module& module : m_modules) {
             module.m_schedule = V3SubgraphSchedule::build(module);
@@ -408,6 +460,8 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
                 ++schedules;
                 triggers += module.m_schedule.m_triggers.size();
                 shadows += module.m_schedule.m_commitSlots.size();
+                storage += module.m_schedule.m_storage.size();
+                entries += module.m_schedule.m_entries.size();
             } else {
                 ++rejections[module.m_schedule.m_rejection];
             }
@@ -418,6 +472,8 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
                          m_modules.size() - schedules);
         V3Stats::addStat("Scheduling, Subgraph template local triggers", triggers);
         V3Stats::addStat("Scheduling, Subgraph template NBA shadow slots", shadows);
+        V3Stats::addStat("Scheduling, Subgraph template ABI storage slots", storage);
+        V3Stats::addStat("Scheduling, Subgraph template ABI entry points", entries);
         // Plan construction is not yet a replacement for the ordinary runtime scheduling path.
         V3Stats::addStat("Scheduling, Subgraph template schedules activated", 0);
         for (const auto& pair : rejections) {
@@ -433,8 +489,17 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
     uint64_t bound = 0;
     uint64_t connections = 0;
     uint64_t open = 0;
+    uint64_t abiBindings = 0;
+    uint64_t triggerBindings = 0;
     std::map<std::string, uint64_t> rejections;
+    std::map<std::string, uint64_t> abiRejections;
     for (const Instance& instance : m_instances) {
+        if (instance.m_abiRejection.empty()) {
+            ++abiBindings;
+            triggerBindings += instance.m_triggerActuals.size();
+        } else {
+            ++abiRejections[instance.m_abiRejection];
+        }
         if (!instance.m_bindingRejection.empty()) {
             ++rejections[instance.m_bindingRejection];
             continue;
@@ -450,6 +515,12 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
                      m_instances.size() - bound);
     V3Stats::addStat("Scheduling, Subgraph template port bindings", connections);
     V3Stats::addStat("Scheduling, Subgraph template open ports", open);
+    V3Stats::addStat("Scheduling, Subgraph template ABI instance bindings", abiBindings);
+    V3Stats::addStat("Scheduling, Subgraph template local trigger bindings", triggerBindings);
+    for (const auto& pair : abiRejections) {
+        V3Stats::addStat("Scheduling, Subgraph template ABI rejection, " + pair.first,
+                         pair.second);
+    }
     for (const auto& pair : rejections) {
         V3Stats::addStat("Scheduling, Subgraph template binding rejection, " + pair.first,
                          pair.second);
@@ -500,11 +571,28 @@ void V3SubgraphTemplates::check() const {
         }
         checkSlots(schedule.m_commitSlots);
         checkSlots(schedule.m_constants);
+        for (const Schedule::Storage& storage : schedule.m_storage) {
+            UASSERT(storage.m_slot && storage.m_slot <= module.m_slots.size(),
+                    "Invalid ABI storage source slot");
+        }
+        for (const Schedule::Entry& entry : schedule.m_entries) {
+            for (const Schedule::Use& use : entry.m_uses) {
+                UASSERT(use.m_storage && use.m_storage <= schedule.m_storage.size(),
+                        "Invalid ABI use storage");
+            }
+        }
     }
     for (const Instance& instance : m_instances) {
         UASSERT(instance.m_template && instance.m_template <= m_modules.size(),
                 "Invalid template instance membership");
         const Module& module = m_modules[instance.m_template - 1];
+        if (instance.m_abiRejection.empty()) {
+            UASSERT(instance.m_triggerActuals.size() == module.m_schedule.m_triggers.size(),
+                    "Incomplete local trigger binding");
+        }
+        for (const Id actual : instance.m_triggerActuals) {
+            UASSERT(actual && actual <= instance.m_nodes.size(), "Invalid local trigger actual");
+        }
         for (const Instance::Connection& connection : instance.m_connections) {
             UASSERT(connection.m_formal && connection.m_formal <= module.m_slots.size(),
                     "Invalid template formal binding");
@@ -538,7 +626,9 @@ void V3SubgraphTemplates::dump(const std::string& filename) const {
         out.begin()
             .put("path", VIdProtect::protect(instance.m_path))
             .put("template", static_cast<int>(instance.m_template))
-            .put("bindingRejection", instance.m_bindingRejection);
+            .put("bindingRejection", instance.m_bindingRejection)
+            .put("abiRejection", instance.m_abiRejection);
+        dumpIds(out, "triggerActuals", instance.m_triggerActuals);
         dumpSlots(out, "parentSlots", instance.m_parentSlots);
         dumpNodes(out, instance.m_nodes);
         out.begin("connections", '[');

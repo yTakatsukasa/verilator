@@ -32,6 +32,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph template schedules rejected\s+
 test.file_grep(test.stats, r"Scheduling, Subgraph template schedules activated\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph template local triggers\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph template NBA shadow slots\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph template ABI storage slots\s+(\d+)", 13)
+test.file_grep(test.stats, r"Scheduling, Subgraph template ABI entry points\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph template ABI instance bindings\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph template local trigger bindings\s+(\d+)", 8)
 
 template_file = test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates.json"
 test.files_identical(template_file,
@@ -52,6 +56,10 @@ for instance in checkpoint["instances"]:
     if instance["bindingRejection"]:
         test.error("Scalar port binding unexpectedly rejected")
     bindings = {conn["formal"]: conn["actual"] for conn in instance["connections"]}
+    if instance["abiRejection"] or instance["triggerActuals"] != [
+            bindings[slots["clk_a"]], bindings[slots["clk_b"]]
+    ]:
+        test.error("Each local trigger needs its exact instance connection")
     if len(bindings) != 7 or set(bindings) != {
             slots[name]
             for name in ("clk_a", "clk_b", "reset", "enable", "data", "result", "extra")
@@ -95,5 +103,32 @@ if pre_a["triggers"] != [1] or pre_b["triggers"] != [2]:
     test.error("PRE activation lost its exact local trigger")
 if not {slots["a"], slots["b"]}.issubset(pre_a["reads"]) or slots["shadow"] not in pre_b["reads"]:
     test.error("Cross-domain old-state reads must survive independent scheduling")
+
+storage = schedule["storage"]
+current = {item["slot"]: index for index, item in enumerate(storage, 1) if not item["pending"]}
+pending = {item["slot"]: index for index, item in enumerate(storage, 1) if item["pending"]}
+if len(current) != 10 or set(pending) != set(schedule["commit"]):
+    test.error("ABI must provide distinct current storage and every NBA pending value")
+if [entry["phase"] for entry in schedule["entries"]
+    ] != ["static"] * 3 + ["pre"] * 2 + ["commit"] * 2 + ["refresh"] * 2:
+    test.error("All PRE entries must precede every commit entry")
+for entry in schedule["entries"]:
+    if entry["phase"] not in ("pre", "commit"):
+        continue
+    proc = schedule["pre"][entry["process"] - 1]
+    if entry["triggers"] != proc["triggers"]:
+        test.error("Phase entry must preserve local activation")
+    writes = {use["storage"] for use in entry["uses"] if use["write"]}
+    reads = {use["storage"] for use in entry["uses"] if use["read"]}
+    if entry["phase"] == "pre":
+        if writes != {pending[slot] for slot in proc["writes"]}:
+            test.error("PRE must write only pending state")
+        if reads != {current[slot] for slot in set(proc["reads"] + proc["writes"])}:
+            test.error("PRE must read old state, including retention on inactive assignment paths")
+    elif writes != {current[slot]
+                    for slot in proc["writes"]
+                    } or reads != {pending[slot]
+                                   for slot in proc["writes"]}:
+        test.error("Commit must transfer pending values to current state")
 
 test.passes()

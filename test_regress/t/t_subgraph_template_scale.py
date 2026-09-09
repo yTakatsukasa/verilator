@@ -29,6 +29,11 @@ for count in (4, 12):
     test.file_grep(stats, r"Scheduling, Subgraph template schedules rejected\s+(\d+)", 0)
     test.file_grep(stats, r"Scheduling, Subgraph template local triggers\s+(\d+)", 2)
     test.file_grep(stats, r"Scheduling, Subgraph template NBA shadow slots\s+(\d+)", 3)
+    test.file_grep(stats, r"Scheduling, Subgraph template ABI storage slots\s+(\d+)", 13)
+    test.file_grep(stats, r"Scheduling, Subgraph template ABI entry points\s+(\d+)", 9)
+    test.file_grep(stats, r"Scheduling, Subgraph template ABI instance bindings\s+(\d+)", count)
+    test.file_grep(stats, r"Scheduling, Subgraph template local trigger bindings\s+(\d+)",
+                   count * 2)
     with open(test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates.json",
               encoding="utf8") as handle:
         templates = json.load(handle)["templates"]

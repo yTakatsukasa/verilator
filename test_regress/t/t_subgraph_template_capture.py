@@ -27,6 +27,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph template schedules rejected\s+
 test.file_grep(test.stats,
                r"Scheduling, Subgraph template schedule rejection, partial write\s+(\d+)", 1)
 
+test.file_grep(test.stats, r"Scheduling, Subgraph template ABI instance bindings\s+(\d+)", 3)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph template ABI rejection, schedule partial write\s+(\d+)", 1)
+
 template_file = test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates.json"
 test.files_identical(template_file,
                      test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates_post_sched.json")
@@ -50,6 +54,9 @@ for module in checkpoint["templates"]:
         if any(schedule[key] for key in ("pre", "commit", "refresh", "triggers")):
             test.error("Rejected schedule must not expose a partial executable plan")
         continue
+    if schedule["constants"] != [slots["W"]] or any(item["slot"] == slots["W"]
+                                                    for item in schedule["storage"]):
+        test.error("Specialization parameters must not allocate per-instance mutable state")
     if schedule["rejection"] or len(schedule["pre"]) != 1:
         test.error("Expected one clocked PRE per specialization")
     if [proc["writes"] for proc in schedule["refresh"]] != [[slots["first"]], [slots["second"]],
