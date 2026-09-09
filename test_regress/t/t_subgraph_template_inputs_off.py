@@ -12,7 +12,8 @@ import vltest_bootstrap
 test.scenarios("vlt")
 test.top_filename = "t/t_subgraph_template_inputs.v"
 
-test.compile(verilator_flags2=["--binary"])
+test.compile(verilator_flags2=["--binary", "--stats"])
 test.execute()
+test.file_grep_not(test.stats, r"Scheduling, Subgraph template")
 
 test.passes()

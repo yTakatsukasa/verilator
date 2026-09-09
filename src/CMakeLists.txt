@@ -186,6 +186,7 @@ set(HEADERS
     V3String.h
     V3SubgraphCheck.h
     V3SubgraphContract.h
+    V3SubgraphTemplates.h
     V3Subst.h
     V3SymTable.h
     V3Table.h
@@ -365,6 +366,7 @@ set(COMMON_SOURCES
     V3String.cpp
     V3SubgraphCheck.cpp
     V3SubgraphContract.cpp
+    V3SubgraphTemplates.cpp
     V3Subst.cpp
     V3Table.cpp
     V3Task.cpp

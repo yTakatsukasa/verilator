@@ -350,6 +350,8 @@ public:
         UASSERT(!m_scope.empty(), "end() without begin()");
         puts("\n" + m_prefix + m_scope.top());
         m_scope.pop();
+        // Even an empty container is a value in its enclosing object or array.
+        m_empty = false;
         return *this;
     }
 

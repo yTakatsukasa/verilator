@@ -102,6 +102,7 @@
 #include "V3Stats.h"
 #include "V3String.h"
 #include "V3SubgraphCheck.h"
+#include "V3SubgraphTemplates.h"
 #include "V3Subst.h"
 #include "V3Table.h"
 #include "V3Task.h"
@@ -146,6 +147,7 @@ static void emitSerialized() VL_MT_DISABLED {
 }
 
 static void process() {
+    std::unique_ptr<const V3SubgraphTemplates> subgraphTemplates;
     {
         const VlOs::DeltaWallTime elabWallTime{true};
 
@@ -354,6 +356,16 @@ static void process() {
             // We're going to flatten the hierarchy, so as many optimizations that
             // can be done as possible should be before this....
 
+            // Keep the independent template outside the mutable AST. Until its scheduler and
+            // binding are implemented, the ordinary instance path below remains the fallback.
+            if (v3Global.opt.subgraphSchedule()) {
+                subgraphTemplates.reset(new V3SubgraphTemplates{v3Global.rootp()});
+                if (dumpTreeJsonLevel()) {
+                    subgraphTemplates->dump(v3Global.opt.makeDir() + "/" + v3Global.opt.prefix()
+                                            + "__subgraph_templates.json");
+                }
+            }
+
             // Convert instantiations to wassigns and always blocks
             V3Inst::instAll(v3Global.rootp());
 
@@ -488,6 +500,13 @@ static void process() {
 
             // Schedule the logic
             V3Sched::schedule(v3Global.rootp());
+            if (subgraphTemplates) {
+                subgraphTemplates->check();
+                if (dumpTreeJsonLevel()) {
+                    subgraphTemplates->dump(v3Global.opt.makeDir() + "/" + v3Global.opt.prefix()
+                                            + "__subgraph_templates_post_sched.json");
+                }
+            }
             V3Sched::transformForks(v3Global.rootp());
 
             // Post scheduling transformations - TODO: this should at least be renamed
