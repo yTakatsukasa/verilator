@@ -22,6 +22,10 @@ test.file_grep(test.stats, r"Scheduling, Subgraph template candidates\s+(\d+)", 
 test.file_grep(test.stats, r"Scheduling, Subgraph templates captured\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph templates rejected\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph template instance memberships\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph template instance bindings\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph template instance bindings rejected\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph template port bindings\s+(\d+)", 28)
+test.file_grep(test.stats, r"Scheduling, Subgraph template open ports\s+(\d+)", 1)
 
 template_file = test.obj_dir + "/" + test.vm_prefix + "__subgraph_templates.json"
 test.files_identical(template_file,
@@ -36,6 +40,26 @@ if set(slots) != {
     test.error("Template lost a port or internal state slot")
 if any(instance["template"] != 1 for instance in checkpoint["instances"]):
     test.error("Different parent connections must use the same template")
+constant_inputs = 0
+open_outputs = 0
+for instance in checkpoint["instances"]:
+    if instance["bindingRejection"]:
+        test.error("Scalar port binding unexpectedly rejected")
+    bindings = {conn["formal"]: conn["actual"] for conn in instance["connections"]}
+    if len(bindings) != 7 or set(bindings) != {
+            slots[name]
+            for name in ("clk_a", "clk_b", "reset", "enable", "data", "result", "extra")
+    }:
+        test.error("Formal storage slots must remain distinct across aliased inputs")
+    actual = instance["nodes"][bindings[slots["data"]] - 1]
+    if actual["kind"] == "CONST" and actual["value"] == "15'h127":
+        constant_inputs += 1
+    elif actual["kind"] != "VARREF":
+        test.error("Unexpected data connection")
+    if bindings[slots["extra"]] == 0:
+        open_outputs += 1
+if constant_inputs != 1 or open_outputs != 1:
+    test.error("Instance binding lost constant input or disconnected output")
 if not any(node["kind"] == "VARREF" and node["slot"] == slots["data"] and node["value"] == "RD"
            for node in module["nodes"]):
     test.error("Template specialized away the data input")

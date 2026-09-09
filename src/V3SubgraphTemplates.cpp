@@ -41,6 +41,8 @@ class TemplateBuilder final {
     Templates::Module m_module;
     std::map<const AstVar*, Id> m_slots;
     std::string m_rejection;
+    bool m_binding = false;
+    std::vector<Templates::Instance::Connection> m_connections;
 
     Id reject(const std::string& reason) {
         if (m_rejection.empty()) m_rejection = reason;
@@ -81,6 +83,13 @@ class TemplateBuilder final {
             if (constp->num().isOpaque()) return reject("constant");
             node.m_value = constp->num().ascii();
         } else if (const AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
+            if (m_binding && !refp->classOrPackagep() && !m_slots.count(refp->varp())) {
+                Templates::Slot slot;
+                slot.m_name = refp->varp()->name();
+                slot.m_type = type(refp->varp()->dtypep());
+                m_module.m_slots.push_back(std::move(slot));
+                m_slots.emplace(refp->varp(), static_cast<Id>(m_module.m_slots.size()));
+            }
             const auto it = m_slots.find(refp->varp());
             if (it == m_slots.end() || refp->classOrPackagep())
                 return reject("external reference");
@@ -167,6 +176,34 @@ class TemplateBuilder final {
     }
 
 public:
+    TemplateBuilder(const AstCell* cellp, const Templates::Module& module)
+        : m_binding{true} {
+        std::map<std::string, size_t> ports;
+        for (size_t index = 0; index < module.m_slots.size(); ++index) {
+            const Templates::Slot& slot = module.m_slots[index];
+            if (slot.m_direction != "INPUT" && slot.m_direction != "OUTPUT") continue;
+            ports.emplace(slot.m_name, m_connections.size());
+            m_connections.push_back({static_cast<Id>(index + 1), Templates::NONE});
+        }
+        if (!cellp) {
+            reject("top boundary");
+            return;
+        }
+        for (const AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+            const auto it = ports.find(pinp->modVarp()->name());
+            if (it == ports.end()) {
+                reject("port declaration");
+                break;
+            }
+            const AstNodeExpr* const exprp = VN_CAST(pinp->exprp(), NodeExpr);
+            if (pinp->exprp() && !exprp) {
+                reject("port expression");
+                break;
+            }
+            m_connections[it->second].m_actual = expression(exprp);
+        }
+    }
+
     explicit TemplateBuilder(const AstNodeModule* modp) {
         m_module.m_name = modp->name();
         // Declaration collection precedes expression capture, including forward references.
@@ -203,6 +240,14 @@ public:
 
     const std::string& rejection() const { return m_rejection; }
     Templates::Module take() { return std::move(m_module); }
+    void bind(Templates::Instance& instance) {
+        instance.m_bindingRejection = m_rejection;
+        // A partial binding must never be mistaken for an executable instance.
+        if (!m_rejection.empty()) return;
+        instance.m_parentSlots = std::move(m_module.m_slots);
+        instance.m_nodes = std::move(m_module.m_nodes);
+        instance.m_connections = std::move(m_connections);
+    }
 };
 
 class TemplateCaptureVisitor final : public VNVisitorConst {
@@ -243,14 +288,23 @@ public:
 
 // Traverse physical instance membership without copying template bodies. Cell/module pointers
 // exist only during capture; later passes may freely replace or delete their AST nodes.
-void collectInstances(const AstNodeModule* modp, const std::string& path,
+void collectInstances(const AstNodeModule* modp, const AstCell* cellp, const std::string& path,
                       const std::unordered_map<const AstNodeModule*, Id>& ids,
+                      const std::vector<Templates::Module>& modules,
                       std::vector<Templates::Instance>& instances) {
     const auto it = ids.find(modp);
-    if (it != ids.end()) instances.push_back(Templates::Instance{path, it->second});
+    if (it != ids.end()) {
+        Templates::Instance instance;
+        instance.m_path = path;
+        instance.m_template = it->second;
+        TemplateBuilder builder{cellp, modules[it->second - 1]};
+        builder.bind(instance);
+        instances.push_back(std::move(instance));
+    }
     for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
         if (const AstCell* const cellp = VN_CAST(nodep, Cell)) {
-            collectInstances(cellp->modp(), path + "." + cellp->name(), ids, instances);
+            collectInstances(cellp->modp(), cellp, path + "." + cellp->name(), ids, modules,
+                             instances);
         }
     }
 }
@@ -266,13 +320,70 @@ void dumpType(V3OutJsonFile& out, const Templates::Type& type) {
         .end();
 }
 
+void dumpSlots(V3OutJsonFile& out, const char* name, const std::vector<Templates::Slot>& slots) {
+    out.begin(name, '[');
+    for (const Templates::Slot& slot : slots) {
+        out.begin()
+            .put("name", VIdProtect::protect(slot.m_name))
+            .put("direction", slot.m_direction)
+            .put("varType", slot.m_varType)
+            .put("initializer", static_cast<int>(slot.m_initializer));
+        dumpType(out, slot.m_type);
+        out.end();
+    }
+    out.end();
+}
+
+void dumpNodes(V3OutJsonFile& out, const std::vector<Templates::Node>& nodes) {
+    out.begin("nodes", '[');
+    for (const Templates::Node& node : nodes) {
+        out.begin()
+            .put("kind", node.m_kind)
+            .put("value", node.m_value)
+            .put("slot", static_cast<int>(node.m_slot))
+            .put("selectWidth", node.m_selectWidth);
+        dumpType(out, node.m_type);
+        out.begin("operands", '[');
+        for (const Id operand : node.m_operands) out.put(static_cast<int>(operand));
+        out.end();
+        out.end();
+    }
+    out.end();
+}
+
 }  // namespace
 
 V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
     const VlOs::DeltaWallTime timer{v3Global.opt.stats()};
     std::unordered_map<const AstNodeModule*, Id> ids;
     const TemplateCaptureVisitor visitor{netlistp, m_modules, ids};
-    if (!ids.empty()) collectInstances(netlistp->topModulep(), "TOP", ids, m_instances);
+    if (!ids.empty()) {
+        collectInstances(netlistp->topModulep(), nullptr, "TOP", ids, m_modules, m_instances);
+    }
+    uint64_t bound = 0;
+    uint64_t connections = 0;
+    uint64_t open = 0;
+    std::map<std::string, uint64_t> rejections;
+    for (const Instance& instance : m_instances) {
+        if (!instance.m_bindingRejection.empty()) {
+            ++rejections[instance.m_bindingRejection];
+            continue;
+        }
+        ++bound;
+        connections += instance.m_connections.size();
+        for (const Instance::Connection& connection : instance.m_connections) {
+            if (!connection.m_actual) ++open;
+        }
+    }
+    V3Stats::addStat("Scheduling, Subgraph template instance bindings", bound);
+    V3Stats::addStat("Scheduling, Subgraph template instance bindings rejected",
+                     m_instances.size() - bound);
+    V3Stats::addStat("Scheduling, Subgraph template port bindings", connections);
+    V3Stats::addStat("Scheduling, Subgraph template open ports", open);
+    for (const auto& pair : rejections) {
+        V3Stats::addStat("Scheduling, Subgraph template binding rejection, " + pair.first,
+                         pair.second);
+    }
     uint64_t nodes = 0;
     for (const Module& module : m_modules) nodes += module.m_nodes.size();
     V3Stats::addStat("Scheduling, Subgraph template nodes stored", nodes);
@@ -298,6 +409,20 @@ void V3SubgraphTemplates::check() const {
     for (const Instance& instance : m_instances) {
         UASSERT(instance.m_template && instance.m_template <= m_modules.size(),
                 "Invalid template instance membership");
+        const Module& module = m_modules[instance.m_template - 1];
+        for (const Instance::Connection& connection : instance.m_connections) {
+            UASSERT(connection.m_formal && connection.m_formal <= module.m_slots.size(),
+                    "Invalid template formal binding");
+            UASSERT(connection.m_actual <= instance.m_nodes.size(),
+                    "Invalid template actual binding");
+        }
+        for (size_t index = 0; index < instance.m_nodes.size(); ++index) {
+            const Node& node = instance.m_nodes[index];
+            UASSERT(node.m_slot <= instance.m_parentSlots.size(), "Invalid parent binding slot");
+            for (const Id operand : node.m_operands) {
+                UASSERT(operand <= index, "Binding operand is not in postorder");
+            }
+        }
     }
 }
 
@@ -308,30 +433,8 @@ void V3SubgraphTemplates::dump(const std::string& filename) const {
         out.begin()
             .put("name", VIdProtect::protect(module.m_name))
             .put("body", static_cast<int>(module.m_body));
-        out.begin("slots", '[');
-        for (const Slot& slot : module.m_slots) {
-            out.begin()
-                .put("name", VIdProtect::protect(slot.m_name))
-                .put("direction", slot.m_direction)
-                .put("varType", slot.m_varType)
-                .put("initializer", static_cast<int>(slot.m_initializer));
-            dumpType(out, slot.m_type);
-            out.end();
-        }
-        out.end().begin("nodes", '[');
-        for (const Node& node : module.m_nodes) {
-            out.begin()
-                .put("kind", node.m_kind)
-                .put("value", node.m_value)
-                .put("slot", static_cast<int>(node.m_slot))
-                .put("selectWidth", node.m_selectWidth);
-            dumpType(out, node.m_type);
-            out.begin("operands", '[');
-            for (const Id operand : node.m_operands) out.put(static_cast<int>(operand));
-            out.end();
-            out.end();
-        }
-        out.end();
+        dumpSlots(out, "slots", module.m_slots);
+        dumpNodes(out, module.m_nodes);
         out.end();
     }
     out.end().begin("instances", '[');
@@ -339,7 +442,18 @@ void V3SubgraphTemplates::dump(const std::string& filename) const {
         out.begin()
             .put("path", VIdProtect::protect(instance.m_path))
             .put("template", static_cast<int>(instance.m_template))
-            .end();
+            .put("bindingRejection", instance.m_bindingRejection);
+        dumpSlots(out, "parentSlots", instance.m_parentSlots);
+        dumpNodes(out, instance.m_nodes);
+        out.begin("connections", '[');
+        for (const Instance::Connection& connection : instance.m_connections) {
+            out.begin()
+                .put("formal", static_cast<int>(connection.m_formal))
+                .put("actual", static_cast<int>(connection.m_actual))
+                .end();
+        }
+        out.end();
+        out.end();
     }
     out.end();
 }

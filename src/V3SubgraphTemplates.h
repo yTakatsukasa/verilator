@@ -65,6 +65,14 @@ public:
     struct Instance final {
         std::string m_path;
         Id m_template = NONE;  // One-based in m_modules
+        struct Connection final {
+            Id m_formal = NONE;  // Template storage slot, never aliased with another formal
+            Id m_actual = NONE;  // Instance expression node; NONE denotes an open port
+        };
+        std::vector<Slot> m_parentSlots;  // Referenced declarations in the enclosing instance
+        std::vector<Node> m_nodes;  // Parent expressions, separate from the template body
+        std::vector<Connection> m_connections;
+        std::string m_bindingRejection;  // Nonempty means the whole instance needs fallback
     };
 
 private:
