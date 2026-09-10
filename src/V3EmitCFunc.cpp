@@ -390,7 +390,33 @@ void EmitCFunc::emitCCallArgs(const AstNodeCCall* nodep, const string& selfPoint
         puts(nodep->argTypes());
         comma = true;
     }
-    putCommaIterateNext(nodep->argsp(), comma);
+    if (v3Global.opt.stats() && nodep->funcp()->subgraphTemplate()) {
+        // Attribute by formal ABI direction, not by the optimized actual expression or name.
+        AstNode* actualp = nodep->argsp();
+        for (const AstNode* formalp = nodep->funcp()->argsp(); formalp;
+             formalp = formalp->nextp()) {
+            const AstVar* const varp = VN_CAST(formalp, Var);
+            // Match emitCFuncArgs: argsp also contains initialization statements and locals.
+            if (!varp || !varp->isIO() || varp->isFuncReturn()) continue;
+            UASSERT_OBJ(actualp, nodep, "Template formal has no call argument");
+            if (comma) puts(", ");
+            const size_t start = ofp()->outputBytes();
+            iterateConst(actualp);
+            const size_t bytes = ofp()->outputBytes() - start;
+            if (varp->isWritable()) {
+                m_templateWriteArgBytes += bytes;
+                ++m_templateWriteArgs;
+            } else {
+                m_templateReadArgBytes += bytes;
+                ++m_templateReadArgs;
+            }
+            actualp = actualp->nextp();
+            comma = true;
+        }
+        UASSERT_OBJ(!actualp, nodep, "Template call argument has no formal");
+    } else {
+        putCommaIterateNext(nodep->argsp(), comma);
+    }
     puts(")");
 }
 

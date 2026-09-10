@@ -36,12 +36,21 @@ for count in (4, 12):
         test.error("Instance count must not change the shared schedule")
     baseline = templates
     bodies = []
+    callers = []
+    generated = {}
     for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp"):
         with open(filename, encoding="utf8") as handle:
+            source = handle.read()
+            generated[filename] = source
             bodies.extend(
                 re.findall(
                     r"^(?:VL_ATTR_COLD )?void [^\n]*__VsubgraphTemplate\d+__\d+"
-                    r"\([^\n]*\) \{\n.*?^\}", handle.read(), re.M | re.S))
+                    r"\([^\n]*\) \{\n.*?^\}", source, re.M | re.S))
+            for function in re.findall(
+                    r"^(?:VL_ATTR_COLD )?(?:void|bool|VlCoroutine) [^\n;]*\([^\n;]*\) \{\n.*?^\}",
+                    source, re.M | re.S):
+                if re.search(r"__VsubgraphTemplate\d+__\d+\(", function.split("\n", 1)[1]):
+                    callers.append(function)
     bodies.sort()
     if len(bodies) != 6:
         test.error("Expected exactly six shared C++ function definitions")
@@ -60,5 +69,22 @@ for count in (4, 12):
     if baseline_calls is not None and calls <= baseline_calls:
         test.error("Emitted call count must increase with instance count")
     baseline_calls = calls
+    test.file_grep(stats, r"Output, C\+\+ template caller functions\s+(\d+)", len(callers))
+    test.file_grep(stats, r"Output, C\+\+ template caller function bytes\s+(\d+)",
+                   sum(len(function.encode("utf8")) + 1 for function in callers))
+    argument_bytes = int(counters["template read argument bytes"]) + int(
+        counters["template writable argument bytes"])
+    if not 0 < argument_bytes < call_bytes < int(counters["template caller function bytes"]):
+        test.error("Argument and call output must be nested subsets of caller output")
+    if int(counters["template caller function bytes"]) > int(counters["other function bytes"]):
+        test.error("Caller output must be a subset of other function output")
+
+# Instrumentation must not change emitted code or simulation behavior.
+test.compile(verilator_flags2=["--subgraph-schedule", "--binary", "-GN=12"])
+test.execute()
+for filename, source in generated.items():
+    with open(filename, encoding="utf8") as handle:
+        if handle.read() != source:
+            test.error("Statistics changed generated C++: " + filename)
 
 test.passes()

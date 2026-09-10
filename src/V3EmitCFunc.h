@@ -125,6 +125,12 @@ class EmitCFunc VL_NOT_FINAL : public EmitCConstInit {
     uint64_t m_templateCallBytes = 0;  // Call expressions, excluding the enclosing statement
     uint64_t m_templateCalls = 0;  // Emitted calls, after wrapper replication and optimization
     uint64_t m_otherFunctionBytes = 0;  // Non-template definitions, including template calls
+    uint64_t m_templateCallerBytes = 0;  // Non-template definitions with direct template calls
+    uint64_t m_templateCallers = 0;  // Such definitions, including mixed parent logic
+    uint64_t m_templateReadArgBytes = 0;  // Read-only ABI argument expressions
+    uint64_t m_templateWriteArgBytes = 0;  // Writable ABI argument expressions
+    uint64_t m_templateReadArgs = 0;  // Emitted read-only ABI arguments
+    uint64_t m_templateWriteArgs = 0;  // Emitted writable ABI arguments
 
 protected:
     VL_DEFINE_DEBUG_FUNCTIONS;
@@ -418,6 +424,7 @@ public:
         puts("\n");
         m_lazyDecls.emit(nodep);
         const size_t functionStart = v3Global.opt.stats() ? ofp()->outputBytes() : 0;
+        const uint64_t callsAtStart = m_templateCalls;
         if (nodep->ifdef() != "") putns(nodep, "#ifdef " + nodep->ifdef() + "\n");
         emitCFuncHeader(nodep, m_modp, /* withScope: */ true);
 
@@ -514,6 +521,10 @@ public:
                 ++m_templateBodies;
             } else {
                 m_otherFunctionBytes += bytes;
+                if (m_templateCalls != callsAtStart) {
+                    m_templateCallerBytes += bytes;
+                    ++m_templateCallers;
+                }
             }
         }
     }
@@ -1971,6 +1982,13 @@ protected:
         V3Stats::addStatSum("Output, C++ template call expression bytes", m_templateCallBytes);
         V3Stats::addStatSum("Output, C++ template call sites", m_templateCalls);
         V3Stats::addStatSum("Output, C++ other function bytes", m_otherFunctionBytes);
+        V3Stats::addStatSum("Output, C++ template caller function bytes", m_templateCallerBytes);
+        V3Stats::addStatSum("Output, C++ template caller functions", m_templateCallers);
+        V3Stats::addStatSum("Output, C++ template read argument bytes", m_templateReadArgBytes);
+        V3Stats::addStatSum("Output, C++ template writable argument bytes",
+                            m_templateWriteArgBytes);
+        V3Stats::addStatSum("Output, C++ template read arguments", m_templateReadArgs);
+        V3Stats::addStatSum("Output, C++ template writable arguments", m_templateWriteArgs);
     }
 };
 
