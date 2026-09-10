@@ -17,7 +17,7 @@
 // arguments keep real variable references in the AST, so port lowering and scoping relink them
 // normally. Resolve the calls immediately after scoping, constructing each shared body once
 // from the immutable schedule. Parent optimization can change actual arguments, never formals.
-// Initially support one input clock and unsigned scalar operations. Unsupported specializations
+// Support input-clock events and unsigned scalar operations. Unsupported specializations
 // keep their original procedures. NBA commit calls become AstAlwaysPost in V3Active.
 //*************************************************************************
 
@@ -44,7 +44,7 @@ std::string eligibility(const Templates::Module& module) {
     if (v3Global.opt.trace() || v3Global.opt.coverage() || v3Global.opt.threads() != 1)
         return "instrumentation or threads";
     if (!module.m_schedule.m_rejection.empty()) return "schedule";
-    if (module.m_schedule.m_triggers.size() != 1 || module.m_schedule.m_pre.size() != 1)
+    if (module.m_schedule.m_triggers.empty() || module.m_schedule.m_pre.empty())
         return "clock shape";
     const std::set<std::string> supported{
         "ADD",   "ALWAYS", "AND",     "ASSIGN",  "ASSIGNDLY",     "ASSIGNW", "BLOCK", "COND",
@@ -90,6 +90,7 @@ class PrepareVisitor final : public VNVisitor {
             if (item.m_pending) {
                 varp = new AstVar{nodep->fileline(), VVarType::MODULETEMP,
                                   "__VsubgraphPending" + cvtToStr(item.m_slot), varp->dtypep()};
+                varp->subgraphPending(true);
                 nodep->addStmtsp(varp);
             } else {
                 current[item.m_slot] = varp;

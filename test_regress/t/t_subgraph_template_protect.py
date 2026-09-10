@@ -17,6 +17,8 @@ test.compile(verilator_flags2=[
     "--subgraph-schedule", "--protect-ids", "--stats", "--binary", "--dump-tree-json"
 ])
 test.execute()
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph template shared bodies materialized\s+(\d+)", 9)
 
 test.file_grep(test.stats, r"Scheduling, Subgraph templates captured\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph template instance memberships\s+(\d+)", 4)

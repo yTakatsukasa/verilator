@@ -3380,6 +3380,7 @@ int AstVarRef::instrCount() const {
 }
 void AstVar::dump(std::ostream& str) const {
     this->AstNode::dump(str);
+    if (subgraphPending()) str << " [SUBGRAPH-PENDING]";
     if (constPoolEntry()) str << " [CONSTPOOL]";
     if (covergroupRefMember()) str << " [CGREF]";
     if (isSc()) str << " [SC]";
@@ -3421,6 +3422,7 @@ void AstVar::dump(std::ostream& str) const {
     str << " " << varType();
 }
 void AstVar::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, subgraphPending);
     dumpJsonStrFunc(str, origName);
     dumpJsonStrFunc(str, verilogName);
     dumpJsonBoolFuncIf(str, constPoolEntry);

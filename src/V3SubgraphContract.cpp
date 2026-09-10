@@ -198,5 +198,6 @@ V3SubgraphContract::makeLogicalBoundaryUses(AstScope* boundaryScopep) {
 }
 
 bool V3SubgraphContract::isDelayedState(const AstVarScope* vscp) {
-    return 0 == vscp->varp()->name().rfind("__Vdly", 0);
+    // Pending template values carry the same uncuttable PRE-to-POST dependency as NBA shadows.
+    return vscp->varp()->subgraphPending() || 0 == vscp->varp()->name().rfind("__Vdly", 0);
 }
