@@ -18,5 +18,7 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)",
                6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast templates\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 4)
 
 test.passes()

@@ -101,6 +101,7 @@
 #include "V3SplitVar.h"
 #include "V3Stats.h"
 #include "V3String.h"
+#include "V3SubgraphAst.h"
 #include "V3SubgraphCheck.h"
 #include "V3Subst.h"
 #include "V3Table.h"
@@ -146,6 +147,7 @@ static void emitSerialized() VL_MT_DISABLED {
 }
 
 static void process() {
+    std::unique_ptr<const V3SubgraphAst> subgraphAst;
     {
         const VlOs::DeltaWallTime elabWallTime{true};
 
@@ -354,6 +356,10 @@ static void process() {
             // We're going to flatten the hierarchy, so as many optimizations that
             // can be done as possible should be before this....
 
+            if (v3Global.opt.subgraphSchedule()) {
+                subgraphAst.reset(new V3SubgraphAst{v3Global.rootp()});
+            }
+
             // Convert instantiations to wassigns and always blocks
             V3Inst::instAll(v3Global.rootp());
 
@@ -488,6 +494,7 @@ static void process() {
 
             // Schedule the logic
             V3Sched::schedule(v3Global.rootp());
+            if (subgraphAst) subgraphAst->check();
             V3Sched::transformForks(v3Global.rootp());
 
             // Post scheduling transformations - TODO: this should at least be renamed

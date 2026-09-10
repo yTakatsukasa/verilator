@@ -14,4 +14,7 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--binary"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast templates\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 1)
+
 test.passes()
