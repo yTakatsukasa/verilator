@@ -19,8 +19,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract boundary uses\s+(
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract external uses\s+(\d+)", 8)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract internal uses\s+(\d+)", 11)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)",
-               0)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 20)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 7)

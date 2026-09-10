@@ -17,7 +17,6 @@ test.compile(verilator_flags2=[
 ])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)",
-               6)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)", 6)
 
 test.passes()

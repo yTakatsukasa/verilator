@@ -23,8 +23,7 @@ test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+
 test.file_grep(test.stats,
                r"Scheduling, Subgraph schedule equivalence fallback order calls\s+(\d+)", 0)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse blocked instances, global trigger\s+(\d+)",
-               0)
+               r"Scheduling, Subgraph schedule reuse blocked instances, global trigger\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared helper lifted trigger guards\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
                2)
