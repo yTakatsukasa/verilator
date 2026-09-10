@@ -3109,6 +3109,7 @@ public:
 class AstAlways final : public AstNodeProcedure {
     // @astgen op1 := sentreep : Optional[AstSenTree] // Sensitivity list iff clocked
     const VAlwaysKwd m_keyword;
+    bool m_subgraphPost = false;  // Convert to AstAlwaysPost when the sensitivity is lowered
 
 public:
     AstAlways(FileLine* fl, VAlwaysKwd keyword, AstSenTree* sentreep, AstNode* stmtsp = nullptr)
@@ -3122,6 +3123,12 @@ public:
     void dump(std::ostream& str) const override;
     void dumpJson(std::ostream& str) const override;
     VAlwaysKwd keyword() const { return m_keyword; }
+    bool subgraphPost() const { return m_subgraphPost; }
+    void subgraphPost(bool flag) { m_subgraphPost = flag; }
+    bool sameNode(const AstNode* samep) const override {
+        const AstAlways* const otherp = VN_DBG_AS(samep, Always);
+        return keyword() == otherp->keyword() && subgraphPost() == otherp->subgraphPost();
+    }
 };
 class AstAlwaysObserved final : public AstNodeProcedure {
     // Like always but Observed scheduling region

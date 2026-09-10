@@ -1948,8 +1948,10 @@ void AstNodeProcedure::dumpJson(std::ostream& str) const {
 void AstAlways::dump(std::ostream& str) const {
     this->AstNodeProcedure::dump(str);
     if (keyword() != VAlwaysKwd::ALWAYS) str << " [" << keyword().ascii() << "]";
+    if (subgraphPost()) str << " [SUBGRAPH-POST]";
 }
 void AstAlways::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, subgraphPost);
     dumpJsonStr(str, "keyword", keyword().ascii());
     dumpJsonGen(str);
 }
@@ -3739,6 +3741,15 @@ void AstStop::dump(std::ostream& str) const {
 }
 void AstStop::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isFatal);
+    dumpJsonGen(str);
+}
+void AstSubgraphCall::dump(std::ostream& str) const {
+    AstNodeStmt::dump(str);
+    str << " template=" << templateId() << " entry=" << entryId();
+}
+void AstSubgraphCall::dumpJson(std::ostream& str) const {
+    dumpJsonNum(str, "templateId", templateId());
+    dumpJsonNum(str, "entryId", entryId());
     dumpJsonGen(str);
 }
 void AstSubgraphInstance::dump(std::ostream& str) const {

@@ -474,8 +474,6 @@ V3SubgraphTemplates::V3SubgraphTemplates(AstNetlist* netlistp) {
         V3Stats::addStat("Scheduling, Subgraph template NBA shadow slots", shadows);
         V3Stats::addStat("Scheduling, Subgraph template ABI storage slots", storage);
         V3Stats::addStat("Scheduling, Subgraph template ABI entry points", entries);
-        // Plan construction is not yet a replacement for the ordinary runtime scheduling path.
-        V3Stats::addStat("Scheduling, Subgraph template schedules activated", 0);
         for (const auto& pair : rejections) {
             V3Stats::addStat("Scheduling, Subgraph template schedule rejection, " + pair.first,
                              pair.second);

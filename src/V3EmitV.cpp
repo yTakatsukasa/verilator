@@ -1108,6 +1108,15 @@ class EmitVBaseVisitorConst VL_NOT_FINAL : public VNVisitorConst {
         iterateAndNextConstNull(nodep->argsp());
         puts(")");
     }
+    void visit(AstSubgraphCall* nodep) override {
+        puts("__VsubgraphTemplate" + cvtToStr(nodep->templateId()) + "__"
+             + cvtToStr(nodep->entryId()) + "(");
+        for (AstNodeExpr* argp = nodep->argsp(); argp; argp = VN_CAST(argp->nextp(), NodeExpr)) {
+            iterateConst(argp);
+            if (argp->nextp()) puts(", ");
+        }
+        puts(");\n");
+    }
     void visit(AstArg* nodep) override { iterateAndNextConstNull(nodep->exprp()); }
     void visit(AstWith* nodep) override {
         putfs(nodep, " with (");

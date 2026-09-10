@@ -15,6 +15,10 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--binary", "--dump-tree-json"])
 test.execute()
 
+test.file_grep(test.stats, r"Scheduling, Subgraph template schedules activated\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph template shared bodies materialized\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph template entry calls materialized\s+(\d+)", 18)
+
 test.file_grep(test.stats, r"Scheduling, Subgraph template candidates\s+(\d+)", 5)
 test.file_grep(test.stats, r"Scheduling, Subgraph templates captured\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph templates rejected\s+(\d+)", 2)

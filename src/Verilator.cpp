@@ -102,6 +102,7 @@
 #include "V3Stats.h"
 #include "V3String.h"
 #include "V3SubgraphCheck.h"
+#include "V3SubgraphLower.h"
 #include "V3SubgraphTemplates.h"
 #include "V3Subst.h"
 #include "V3Table.h"
@@ -364,6 +365,7 @@ static void process() {
                     subgraphTemplates->dump(v3Global.opt.makeDir() + "/" + v3Global.opt.prefix()
                                             + "__subgraph_templates.json");
                 }
+                V3SubgraphLower::prepare(v3Global.rootp(), *subgraphTemplates);
             }
 
             // Convert instantiations to wassigns and always blocks
@@ -375,6 +377,7 @@ static void process() {
             // Flatten hierarchy, creating a SCOPE for each module's usage as a cell
             // No more AstAlias after linkDotScope
             V3Scope::scopeAll(v3Global.rootp());
+            if (subgraphTemplates) V3SubgraphLower::resolve(v3Global.rootp(), *subgraphTemplates);
             V3LinkDot::linkDotScope(v3Global.rootp());
             // FSM coverage needs scopes, but should otherwise run as early as
             // possible before later lowering rewrites user-visible clocked

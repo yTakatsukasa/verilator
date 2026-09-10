@@ -1267,6 +1267,31 @@ public:
     string emitVerilog() const { return m_isFatal ? "$fatal" : "$stop"; }
     bool isFatal() const { return m_isFatal; }
 };
+class AstSubgraphCall final : public AstNodeStmt {
+    // Temporary call to a template entry, resolved immediately after V3Scope.
+    // @astgen op1 := argsp : List[AstNodeExpr]
+    uint32_t m_templateId;  // One-based specialization ID in the independent IR
+    uint32_t m_entryId;  // One-based phase entry ID within that specialization
+
+public:
+    AstSubgraphCall(FileLine* fl, uint32_t templateId, uint32_t entryId)
+        : ASTGEN_SUPER_SubgraphCall(fl)
+        , m_templateId{templateId}
+        , m_entryId{entryId} {}
+    ASTGEN_MEMBERS_AstSubgraphCall;
+    uint32_t templateId() const { return m_templateId; }
+    uint32_t entryId() const { return m_entryId; }
+    bool isPure() override { return false; }
+    bool isOutputter() override { return true; }
+    bool isGateOptimizable() const override { return false; }
+    bool isPredictOptimizable() const override { return false; }
+    void dump(std::ostream& str) const override;
+    void dumpJson(std::ostream& str) const override;
+    bool sameNode(const AstNode* samep) const override {
+        const AstSubgraphCall* const otherp = VN_DBG_AS(samep, SubgraphCall);
+        return templateId() == otherp->templateId() && entryId() == otherp->entryId();
+    }
+};
 class AstSubgraphInstance final : public AstNodeStmt {
     // Coarse subgraph wrapper carrying logical and materialized parent contracts. Materialized
     // uses are compact scheduling-only metadata rather than AST children as large designs can
