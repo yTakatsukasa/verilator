@@ -16,6 +16,7 @@ test.scenarios("vlt")
 
 baseline = None
 baseline_bodies = None
+baseline_calls = None
 for count in (4, 12):
     test.compile(verilator_flags2=[
         "--subgraph-schedule", "--stats", "--binary", "--dump-tree-json", "-GN=" + str(count)
@@ -47,5 +48,17 @@ for count in (4, 12):
     if baseline_bodies is not None and bodies != baseline_bodies:
         test.error("Instance count must not change shared C++ bodies")
     baseline_bodies = bodies
+    test.file_grep(stats, r"Output, C\+\+ template body functions\s+(\d+)", 6)
+    test.file_grep(stats, r"Output, C\+\+ template body bytes\s+(\d+)",
+                   sum(len(body.encode("utf8")) + 1 for body in bodies))
+    with open(stats, encoding="utf8") as handle:
+        counters = dict(re.findall(r"Output, C\+\+ ([^\n]+?)\s+(\d+)\s*$", handle.read(), re.M))
+    calls = int(counters["template call sites"])
+    call_bytes = int(counters["template call expression bytes"])
+    if calls <= 0 or call_bytes <= 0 or call_bytes >= int(counters["other function bytes"]):
+        test.error("Call expressions must be a nonempty subset of other function output")
+    if baseline_calls is not None and calls <= baseline_calls:
+        test.error("Emitted call count must increase with instance count")
+    baseline_calls = calls
 
 test.passes()

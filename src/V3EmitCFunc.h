@@ -120,6 +120,11 @@ class EmitCFunc VL_NOT_FINAL : public EmitCConstInit {
     AstVarRef* m_wideTempRefp = nullptr;  // Variable that _WW macros should be setting
     std::unordered_map<AstJumpBlock*, size_t> m_labelNumbers;  // Label numbers for AstJumpBlocks
     bool m_createdScopeHash = false;  // Already created a scope hash
+    uint64_t m_templateBodyBytes = 0;  // Shared function definitions, including signature
+    uint64_t m_templateBodies = 0;  // Emitted shared function definitions
+    uint64_t m_templateCallBytes = 0;  // Call expressions, excluding the enclosing statement
+    uint64_t m_templateCalls = 0;  // Emitted calls, after wrapper replication and optimization
+    uint64_t m_otherFunctionBytes = 0;  // Non-template definitions, including template calls
 
 protected:
     VL_DEFINE_DEBUG_FUNCTIONS;
@@ -412,6 +417,7 @@ public:
 
         puts("\n");
         m_lazyDecls.emit(nodep);
+        const size_t functionStart = v3Global.opt.stats() ? ofp()->outputBytes() : 0;
         if (nodep->ifdef() != "") putns(nodep, "#ifdef " + nodep->ifdef() + "\n");
         emitCFuncHeader(nodep, m_modp, /* withScope: */ true);
 
@@ -501,6 +507,15 @@ public:
 
         puts("}\n");
         if (nodep->ifdef() != "") puts("#endif  // " + nodep->ifdef() + "\n");
+        if (v3Global.opt.stats()) {
+            const size_t bytes = ofp()->outputBytes() - functionStart;
+            if (nodep->subgraphTemplate()) {
+                m_templateBodyBytes += bytes;
+                ++m_templateBodies;
+            } else {
+                m_otherFunctionBytes += bytes;
+            }
+        }
     }
 
     void visit(AstVar* nodep) override {
@@ -752,6 +767,8 @@ public:
     }
     void visit(AstCCall* nodep) override {
         const AstCFunc* const funcp = nodep->funcp();
+        const bool measure = v3Global.opt.stats() && funcp->subgraphTemplate();
+        const size_t callStart = measure ? ofp()->outputBytes() : 0;
         const AstNodeModule* const funcModp = EmitCParentModule::get(funcp);
         putnbs(nodep, "");
         if (funcp->dpiImportPrototype()) {
@@ -776,6 +793,10 @@ public:
             putns(nodep, funcp->nameProtect());
         }
         emitCCallArgs(nodep, nodep->selfPointerProtect(m_useSelfForThis), m_cfuncp->needProcess());
+        if (measure) {
+            m_templateCallBytes += ofp()->outputBytes() - callStart;
+            ++m_templateCalls;
+        }
     }
     void visit(AstCMethodCall* nodep) override {
         const AstCFunc* const funcp = nodep->funcp();
@@ -1943,7 +1964,14 @@ public:
 
 protected:
     EmitCFunc() = default;
-    ~EmitCFunc() override = default;
+    ~EmitCFunc() override {
+        if (!v3Global.opt.stats()) return;
+        V3Stats::addStatSum("Output, C++ template body bytes", m_templateBodyBytes);
+        V3Stats::addStatSum("Output, C++ template body functions", m_templateBodies);
+        V3Stats::addStatSum("Output, C++ template call expression bytes", m_templateCallBytes);
+        V3Stats::addStatSum("Output, C++ template call sites", m_templateCalls);
+        V3Stats::addStatSum("Output, C++ other function bytes", m_otherFunctionBytes);
+    }
 };
 
 #endif  // guard

@@ -209,6 +209,8 @@ public:
     ~V3OutFile() override;
 
     std::string filename() const { return m_filename; }
+    // Include buffered output without flushing or issuing a filesystem query.
+    std::size_t outputBytes() const { return m_writtenBytes + m_usedBytes; }
 
     void putsForceIncs();
 

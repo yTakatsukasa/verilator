@@ -11,6 +11,9 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 test.top_filename = "t/t_subgraph_template_lower.v"
-test.compile(verilator_flags2=["--binary"])
+test.compile(verilator_flags2=["--binary", "--stats"])
 test.execute()
+# Sum statistics omit zero entries. No template output may be reported when disabled.
+test.file_grep_not(test.stats, r"Output, C\+\+ template .*\s+[1-9]\d*\s*$")
+test.file_grep(test.stats, r"Output, C\+\+ other function bytes\s+[1-9]\d*")
 test.passes()

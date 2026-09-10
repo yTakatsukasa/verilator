@@ -59,5 +59,8 @@ for count in (4, 12):
     if baseline_bodies is not None and bodies != baseline_bodies:
         test.error("Instance count must not change shared multi-clock C++ bodies")
     baseline_bodies = bodies
+    test.file_grep(stats, r"Output, C\+\+ template body functions\s+(\d+)", 9)
+    test.file_grep(stats, r"Output, C\+\+ template body bytes\s+(\d+)",
+                   sum(len(body.encode("utf8")) + 1 for body in bodies))
 
 test.passes()

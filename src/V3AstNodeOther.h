@@ -549,6 +549,7 @@ class AstCFunc final : public AstNode {
     bool m_noLife : 1;  // Disable V3Life on this function - has multiple calls, and reads Syms
                         // state
     bool m_subgraphCallerSelf : 1;  // Resolve descendant state relative to the calling instance
+    bool m_subgraphTemplate : 1;  // Shared phase body built from an independent template
     bool m_isCovergroupSample : 1;  // Automatic covergroup sample() function
     int m_cost;  // Function call cost
 public:
@@ -581,6 +582,7 @@ public:
         m_recursive = false;
         m_noLife = false;
         m_subgraphCallerSelf = false;
+        m_subgraphTemplate = false;
         m_isCovergroupSample = false;
         m_cost = v3Global.opt.instrCountDpi();  // As proxy for unknown general DPI cost
     }
@@ -594,6 +596,7 @@ public:
         return ((isTrace() == asamep->isTrace()) && (rtnTypeVoid() == asamep->rtnTypeVoid())
                 && (argTypes() == asamep->argTypes()) && isLoose() == asamep->isLoose()
                 && subgraphCallerSelf() == asamep->subgraphCallerSelf()
+                && subgraphTemplate() == asamep->subgraphTemplate()
                 && (!(dpiImportPrototype() || dpiExportImpl()) || name() == asamep->name()));
     }
     //
@@ -662,6 +665,8 @@ public:
     void noLife(bool flag) { m_noLife = flag; }
     bool noLife() const { return m_noLife; }
     bool subgraphCallerSelf() const { return m_subgraphCallerSelf; }
+    bool subgraphTemplate() const { return m_subgraphTemplate; }
+    void subgraphTemplate(bool flag) { m_subgraphTemplate = flag; }
     void subgraphCallerSelf(bool flag) { m_subgraphCallerSelf = flag; }
     bool isCovergroupSample() const { return m_isCovergroupSample; }
     void isCovergroupSample(bool flag) { m_isCovergroupSample = flag; }

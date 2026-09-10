@@ -293,6 +293,7 @@ class ResolveVisitor final : public VNVisitor {
             funcp->isStatic(true);
             funcp->isLoose(true);
             funcp->dontCombine(true);
+            funcp->subgraphTemplate(true);
             // Each call binds different storage. Do not trace formal references across calls.
             funcp->noLife(true);
             funcp->slow(entry.m_phase == "static" || entry.m_phase == "initial");

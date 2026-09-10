@@ -51,7 +51,7 @@ function print_section(title, lines, count, i) {
     output_timing[++output_timing_count] = $0
     next
 }
-/^[[:space:]]+Output, C\+\+ (bytes|files) written/ {
+/^[[:space:]]+Output, C\+\+ / {
     output_shape[++output_shape_count] = $0
     next
 }
