@@ -24,7 +24,9 @@
 #include "V3SubgraphAst.h"
 
 #include "V3Stats.h"
+#include "V3SubgraphSchedule.h"
 
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -90,16 +92,25 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
         ++candidates;
         AstNodeModule* const treep = modp->cloneTree(false);
         const uint32_t id = static_cast<uint32_t>(m_templates.size() + 1);
-        m_templates.push_back(Template{id, modp, treep, 0});
+        Template captured;
+        captured.m_id = id;
+        captured.m_sourcep = modp;
+        captured.m_treep = treep;
+        m_templates.push_back(std::move(captured));
         Template& item = m_templates.back();
         for (AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
             AstVar* const sourcep = VN_CAST(nodep, Var);
-            if (!sourcep || !sourcep->isIO()) continue;
+            if (!sourcep) continue;
             AstVar* const formalp = sourcep->clonep();
-            UASSERT_OBJ(formalp, sourcep, "Subgraph V3Ast port declaration was not cloned");
-            const uint32_t portId = static_cast<uint32_t>(item.m_ports.size() + 1);
-            item.m_ports.push_back(Template::Port{portId, sourcep, formalp});
+            UASSERT_OBJ(formalp, sourcep, "Subgraph V3Ast variable declaration was not cloned");
+            const uint32_t variableId = static_cast<uint32_t>(item.m_variables.size() + 1);
+            item.m_variables.push_back(Template::Variable{variableId, sourcep, formalp});
+            if (sourcep->isIO()) {
+                const uint32_t portId = static_cast<uint32_t>(item.m_ports.size() + 1);
+                item.m_ports.push_back(Template::Port{portId, sourcep, formalp});
+            }
         }
+        item.m_schedule = V3SubgraphSchedule::build(item);
         ids.emplace(modp, id);
         nodes += nodeCount(treep);
     }
@@ -110,6 +121,29 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     V3Stats::addStat("Scheduling, Subgraph V3Ast candidates", candidates);
     V3Stats::addStat("Scheduling, Subgraph V3Ast templates", m_templates.size());
     V3Stats::addStat("Scheduling, Subgraph V3Ast nodes", nodes);
+    uint64_t schedules = 0;
+    uint64_t triggers = 0;
+    uint64_t entries = 0;
+    std::map<std::string, uint64_t> scheduleRejections;
+    for (const Template& item : m_templates) {
+        if (item.m_schedule.m_rejection.empty()) {
+            ++schedules;
+            triggers += item.m_schedule.m_triggers.size();
+            entries += item.m_schedule.m_entries.size();
+        } else {
+            ++scheduleRejections[item.m_schedule.m_rejection];
+        }
+    }
+    V3Stats::addStat("Scheduling, Subgraph V3Ast schedule builds", m_templates.size());
+    V3Stats::addStat("Scheduling, Subgraph V3Ast schedules built", schedules);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast schedules rejected",
+                     m_templates.size() - schedules);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast local triggers", triggers);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast phase entries", entries);
+    for (const auto& pair : scheduleRejections) {
+        V3Stats::addStat("Scheduling, Subgraph V3Ast schedule rejection, " + pair.first,
+                         pair.second);
+    }
     uint64_t instances = 0;
     for (const Template& item : m_templates) instances += item.m_instances;
     V3Stats::addStat("Scheduling, Subgraph V3Ast instance memberships", instances);
@@ -154,6 +188,13 @@ void V3SubgraphAst::check() const {
         UASSERT(item.m_sourcep->name() == item.m_treep->name(),
                 "Subgraph V3Ast template changed specialization identity");
         uint32_t expectedPortId = 1;
+        uint32_t expectedVariableId = 1;
+        for (const Template::Variable& variable : item.m_variables) {
+            UASSERT(variable.m_id == expectedVariableId++,
+                    "Non-contiguous subgraph V3Ast variable ID");
+            UASSERT_OBJ(variable.m_sourcep && variable.m_formalp, item.m_treep,
+                        "Incomplete subgraph V3Ast variable mapping");
+        }
         for (const Template::Port& port : item.m_ports) {
             UASSERT(port.m_id == expectedPortId++, "Non-contiguous subgraph V3Ast formal ID");
             UASSERT_OBJ(port.m_sourcep && port.m_formalp && port.m_sourcep->isIO()
@@ -177,6 +218,26 @@ void V3SubgraphAst::check() const {
         item.m_treep->foreach([&](const AstVarScope* vscp) {
             vscp->v3fatalSrc("Subgraph V3Ast template was captured after scope replication");
         });
+        const Schedule& schedule = item.m_schedule;
+        if (!schedule.m_rejection.empty()) continue;
+        for (const Trigger& trigger : schedule.m_triggers) {
+            UASSERT_OBJ(trigger.m_formalp && trigger.m_formalp->isInput(), item.m_treep,
+                        "Subgraph V3Ast trigger is not a template input");
+        }
+        for (const Schedule::Storage& storage : schedule.m_storage) {
+            UASSERT_OBJ(storage.m_formalp, item.m_treep, "Subgraph V3Ast storage has no formal");
+        }
+        for (const Schedule::Entry& entry : schedule.m_entries) {
+            UASSERT(entry.m_process, "Subgraph V3Ast schedule entry has no process");
+            for (const uint32_t trigger : entry.m_triggers) {
+                UASSERT(trigger && trigger <= schedule.m_triggers.size(),
+                        "Invalid subgraph V3Ast local trigger ID");
+            }
+            for (const Schedule::Use& use : entry.m_uses) {
+                UASSERT(use.m_storage && use.m_storage <= schedule.m_storage.size(),
+                        "Invalid subgraph V3Ast ABI storage ID");
+            }
+        }
     }
     for (const Instance& instance : m_instances) {
         UASSERT(instance.m_template && instance.m_template <= m_templates.size(),

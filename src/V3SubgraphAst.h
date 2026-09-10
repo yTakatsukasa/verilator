@@ -26,6 +26,7 @@
 class AstNetlist;
 class AstNodeExpr;
 class AstNodeModule;
+class AstNodeProcedure;
 class AstVar;
 
 // Own one detached V3Ast tree for each elaborated subgraph module specialization. The trees are
@@ -34,18 +35,62 @@ class AstVar;
 // scheduling passes.
 class V3SubgraphAst final {
 public:
+    enum class Phase : uint8_t { STATIC, INITIAL, PRE, COMMIT, REFRESH };
+    struct Trigger final {
+        AstVar* m_formalp = nullptr;  // Template-local input declaration
+        bool m_posedge = false;
+    };
+    struct Process final {
+        AstNodeProcedure* m_procedurep = nullptr;  // Body remains owned by the template tree
+        std::vector<uint32_t> m_triggers;  // OR of one-based template-local trigger IDs
+        std::vector<AstVar*> m_reads;
+        std::vector<AstVar*> m_writes;
+    };
+    struct Schedule final {
+        struct Storage final {
+            AstVar* m_formalp = nullptr;  // Type and declaration identity in the template tree
+            bool m_pending = false;
+        };
+        struct Use final {
+            uint32_t m_storage = 0;  // One-based index in m_storage
+            bool m_read = false;
+            bool m_write = false;
+        };
+        struct Entry final {
+            Phase m_phase = Phase::REFRESH;
+            uint32_t m_process = 0;  // One-based process within its phase; COMMIT uses m_pre
+            std::vector<uint32_t> m_triggers;
+            std::vector<Use> m_uses;
+        };
+
+        std::vector<Trigger> m_triggers;
+        std::vector<Process> m_static;
+        std::vector<Process> m_initial;
+        std::vector<Process> m_pre;
+        std::vector<Process> m_refresh;
+        std::vector<Storage> m_storage;
+        std::vector<Entry> m_entries;
+        std::string m_rejection;
+    };
     struct Template final {
+        struct Variable final {
+            uint32_t m_id = 0;
+            AstVar* m_sourcep = nullptr;  // Declaration in the main-tree specialization
+            AstVar* m_formalp = nullptr;  // Declaration in the detached template tree
+        };
         struct Port final {
             uint32_t m_id = 0;
-            AstVar* m_sourcep = nullptr;  // Declaration in m_sourcep
-            AstVar* m_formalp = nullptr;  // Declaration in m_treep
+            AstVar* m_sourcep = nullptr;  // Declaration in the main-tree specialization
+            AstVar* m_formalp = nullptr;  // Declaration in the detached template tree
         };
 
         uint32_t m_id = 0;
         AstNodeModule* m_sourcep = nullptr;  // Main-tree specialization; owned by AstNetlist
         AstNodeModule* m_treep = nullptr;  // Detached specialization-local V3Ast; owned here
         uint64_t m_instances = 0;
+        std::vector<Variable> m_variables;
         std::vector<Port> m_ports;
+        Schedule m_schedule;
     };
     struct Instance final {
         struct Binding final {

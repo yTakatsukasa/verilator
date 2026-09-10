@@ -365,6 +365,7 @@ set(COMMON_SOURCES
     V3StatsReport.cpp
     V3String.cpp
     V3SubgraphAst.cpp
+    V3SubgraphSchedule.cpp
     V3SubgraphCheck.cpp
     V3SubgraphContract.cpp
     V3Subst.cpp
