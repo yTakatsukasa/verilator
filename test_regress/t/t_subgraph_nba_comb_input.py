@@ -14,23 +14,13 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--dump-tree-json", "--stats", "--subgraph-schedule"])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract boundary uses\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract external uses\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA contract internal uses\s+(\d+)", 11)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 5)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA cross domain internal variables\s+(\d+)",
-               0)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA logical uses\s+(\d+)", 20)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 7)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA pruned internal uses\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot instances\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot sources\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 7)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 21)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 6)
 
 sched_tree = test.glob_one(test.obj_dir + "/*_sched.tree.json")
 test.file_grep(
@@ -43,7 +33,7 @@ test.file_grep(
 )
 test.file_grep(
     sched_tree,
-    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":2',
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":4',
 )
 
 test.passes()

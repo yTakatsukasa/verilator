@@ -18,22 +18,20 @@ cpp_files = [
     filename for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp")
     if not re.search(r"__(ALL|main)\.cpp$", filename)
 ]
-canonical_bodies = 0
+shared_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
-        canonical_bodies += len(
-            re.findall(r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
-                       file_handle.read()))
-if canonical_bodies != 2:
-    test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
+        shared_bodies += len(re.findall(
+            r"(?m)^(?:VL_ATTR_COLD )?void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
+            file_handle.read()))
+if shared_bodies != 4:
+    test.error("Expected 4 shared V3Ast bodies, got %d" % shared_bodies)
 
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA contracts\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper arguments\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped composite\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 4)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 12)
 
 test.passes()

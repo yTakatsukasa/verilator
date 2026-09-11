@@ -25,5 +25,8 @@ test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast open ports\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules built\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 36)
 
 test.passes()

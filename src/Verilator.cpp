@@ -103,6 +103,7 @@
 #include "V3String.h"
 #include "V3SubgraphAst.h"
 #include "V3SubgraphCheck.h"
+#include "V3SubgraphLower.h"
 #include "V3Subst.h"
 #include "V3Table.h"
 #include "V3Task.h"
@@ -358,6 +359,7 @@ static void process() {
 
             if (v3Global.opt.subgraphSchedule()) {
                 subgraphAst.reset(new V3SubgraphAst{v3Global.rootp()});
+                V3SubgraphLower::prepare(v3Global.rootp(), *subgraphAst);
             }
 
             // Convert instantiations to wassigns and always blocks
@@ -369,6 +371,7 @@ static void process() {
             // Flatten hierarchy, creating a SCOPE for each module's usage as a cell
             // No more AstAlias after linkDotScope
             V3Scope::scopeAll(v3Global.rootp());
+            if (subgraphAst) V3SubgraphLower::resolve(v3Global.rootp(), *subgraphAst);
             V3LinkDot::linkDotScope(v3Global.rootp());
             // FSM coverage needs scopes, but should otherwise run as early as
             // possible before later lowering rewrites user-visible clocked

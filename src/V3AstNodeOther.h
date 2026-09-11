@@ -2201,6 +2201,7 @@ class AstVar final : public AstNode {
     bool m_ignorePostRead : 1;  // Ignore reads in 'Post' blocks during ordering
     bool m_ignorePostWrite : 1;  // Ignore writes in 'Post' blocks during ordering
     bool m_ignoreSchedWrite : 1;  // Ignore writes in scheduling (for special optimizations)
+    bool m_subgraphPending : 1;  // Pending NBA value produced by a shared V3Ast PRE entry
     bool m_dfgTriLowered : 1;  // Signal/temporary introduced by tristate lowering
     bool m_dfgAllowMultidriveTri : 1;  // Allow DFG MULTIDRIVEN warning for intentional tri nets
     bool m_globalConstrained : 1;  // Global constraint per IEEE 1800-2023 18.5.8
@@ -2266,6 +2267,7 @@ class AstVar final : public AstNode {
         m_ignorePostRead = false;
         m_ignorePostWrite = false;
         m_ignoreSchedWrite = false;
+        m_subgraphPending = false;
         m_dfgTriLowered = false;
         m_dfgAllowMultidriveTri = false;
         m_globalConstrained = false;
@@ -2456,6 +2458,8 @@ public:
     void setWrittenBySuspendable() { m_isWrittenBySuspendable = true; }
     bool ignorePostRead() const { return m_ignorePostRead; }
     void setIgnorePostRead() { m_ignorePostRead = true; }
+    bool subgraphPending() const { return m_subgraphPending; }
+    void subgraphPending(bool flag) { m_subgraphPending = flag; }
     bool ignorePostWrite() const { return m_ignorePostWrite; }
     void setIgnorePostWrite() { m_ignorePostWrite = true; }
     bool ignoreSchedWrite() const { return m_ignoreSchedWrite; }
@@ -3109,6 +3113,7 @@ public:
 class AstAlways final : public AstNodeProcedure {
     // @astgen op1 := sentreep : Optional[AstSenTree] // Sensitivity list iff clocked
     const VAlwaysKwd m_keyword;
+    bool m_subgraphPost = false;  // Convert to AstAlwaysPost when sensitivity is lowered
 
 public:
     AstAlways(FileLine* fl, VAlwaysKwd keyword, AstSenTree* sentreep, AstNode* stmtsp = nullptr)
@@ -3122,6 +3127,12 @@ public:
     void dump(std::ostream& str) const override;
     void dumpJson(std::ostream& str) const override;
     VAlwaysKwd keyword() const { return m_keyword; }
+    bool subgraphPost() const { return m_subgraphPost; }
+    void subgraphPost(bool flag) { m_subgraphPost = flag; }
+    bool sameNode(const AstNode* samep) const override {
+        const AstAlways* const otherp = VN_DBG_AS(samep, Always);
+        return keyword() == otherp->keyword() && subgraphPost() == otherp->subgraphPost();
+    }
 };
 class AstAlwaysObserved final : public AstNodeProcedure {
     // Like always but Observed scheduling region

@@ -79,7 +79,7 @@ public:
         , m_reads{reads}
         , m_writes{writes}
         , m_rejection{rejection} {
-        iterateConst(nodep);
+        iterateAndNextConstNull(nodep);
     }
 };
 

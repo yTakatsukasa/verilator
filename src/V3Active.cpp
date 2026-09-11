@@ -457,6 +457,14 @@ class ActiveVisitor final : public VNVisitor {
 
         // Move node to new active
         nodep->unlinkFrBack();
+        if (AstAlways* const alwaysp = VN_CAST(nodep, Always)) {
+            if (alwaysp->subgraphPost()) {
+                AstAlwaysPost* const postp = new AstAlwaysPost{nodep->fileline()};
+                postp->addStmtsp(alwaysp->stmtsp()->unlinkFrBackWithNext());
+                pushDeletep(alwaysp);
+                nodep = postp;
+            }
+        }
         wantactivep->addStmtsp(nodep);
 
         // Warn and convert any delayed assignments

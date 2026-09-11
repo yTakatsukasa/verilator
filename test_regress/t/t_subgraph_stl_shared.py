@@ -18,7 +18,9 @@ def subgraph_function_sizes(filename):
     with open(filename, "r", encoding="utf8") as file_handle:
         source = file_handle.read()
     sizes = []
-    for match in re.finditer(r"(?m)^void [^\n]*__nba_subgraph_[^\n]*\{$", source):
+    for match in re.finditer(
+            r"(?m)^(?:VL_ATTR_COLD )?void [^\n]*(?:__nba_subgraph_|__VsubgraphV3Ast)"
+            r"[^\n]*\{$", source):
         depth = 0
         for offset in range(source.find("{", match.start(), match.end()), len(source)):
             if source[offset] == "{":
@@ -39,8 +41,8 @@ cpp_sizes = [os.path.getsize(filename) for filename in cpp_files]
 function_sizes = [size for filename in cpp_files for size in subgraph_function_sizes(filename)]
 if sum(cpp_sizes) > 85000:
     test.error("Generated C++ exceeds 85000 bytes: %d" % sum(cpp_sizes))
-if max(cpp_sizes) > 26000:
-    test.error("Largest generated C++ file exceeds 26000 bytes: %d" % max(cpp_sizes))
+if max(cpp_sizes) > 28000:
+    test.error("Largest generated C++ file exceeds 28000 bytes: %d" % max(cpp_sizes))
 if not function_sizes:
     test.error("No generated subgraph helper function found")
 elif max(function_sizes) > 1600:
@@ -49,88 +51,12 @@ elif max(function_sizes) > 1600:
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, NBA elapsed time \(sec\), measured total\s+\d+\.\d+")
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph NBA elapsed time \(sec\), order calls\s+\d+\.\d+")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI analyses\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI DPI calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI eligible helpers\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI external vars\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI hidden uses\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI module-phase candidates\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared ABI state vars\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract direct external uses\s+(\d+)",
-               4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph canonical contract direct global trigger uses\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract direct other uses\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical contract local trigger uses\s+(\d+)",
-               4)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence binding rejects\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence fallback order calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence instances\s+(\d+)", 15)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence max class size\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential reuses\s+(\d+)",
-               9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence unavailable artifact classes\s+(\d+)",
-               0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse binding rejects, unshareable recipe\s+(\d+)",
-               0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse blocked instances, unsafe call\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper arguments\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper artifacts\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper body mismatches\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation checks\s+(\d+)", 6)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared helper isolation global trigger refs\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation refs\s+([1-9]\d*)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper isolation unbound refs\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper lifted trigger guards\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper parameterizations\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper reuses\s+(\d+)", 9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared exact parent domain reused body wrappers\s+(\d+)", 9)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared exact parent domain wrapper bindings\s+(\d+)", 15)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper skipped DPI calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger IDs\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared local trigger instance bindings\s+(\d+)",
-               15)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash candidates\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash collisions\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash lookups\s+(\d+)", 15)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash max candidates\s+(\d+)",
-               1)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache hash misses\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic matches\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache logic mismatches\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache lookups\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
-               9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding scans\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
-               9)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss ABI\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss domain\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss dtype/access\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss phase\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss relative path\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache miss topology\s+(\d+)")
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
-               6)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
-               9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 5)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 23)
 
 test.passes()

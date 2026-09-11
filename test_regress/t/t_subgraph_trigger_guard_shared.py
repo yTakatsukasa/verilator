@@ -14,21 +14,12 @@ test.scenarios("vlt")
 test.compile(verilator_flags2=["--output-split-cfuncs", "1", "--stats", "--subgraph-schedule"])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential reuses\s+(\d+)",
-               2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence cross domain reuses\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence fallback order calls\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule reuse blocked instances, global trigger\s+(\d+)",
-               0)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared helper lifted trigger guards\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls avoided\s+(\d+)",
-               2)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
-               4)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 18)
 
 test.passes()

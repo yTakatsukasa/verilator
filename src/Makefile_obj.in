@@ -343,6 +343,7 @@ RAW_OBJS_PCH_ASTNOMT = \
   V3SplitVar.o \
   V3StackCount.o \
 	V3SubgraphAst.o \
+	V3SubgraphLower.o \
 	V3SubgraphSchedule.o \
   V3SubgraphCheck.o \
   V3SubgraphContract.o \

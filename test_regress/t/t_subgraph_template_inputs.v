@@ -11,7 +11,7 @@
 `define checkh(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d: %m at %0t: got=%0x exp=%0x (%s !== %s)\n", `__FILE__, `__LINE__, $time, (gotv), (expv), `"gotv`", `"expv`" ); `stop; end while (0);
 // verilog_format: on
 
-module t;
+module t #(parameter N = 4);
   logic clk = 0;
   always #5 clk = ~clk;
   int cyc = 0;
@@ -19,11 +19,11 @@ module t;
   wire reset = cyc < 3 || (cyc >= 47 && cyc < 51);
   wire enable = (cyc % 5) != 0;
   wire sparse_clk = clk && (cyc % 3 == 0);
-  wire [14:0] result [4];
-  wire [14:0] expected [4];
+  wire [14:0] result [N];
+  wire [14:0] expected [N];
 
   // All four cells have the same specialization, but different parent wiring.
-  for (genvar i = 0; i < 4; ++i) begin : g
+  for (genvar i = 0; i < N; ++i) begin : g
     wire clock_b = i == 0 ? clk : i == 1 ? ~clk : sparse_clk;
     wire [14:0] data = i == 0 ? 15'h127 : i == 3 ? result[2] : drive;
     wire [14:0] ref_data = i == 0 ? 15'h127 : i == 3 ? expected[2] : drive;
