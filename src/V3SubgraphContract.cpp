@@ -99,6 +99,9 @@ class SubgraphContractBuilder final : public VNVisitorConst {
         iterateChildrenConst(nodep);
         AstCFunc* const funcp = nodep->funcp();
         UASSERT_OBJ(funcp, nodep, "Subgraph contract call has no function");
+        // Shared V3Ast bodies use their module instance as opaque context. Their explicit
+        // arguments are the complete parent-visible boundary contract.
+        if (funcp->subgraphTemplate()) return;
         if (!funcp->entryPoint() || isSafeLocalCallTarget(funcp, m_boundaryScopep)) {
             iterateConst(funcp);
         }

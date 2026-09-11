@@ -40,18 +40,18 @@ for count in (4, 12):
                 r"^(?:VL_ATTR_COLD )?void [^\n]*__VsubgraphV3Ast\d+__\d+"
                 r"\([^\n]*\) \{\n.*?^\}", handle.read(), re.M | re.S))
     bodies.sort()
-    if len(bodies) != 9:
-        test.error("Expected exactly nine shared V3Ast function definitions")
+    if len(bodies) != 6:
+        test.error("Expected exactly six shared V3Ast function definitions")
     if baseline_bodies is not None and bodies != baseline_bodies:
         test.error("Instance count changed the shared V3Ast function bodies")
     baseline_bodies = bodies
     body_bytes = sum(len(body.encode("utf8")) + 1 for body in bodies)
-    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 9)
+    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 6)
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body bytes\s+(\d+)",
                    body_bytes)
-    # Later optimization keeps the three specialization initialization calls once and the
+    # Later optimization inlines the three specialization initialization calls and keeps the
     # remaining eight phase calls once per instance.
-    call_sites = 8 * count + 3
+    call_sites = 8 * count
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast call sites\s+(\d+)", call_sites)
     with open(stats, encoding="utf8") as handle:
         call_bytes_match = re.search(

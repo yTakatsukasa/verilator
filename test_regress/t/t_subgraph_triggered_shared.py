@@ -16,19 +16,15 @@ test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules built\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 2)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast activation rejection, oversized ABI\s+(\d+)", 1)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast activation rejection instances, oversized ABI\s+(\d+)",
-               3)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules rejected\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 9)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 12)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 9)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 27)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 36)
 
 test.passes()

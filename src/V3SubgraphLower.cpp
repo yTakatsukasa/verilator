@@ -15,7 +15,8 @@
 //*************************************************************************
 // Replace an eligible specialization's procedures with thin phase calls before V3Scope replicates
 // them. After scoping, clone each phase body directly from the detached template V3Ast into one
-// shared AstCFunc and bind every instance's state through ordinary AstVarRef arguments.
+// shared AstCFunc. Boundary variables use ordinary arguments; internal state uses the existing
+// module instance context.
 //*************************************************************************
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
@@ -25,6 +26,7 @@
 #include "V3Stats.h"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -37,6 +39,12 @@ using Ast = V3SubgraphAst;
 
 VAccess access(const Ast::Schedule::Use& use) {
     return use.m_write ? (use.m_read ? VAccess::READWRITE : VAccess::WRITE) : VAccess::READ;
+}
+
+size_t phaseArgumentCount(Ast::Phase phase) {
+    return phase == Ast::Phase::COMMIT                                  ? 2
+           : (phase == Ast::Phase::PRE || phase == Ast::Phase::REFRESH) ? 1
+                                                                        : 0;
 }
 
 const Ast::Process& process(const Ast::Schedule& schedule, const Ast::Schedule::Entry& entry) {
@@ -53,6 +61,40 @@ const Ast::Process& process(const Ast::Schedule& schedule, const Ast::Schedule::
     return processesp->at(entry.m_process - 1);
 }
 
+using ParentVisibility = std::vector<std::array<bool, 5>>;
+
+ParentVisibility makeParentVisibility(const Ast::Schedule& schedule) {
+    const size_t storageCount = schedule.m_storage.size();
+    std::vector<bool> written(storageCount, false);
+    std::vector<std::array<size_t, 5>> phaseEntries(storageCount);
+    std::vector<std::array<bool, 5>> phaseWrites(storageCount);
+    for (const Ast::Schedule::Entry& entry : schedule.m_entries) {
+        const size_t phase = static_cast<size_t>(entry.m_phase);
+        for (const Ast::Schedule::Use& use : entry.m_uses) {
+            const size_t storage = use.m_storage - 1;
+            written[storage] = written[storage] || use.m_write;
+            ++phaseEntries[storage][phase];
+            phaseWrites[storage][phase] = phaseWrites[storage][phase] || use.m_write;
+        }
+    }
+    ParentVisibility result(storageCount);
+    for (size_t storage = 0; storage < storageCount; ++storage) {
+        const Ast::Schedule::Storage& slot = schedule.m_storage[storage];
+        if (slot.m_pending) continue;
+        for (size_t phase = 0; phase < result[storage].size(); ++phase) {
+            result[storage][phase]
+                = slot.m_formalp->isIO() || !written[storage]
+                  || (phaseWrites[storage][phase] && phaseEntries[storage][phase] > 1);
+        }
+    }
+    return result;
+}
+
+bool isParentVisibleUse(const ParentVisibility& visibility, const Ast::Schedule::Entry& entry,
+                        const Ast::Schedule::Use& use) {
+    return visibility.at(use.m_storage - 1).at(static_cast<size_t>(entry.m_phase));
+}
+
 std::string eligibility(const Ast::Template& item) {
     static constexpr size_t kMaxEntryArgs = 8;
     if (v3Global.opt.debugSubgraphFreshOrder()) return "fresh order";
@@ -60,8 +102,12 @@ std::string eligibility(const Ast::Template& item) {
         return "instrumentation or threads";
     if (!item.m_schedule.m_rejection.empty()) return "schedule";
     if (item.m_schedule.m_triggers.empty() || item.m_schedule.m_pre.empty()) return "clock shape";
+    const ParentVisibility visibility = makeParentVisibility(item.m_schedule);
     for (const Ast::Schedule::Entry& entry : item.m_schedule.m_entries) {
-        if (entry.m_uses.size() > kMaxEntryArgs) return "oversized ABI";
+        size_t arguments = 0;
+        for (const Ast::Schedule::Use& use : entry.m_uses)
+            if (isParentVisibleUse(visibility, entry, use)) ++arguments;
+        if (arguments > kMaxEntryArgs) return "oversized ABI";
     }
     return "";
 }
@@ -111,6 +157,12 @@ class PrepareVisitor final : public VNVisitor {
             }
             storage.push_back(sourcep);
         }
+        AstVar* const preDonep = new AstVar{nodep->fileline(), VVarType::MODULETEMP,
+                                            "__VdlySubgraphPre", nodep->findBitDType()};
+        AstVar* const commitDonep = new AstVar{nodep->fileline(), VVarType::MODULETEMP,
+                                               "__VdlySubgraphCommit", nodep->findBitDType()};
+        nodep->addStmtsp(preDonep);
+        nodep->addStmtsp(commitDonep);
 
         for (AstNode* stmtp = nodep->stmtsp(); stmtp;) {
             AstNode* const nextp = stmtp->nextp();
@@ -126,6 +178,14 @@ class PrepareVisitor final : public VNVisitor {
             for (const Ast::Schedule::Use& use : entry.m_uses) {
                 callp->addArgsp(new AstVarRef{flp, storage.at(use.m_storage - 1), access(use)});
             }
+            if (entry.m_phase == Ast::Phase::PRE)
+                callp->addArgsp(new AstVarRef{flp, preDonep, VAccess::WRITE});
+            if (entry.m_phase == Ast::Phase::COMMIT) {
+                callp->addArgsp(new AstVarRef{flp, preDonep, VAccess::READ});
+                callp->addArgsp(new AstVarRef{flp, commitDonep, VAccess::WRITE});
+            }
+            if (entry.m_phase == Ast::Phase::REFRESH)
+                callp->addArgsp(new AstVarRef{flp, commitDonep, VAccess::READ});
             if (entry.m_phase == Ast::Phase::STATIC) {
                 nodep->addStmtsp(new AstInitialStatic{flp, callp});
             } else if (entry.m_phase == Ast::Phase::INITIAL) {
@@ -215,9 +275,13 @@ public:
 };
 
 class BodyBuilder final {
+    uint64_t m_arguments = 0;
+    uint64_t m_contextVariables = 0;
+    uint64_t m_phaseArguments = 0;
+
 public:
     BodyBuilder(const Ast::Template& item, const Ast::Schedule::Entry& entry, AstCFunc* funcp,
-                AstSubgraphCall* callp) {
+                AstSubgraphCall* callp, const ParentVisibility& visibility) {
         const Ast::Schedule& schedule = item.m_schedule;
         const Ast::Process& processItem = process(schedule, entry);
         FileLine* const flp = funcp->fileline();
@@ -227,18 +291,50 @@ public:
         for (const Ast::Schedule::Use& use : entry.m_uses) {
             UASSERT_OBJ(actualp, callp, "Missing subgraph V3Ast phase argument");
             const Ast::Schedule::Storage& storage = schedule.m_storage.at(use.m_storage - 1);
-            AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP,
-                                            funcp->name() + "__Varg" + cvtToStr(use.m_storage),
-                                            actualp->dtypep()};
-            varp->direction(use.m_write ? (use.m_read ? VDirection::INOUT : VDirection::OUTPUT)
-                                        : VDirection::CONSTREF);
+            AstVarScope* vscp = nullptr;
+            if (isParentVisibleUse(visibility, entry, use)) {
+                AstVar* const varp = new AstVar{flp, VVarType::BLOCKTEMP,
+                                                funcp->name() + "__Varg" + cvtToStr(use.m_storage),
+                                                actualp->dtypep()};
+                varp->direction(use.m_write ? (use.m_read ? VDirection::INOUT : VDirection::OUTPUT)
+                                            : VDirection::CONSTREF);
+                varp->funcLocal(true);
+                funcp->addArgsp(varp);
+                vscp = new AstVarScope{flp, funcp->scopep(), varp};
+                funcp->scopep()->addVarsp(vscp);
+                ++m_arguments;
+            } else {
+                const AstVarRef* const refp = VN_CAST(actualp, VarRef);
+                UASSERT_OBJ(refp && refp->varScopep(), actualp,
+                            "Subgraph V3Ast context binding is not a scoped variable");
+                vscp = refp->varScopep();
+                vscp->optimizeLifePost(false);
+                vscp->subgraphSharedUse(true);
+                ++m_contextVariables;
+            }
+            (storage.m_pending ? pending : current).emplace(storage.m_formalp, vscp);
+            actualp = VN_CAST(actualp->nextp(), NodeExpr);
+        }
+        for (size_t index = 0; index < phaseArgumentCount(entry.m_phase); ++index) {
+            UASSERT_OBJ(actualp, callp, "Missing subgraph V3Ast phase ordering token");
+            const AstVarRef* const refp = VN_CAST(actualp, VarRef);
+            UASSERT_OBJ(refp, actualp, "Subgraph V3Ast phase token is not a variable");
+            AstVar* const varp
+                = new AstVar{flp, VVarType::BLOCKTEMP,
+                             funcp->name() + "__Vphase" + cvtToStr(index + 1), actualp->dtypep()};
+            const VAccess tokenAccess = refp->access();
+            varp->direction(
+                tokenAccess.isWriteOrRW()
+                    ? (tokenAccess.isReadOrRW() ? VDirection::INOUT : VDirection::OUTPUT)
+                    : VDirection::CONSTREF);
             varp->funcLocal(true);
             funcp->addArgsp(varp);
             AstVarScope* const vscp = new AstVarScope{flp, funcp->scopep(), varp};
             funcp->scopep()->addVarsp(vscp);
-            (storage.m_pending ? pending : current).emplace(storage.m_formalp, vscp);
+            ++m_phaseArguments;
             actualp = VN_CAST(actualp->nextp(), NodeExpr);
         }
+        UASSERT_OBJ(!actualp, callp, "Unexpected subgraph V3Ast phase argument");
 
         if (entry.m_phase == Ast::Phase::PRE) {
             for (AstVar* const formalp : processItem.m_writes) {
@@ -260,53 +356,95 @@ public:
         funcp->addStmtsp(bodyp);
         const BodyRelinker relinker{bodyp, current, pending, entry.m_phase == Ast::Phase::PRE};
     }
+
+    uint64_t arguments() const { return m_arguments; }
+    uint64_t contextVariables() const { return m_contextVariables; }
+    uint64_t phaseArguments() const { return m_phaseArguments; }
 };
 
 class ResolveVisitor final : public VNVisitor {
     const Ast& m_ast;
-    AstScope* const m_topScopep;
+    std::vector<ParentVisibility> m_visibility;
+    AstScope* m_scopep = nullptr;
     std::map<std::pair<uint32_t, uint32_t>, AstCFunc*> m_funcs;
     uint64_t m_calls = 0;
     uint64_t m_bodyArguments = 0;
     uint64_t m_callArguments = 0;
+    uint64_t m_bodyContextVariables = 0;
+    uint64_t m_callContextVariables = 0;
+    uint64_t m_bodyPhaseArguments = 0;
+    uint64_t m_callPhaseArguments = 0;
     uint64_t m_maxBodyArguments = 0;
 
+    void visit(AstScope* nodep) override {
+        VL_RESTORER(m_scopep);
+        m_scopep = nodep;
+        iterateChildren(nodep);
+    }
     void visit(AstSubgraphCall* nodep) override {
+        UASSERT_OBJ(m_scopep, nodep, "Subgraph V3Ast call is outside a scope");
         const Ast::Template& item = m_ast.templates().at(nodep->templateId() - 1);
+        const ParentVisibility& visibility = m_visibility.at(nodep->templateId() - 1);
         const Ast::Schedule::Entry& entry = item.m_schedule.m_entries.at(nodep->entryId() - 1);
         AstCFunc*& funcp = m_funcs[std::make_pair(nodep->templateId(), nodep->entryId())];
         if (!funcp) {
             funcp = new AstCFunc{nodep->fileline(),
                                  "__VsubgraphV3Ast" + cvtToStr(nodep->templateId()) + "__"
                                      + cvtToStr(nodep->entryId()),
-                                 m_topScopep};
-            funcp->isStatic(true);
+                                 m_scopep};
+            funcp->isStatic(false);
             funcp->isLoose(true);
             funcp->dontCombine(true);
             funcp->noLife(true);
+            funcp->subgraphCallerSelf(true);
             funcp->subgraphTemplate(true);
             funcp->slow(entry.m_phase == Ast::Phase::STATIC
                         || entry.m_phase == Ast::Phase::INITIAL);
-            m_topScopep->addBlocksp(funcp);
-            const BodyBuilder builder{item, entry, funcp, nodep};
-            m_bodyArguments += entry.m_uses.size();
-            m_maxBodyArguments = std::max<uint64_t>(m_maxBodyArguments, entry.m_uses.size());
+            m_scopep->addBlocksp(funcp);
+            const BodyBuilder builder{item, entry, funcp, nodep, visibility};
+            m_bodyArguments += builder.arguments();
+            m_bodyContextVariables += builder.contextVariables();
+            m_bodyPhaseArguments += builder.phaseArguments();
+            m_maxBodyArguments = std::max(m_maxBodyArguments, builder.arguments());
         }
         AstCCall* const callp = new AstCCall{nodep->fileline(), funcp};
         callp->dtypeSetVoid();
-        if (nodep->argsp()) callp->addArgsp(nodep->argsp()->unlinkFrBackWithNext());
+        callp->useCallerSelf(true);
+        AstNodeExpr* actualp = nodep->argsp();
+        for (const Ast::Schedule::Use& use : entry.m_uses) {
+            UASSERT_OBJ(actualp, nodep, "Missing subgraph V3Ast call binding");
+            AstNodeExpr* const nextp = VN_CAST(actualp->nextp(), NodeExpr);
+            actualp->unlinkFrBack();
+            if (isParentVisibleUse(visibility, entry, use)) {
+                callp->addArgsp(actualp);
+                ++m_callArguments;
+            } else {
+                actualp->deleteTree();
+                ++m_callContextVariables;
+            }
+            actualp = nextp;
+        }
+        for (size_t index = 0; index < phaseArgumentCount(entry.m_phase); ++index) {
+            UASSERT_OBJ(actualp, nodep, "Missing subgraph V3Ast call phase token");
+            AstNodeExpr* const nextp = VN_CAST(actualp->nextp(), NodeExpr);
+            callp->addArgsp(actualp->unlinkFrBack());
+            ++m_callPhaseArguments;
+            actualp = nextp;
+        }
+        UASSERT_OBJ(!actualp, nodep, "Unexpected subgraph V3Ast call argument");
         nodep->replaceWith(new AstStmtExpr{nodep->fileline(), callp});
         pushDeletep(nodep);
         ++m_calls;
-        m_callArguments += entry.m_uses.size();
     }
     void visit(AstCFunc*) override {}
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
 public:
     ResolveVisitor(AstNetlist* netlistp, const Ast& ast)
-        : m_ast{ast}
-        , m_topScopep{netlistp->topScopep()->scopep()} {
+        : m_ast{ast} {
+        m_visibility.reserve(ast.templates().size());
+        for (const Ast::Template& item : ast.templates())
+            m_visibility.push_back(makeParentVisibility(item.m_schedule));
         iterate(netlistp);
         V3Stats::addStat("Scheduling, Subgraph V3Ast shared bodies", m_funcs.size());
         V3Stats::addStat("Scheduling, Subgraph V3Ast entry calls", m_calls);
@@ -314,6 +452,14 @@ public:
         V3Stats::addStat("Scheduling, Subgraph V3Ast shared body max arguments",
                          m_maxBodyArguments);
         V3Stats::addStat("Scheduling, Subgraph V3Ast entry call arguments", m_callArguments);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast shared body context variables",
+                         m_bodyContextVariables);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast entry call context variables",
+                         m_callContextVariables);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast shared body phase arguments",
+                         m_bodyPhaseArguments);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast entry call phase arguments",
+                         m_callPhaseArguments);
     }
 };
 

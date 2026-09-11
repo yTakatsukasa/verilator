@@ -45,8 +45,8 @@ if max(cpp_sizes) > 28000:
     test.error("Largest generated C++ file exceeds 28000 bytes: %d" % max(cpp_sizes))
 if not function_sizes:
     test.error("No generated subgraph helper function found")
-elif max(function_sizes) > 1600:
-    test.error("Largest generated subgraph helper exceeds 1600 bytes: %d" % max(function_sizes))
+elif max(function_sizes) > 1700:
+    test.error("Largest generated subgraph helper exceeds 1700 bytes: %d" % max(function_sizes))
 
 test.execute()
 

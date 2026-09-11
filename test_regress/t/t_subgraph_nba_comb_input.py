@@ -33,7 +33,7 @@ test.file_grep(
 )
 test.file_grep(
     sched_tree,
-    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":4',
+    r'"type":"SUBGRAPHINSTANCE".*"phase":"refresh".*"logicalUses":4.*"materializedUses":3',
 )
 
 test.passes()

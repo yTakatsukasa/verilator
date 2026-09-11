@@ -17,43 +17,24 @@ cpp_files = [
     filename for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp")
     if not re.search(r"__(ALL|main)\.cpp$", filename)
 ]
-canonical_bodies = 0
+shared_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
-        canonical_bodies += len(
-            re.findall(r"(?m)^void .*___nba_subgraph_(?:pre|post)_\d+_sequent[^\n]*\{$",
+        shared_bodies += len(
+            re.findall(r"(?m)^void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
                        file_handle.read()))
-if canonical_bodies != 2:
-    test.error("Expected 2 canonical C++ process bodies, got %d" % canonical_bodies)
+if shared_bodies != 3:
+    test.error("Expected 3 shared V3Ast process bodies, got %d" % shared_bodies)
 
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context artifacts\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical C\+\+ bodies\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical context reuses\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph canonical order calls avoided\s+(\d+)", 4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared exact parent domain reused body wrappers\s+(\d+)", 4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph shared exact parent domain wrapper bindings\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence classes\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence binding rejects\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence fallback order calls\s+(\d+)", 0)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence instances\s+(\d+)", 6)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence max class size\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence potential reuses\s+(\d+)",
-               4)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph schedule equivalence representative order calls\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph schedule equivalence reuses\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding checks\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic instance binding matches\s+(\d+)",
-               4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared logic signature builds avoided\s+(\d+)",
-               4)
-test.file_grep(test.stats, r"Scheduling, Subgraph shared order cache order calls executed\s+(\d+)",
-               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 36)
+test.file_grep(test.stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 3)
 
 test.passes()

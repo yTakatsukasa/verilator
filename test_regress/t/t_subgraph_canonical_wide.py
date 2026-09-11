@@ -24,8 +24,8 @@ for filename in cpp_files:
         shared_bodies += len(re.findall(
             r"(?m)^(?:VL_ATTR_COLD )?void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
             file_handle.read()))
-if shared_bodies != 4:
-    test.error("Expected 4 shared V3Ast bodies, got %d" % shared_bodies)
+if shared_bodies != 3:
+    test.error("Expected 3 emitted shared V3Ast bodies, got %d" % shared_bodies)
 
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
