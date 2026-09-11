@@ -3886,6 +3886,7 @@ void AstCFunc::dump(std::ostream& str) const {
     if (entryPoint()) str << " [ENTRY]";
     if (noLife()) str << " [NOLIFE]";
     if (subgraphCallerSelf()) str << " [SUBGRAPH_CALLER_SELF]";
+    if (subgraphTemplate()) str << " [SUBGRAPH_TEMPLATE]";
 }
 void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, slow);
@@ -3902,6 +3903,7 @@ void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonBoolFuncIf(str, noLife);
     dumpJsonBoolFuncIf(str, subgraphCallerSelf);
+    dumpJsonBoolFuncIf(str, subgraphTemplate);
     dumpJsonGen(str);
     // TODO: maybe try to shorten these flags somehow
 }

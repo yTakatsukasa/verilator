@@ -25,5 +25,14 @@ test.file_grep(
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph schedule reuse blocked instances, oversized arguments\s+(\d+)", 2)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast activation rejection, oversized ABI\s+(\d+)", 1)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph V3Ast activation rejection instances, oversized ABI\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 3)
 
 test.passes()

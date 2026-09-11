@@ -24,6 +24,7 @@
 
 #include "V3Stats.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -76,7 +77,9 @@ class PrepareVisitor final : public VNVisitor {
     const Ast& m_ast;
     std::unordered_map<const AstNodeModule*, uint32_t> m_ids;
     std::map<std::string, uint64_t> m_rejections;
+    std::map<std::string, uint64_t> m_rejectedInstances;
     uint64_t m_activated = 0;
+    uint64_t m_activatedInstances = 0;
 
     void visit(AstNodeModule* nodep) override {
         const auto idIt = m_ids.find(nodep);
@@ -86,6 +89,7 @@ class PrepareVisitor final : public VNVisitor {
         const std::string reason = eligibility(item);
         if (!reason.empty()) {
             ++m_rejections[reason];
+            m_rejectedInstances[reason] += item.m_instances;
             return;
         }
 
@@ -146,6 +150,7 @@ class PrepareVisitor final : public VNVisitor {
             }
         }
         ++m_activated;
+        m_activatedInstances += item.m_instances;
     }
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
@@ -155,10 +160,22 @@ public:
         for (const Ast::Template& item : ast.templates()) m_ids.emplace(item.m_sourcep, item.m_id);
         iterate(netlistp);
         V3Stats::addStat("Scheduling, Subgraph V3Ast schedules activated", m_activated);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast instances activated", m_activatedInstances);
+        uint64_t fallbackSchedules = 0;
+        uint64_t fallbackInstances = 0;
         for (const auto& pair : m_rejections) {
             V3Stats::addStat("Scheduling, Subgraph V3Ast activation rejection, " + pair.first,
                              pair.second);
+            fallbackSchedules += pair.second;
         }
+        for (const auto& pair : m_rejectedInstances) {
+            V3Stats::addStat("Scheduling, Subgraph V3Ast activation rejection instances, "
+                                 + pair.first,
+                             pair.second);
+            fallbackInstances += pair.second;
+        }
+        V3Stats::addStat("Scheduling, Subgraph V3Ast schedules fallback", fallbackSchedules);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast instances fallback", fallbackInstances);
     }
 };
 
@@ -250,6 +267,9 @@ class ResolveVisitor final : public VNVisitor {
     AstScope* const m_topScopep;
     std::map<std::pair<uint32_t, uint32_t>, AstCFunc*> m_funcs;
     uint64_t m_calls = 0;
+    uint64_t m_bodyArguments = 0;
+    uint64_t m_callArguments = 0;
+    uint64_t m_maxBodyArguments = 0;
 
     void visit(AstSubgraphCall* nodep) override {
         const Ast::Template& item = m_ast.templates().at(nodep->templateId() - 1);
@@ -264,10 +284,13 @@ class ResolveVisitor final : public VNVisitor {
             funcp->isLoose(true);
             funcp->dontCombine(true);
             funcp->noLife(true);
+            funcp->subgraphTemplate(true);
             funcp->slow(entry.m_phase == Ast::Phase::STATIC
                         || entry.m_phase == Ast::Phase::INITIAL);
             m_topScopep->addBlocksp(funcp);
             const BodyBuilder builder{item, entry, funcp, nodep};
+            m_bodyArguments += entry.m_uses.size();
+            m_maxBodyArguments = std::max<uint64_t>(m_maxBodyArguments, entry.m_uses.size());
         }
         AstCCall* const callp = new AstCCall{nodep->fileline(), funcp};
         callp->dtypeSetVoid();
@@ -275,6 +298,7 @@ class ResolveVisitor final : public VNVisitor {
         nodep->replaceWith(new AstStmtExpr{nodep->fileline(), callp});
         pushDeletep(nodep);
         ++m_calls;
+        m_callArguments += entry.m_uses.size();
     }
     void visit(AstCFunc*) override {}
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
@@ -286,15 +310,23 @@ public:
         iterate(netlistp);
         V3Stats::addStat("Scheduling, Subgraph V3Ast shared bodies", m_funcs.size());
         V3Stats::addStat("Scheduling, Subgraph V3Ast entry calls", m_calls);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast shared body arguments", m_bodyArguments);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast shared body max arguments",
+                         m_maxBodyArguments);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast entry call arguments", m_callArguments);
     }
 };
 
 }  // namespace
 
 void V3SubgraphLower::prepare(AstNetlist* netlistp, const V3SubgraphAst& ast) {
+    const VlOs::DeltaWallTime timer{v3Global.opt.stats()};
     const PrepareVisitor visitor{netlistp, ast};
+    V3Stats::addStatPerf("Scheduling, Subgraph V3Ast prepare time (sec)", timer.deltaTime());
 }
 
 void V3SubgraphLower::resolve(AstNetlist* netlistp, const V3SubgraphAst& ast) {
+    const VlOs::DeltaWallTime timer{v3Global.opt.stats()};
     const ResolveVisitor visitor{netlistp, ast};
+    V3Stats::addStatPerf("Scheduling, Subgraph V3Ast resolve time (sec)", timer.deltaTime());
 }
