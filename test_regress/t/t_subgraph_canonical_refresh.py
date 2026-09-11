@@ -21,9 +21,9 @@ cpp_files = [
 shared_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
-        shared_bodies += len(re.findall(
-            r"(?m)^(?:VL_ATTR_COLD )?void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
-            file_handle.read()))
+        shared_bodies += len(
+            re.findall(r"(?m)^(?:VL_ATTR_COLD )?void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
+                       file_handle.read()))
 if shared_bodies != 4:
     test.error("Expected 4 emitted shared V3Ast bodies, got %d" % shared_bodies)
 

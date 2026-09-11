@@ -32,8 +32,8 @@ for instance in ("i_pos", "i_pos2", "i_neg", "i_neg2"):
     for phase in ("pre", "post", "refresh"):
         test.file_grep(
             sched_tree,
-            r'"type":"SUBGRAPHINSTANCE".*"boundary":"TOP.__PVT__t__DOT__'
-            + instance + r'".*"phase":"' + phase + r'"',
+            r'"type":"SUBGRAPHINSTANCE".*"boundary":"TOP.__PVT__t__DOT__' + instance +
+            r'".*"phase":"' + phase + r'"',
         )
 
 test.passes()

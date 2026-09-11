@@ -21,8 +21,7 @@ shared_bodies = 0
 for filename in cpp_files:
     with open(filename, "r", encoding="utf8") as file_handle:
         shared_bodies += len(
-            re.findall(r"(?m)^void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$",
-                       file_handle.read()))
+            re.findall(r"(?m)^void .*__VsubgraphV3Ast\d+__\d+[^\n]*\{$", file_handle.read()))
 if shared_bodies != 3:
     test.error("Expected 3 shared V3Ast process bodies, got %d" % shared_bodies)
 

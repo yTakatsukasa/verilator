@@ -19,9 +19,8 @@ baseline_body_bytes = None
 baseline_call_sites = None
 baseline_call_bytes = None
 for count in (4, 12):
-    test.compile(verilator_flags2=[
-        "--subgraph-schedule", "--stats", "--binary", "-GN=" + str(count)
-    ])
+    test.compile(
+        verilator_flags2=["--subgraph-schedule", "--stats", "--binary", "-GN=" + str(count)])
     test.execute()
     stats = test.obj_dir + "/scale_" + str(count) + ".stats"
     shutil.copyfile(test.stats, stats)
@@ -36,9 +35,10 @@ for count in (4, 12):
     bodies = []
     for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp"):
         with open(filename, encoding="utf8") as handle:
-            bodies.extend(re.findall(
-                r"^(?:VL_ATTR_COLD )?void [^\n]*__VsubgraphV3Ast\d+__\d+"
-                r"\([^\n]*\) \{\n.*?^\}", handle.read(), re.M | re.S))
+            bodies.extend(
+                re.findall(
+                    r"^(?:VL_ATTR_COLD )?void [^\n]*__VsubgraphV3Ast\d+__\d+"
+                    r"\([^\n]*\) \{\n.*?^\}", handle.read(), re.M | re.S))
     bodies.sort()
     if len(bodies) != 6:
         test.error("Expected exactly six shared V3Ast function definitions")
@@ -47,15 +47,14 @@ for count in (4, 12):
     baseline_bodies = bodies
     body_bytes = sum(len(body.encode("utf8")) + 1 for body in bodies)
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 6)
-    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body bytes\s+(\d+)",
-                   body_bytes)
+    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body bytes\s+(\d+)", body_bytes)
     # Later optimization inlines the three specialization initialization calls and keeps the
     # remaining eight phase calls once per instance.
     call_sites = 8 * count
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast call sites\s+(\d+)", call_sites)
     with open(stats, encoding="utf8") as handle:
-        call_bytes_match = re.search(
-            r"Output, C\+\+ subgraph V3Ast call expression bytes\s+(\d+)", handle.read())
+        call_bytes_match = re.search(r"Output, C\+\+ subgraph V3Ast call expression bytes\s+(\d+)",
+                                     handle.read())
     if call_bytes_match is None:
         test.error("Missing emitted V3Ast call byte count")
     call_bytes = int(call_bytes_match.group(1))
