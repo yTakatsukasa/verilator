@@ -44,7 +44,7 @@ public:
         : V3GraphVertex{graphp} {}
 };
 
-struct FunctionAccess final {
+struct FTaskAccess final {
     bool m_eligible = false;
     bool m_noInline = false;
     std::set<AstVar*> m_reads;
@@ -52,20 +52,22 @@ struct FunctionAccess final {
     std::vector<AstNodeFTask*> m_callees;
 };
 
-class FunctionAccessVisitor final : public VNVisitorConst {
+class FTaskAccessVisitor final : public VNVisitorConst {
     const std::unordered_set<const AstVar*>& m_templateVariables;
-    std::unordered_set<const AstVar*> m_functionVariables;
+    std::unordered_set<const AstVar*> m_ftaskVariables;
     std::set<AstVar*> m_reads;
     std::set<AstVar*> m_writes;
     std::vector<AstNodeFTask*> m_callees;
     bool m_eligible = true;
     bool m_noInline = false;
 
+    void reject() { m_eligible = false; }
+
     void visit(AstNodeVarRef* nodep) override {
         AstVar* const varp = nodep->varp();
-        if (!varp || m_functionVariables.count(varp)) return;
+        if (!varp || m_ftaskVariables.count(varp)) return;
         if (!m_templateVariables.count(varp)) {
-            m_eligible = false;
+            reject();
             return;
         }
         if (nodep->access().isReadOrRW()) m_reads.insert(varp);
@@ -74,60 +76,70 @@ class FunctionAccessVisitor final : public VNVisitorConst {
     void visit(AstNodeFTaskRef* nodep) override {
         AstNodeFTask* const taskp = nodep->taskp();
         if (!taskp) {
-            m_eligible = false;
+            reject();
         } else {
             m_callees.push_back(taskp);
         }
         iterateChildrenConst(nodep);
     }
-    void visit(AstAssignDly*) override { m_eligible = false; }
+    void visit(AstAssignDly*) override { reject(); }
     void visit(AstNodeAssign* nodep) override {
         if (nodep->timingControlp()) {
-            m_eligible = false;
+            reject();
             return;
         }
         iterateChildrenConst(nodep);
     }
-    void visit(AstDelay*) override { m_eligible = false; }
-    void visit(AstEventControl*) override { m_eligible = false; }
-    void visit(AstFork*) override { m_eligible = false; }
+    void visit(AstDelay*) override { reject(); }
+    void visit(AstEventControl*) override { reject(); }
+    void visit(AstFork*) override { reject(); }
     void visit(AstPragma* nodep) override {
         if (nodep->pragType() == VPragmaType::NO_INLINE_TASK) m_noInline = true;
     }
+    void visit(AstStmtExpr* nodep) override { iterateChildrenConst(nodep); }
     void visit(AstNode* nodep) override {
         if (!nodep->isPure()) {
-            m_eligible = false;
+            reject();
             return;
         }
         iterateChildrenConst(nodep);
     }
 
 public:
-    FunctionAccessVisitor(AstNodeFTask* taskp,
-                          const std::unordered_set<const AstVar*>& templateVariables)
+    FTaskAccessVisitor(AstNodeFTask* taskp,
+                       const std::unordered_set<const AstVar*>& templateVariables,
+                       bool instanceLocal)
         : m_templateVariables{templateVariables} {
-        if (!taskp || !taskp->isFunction() || taskp->dpiImport() || taskp->recursive()
-            || taskp->classMethod() || !taskp->stmtsp()) {
-            m_eligible = false;
+        if (!taskp || taskp->dpiImport() || taskp->recursive() || taskp->classMethod()
+            || !taskp->stmtsp()) {
+            reject();
+            return;
+        }
+        // A static external task can retain package-global argument state between calls.
+        if (!instanceLocal && !taskp->isFunction() && !taskp->lifetime().isAutomatic()) {
+            reject();
             return;
         }
         const AstVar* const fvarp = VN_CAST(taskp->fvarp(), Var);
-        if (!fvarp) {
-            m_eligible = false;
-            return;
+        if (taskp->isFunction()) {
+            UASSERT_OBJ(fvarp, taskp, "Function has no return variable");
+            m_ftaskVariables.insert(fvarp);
         }
-        m_functionVariables.insert(fvarp);
-        taskp->foreach([&](const AstVar* varp) { m_functionVariables.insert(varp); });
-        for (const AstVar* const varp : m_functionVariables) {
-            if (varp->isIO() && !varp->isFuncReturn() && varp->isWritable()) m_eligible = false;
-            if (!taskp->lifetime().isAutomatic() && !varp->isIO() && !varp->isFuncReturn()) {
-                m_eligible = false;
+        taskp->foreach([&](const AstVar* varp) { m_ftaskVariables.insert(varp); });
+        for (const AstVar* const varp : m_ftaskVariables) {
+            if (taskp->isFunction() && varp->isIO() && !varp->isFuncReturn()
+                && varp->isWritable()) {
+                reject();
+            }
+            if (!varp->lifetime().isAutomatic() && !varp->isIO() && !varp->isFuncReturn()
+                && (taskp->isFunction() || !instanceLocal)) {
+                reject();
             }
         }
         iterateAndNextConstNull(taskp->stmtsp());
     }
-    FunctionAccess take() {
-        FunctionAccess result;
+    FTaskAccess take() {
+        FTaskAccess result;
         result.m_eligible = m_eligible;
         result.m_noInline = m_noInline;
         result.m_reads = std::move(m_reads);
@@ -139,7 +151,7 @@ public:
 
 class AccessVisitor final : public VNVisitorConst {
     const std::unordered_set<const AstVar*>& m_locals;
-    const std::unordered_map<const AstNodeFTask*, FunctionAccess>& m_functions;
+    const std::unordered_map<const AstNodeFTask*, FTaskAccess>& m_ftasks;
     const bool m_clocked;
     std::set<AstVar*>& m_reads;
     std::set<AstVar*>& m_writes;
@@ -148,11 +160,10 @@ class AccessVisitor final : public VNVisitorConst {
     std::string& m_rejection;
     bool m_delayedLhs = false;
 
-    const FunctionAccess* functionAccess(AstNodeFTaskRef* refp) const {
-        AstFuncRef* const funcRefp = VN_CAST(refp, FuncRef);
-        AstNodeFTask* const taskp = funcRefp ? funcRefp->taskp() : nullptr;
-        const auto it = taskp ? m_functions.find(taskp) : m_functions.end();
-        return it == m_functions.end() ? nullptr : &it->second;
+    const FTaskAccess* ftaskAccess(AstNodeFTaskRef* refp) const {
+        AstNodeFTask* const taskp = refp->taskp();
+        const auto it = taskp ? m_ftasks.find(taskp) : m_ftasks.end();
+        return it == m_ftasks.end() || !it->second.m_eligible ? nullptr : &it->second;
     }
 
     void reject(const char* reason) {
@@ -183,7 +194,7 @@ class AccessVisitor final : public VNVisitorConst {
         }
     }
     void visit(AstNodeFTaskRef* nodep) override {
-        const FunctionAccess* const accessp = functionAccess(nodep);
+        const FTaskAccess* const accessp = ftaskAccess(nodep);
         if (!accessp) {
             reject("task call");
             return;
@@ -200,12 +211,12 @@ class AccessVisitor final : public VNVisitorConst {
 
 public:
     AccessVisitor(AstNode* nodep, const std::unordered_set<const AstVar*>& locals,
-                  const std::unordered_map<const AstNodeFTask*, FunctionAccess>& functions,
-                  bool clocked, std::set<AstVar*>& reads, std::set<AstVar*>& writes,
+                  const std::unordered_map<const AstNodeFTask*, FTaskAccess>& ftasks, bool clocked,
+                  std::set<AstVar*>& reads, std::set<AstVar*>& writes,
                   std::set<AstVar*>& immediateWrites, std::set<AstVar*>& delayedWrites,
                   std::string& rejection)
         : m_locals{locals}
-        , m_functions{functions}
+        , m_ftasks{ftasks}
         , m_clocked{clocked}
         , m_reads{reads}
         , m_writes{writes}
@@ -221,8 +232,9 @@ class ScheduleBuilder final {
     Ast::Schedule m_schedule;
     std::unordered_map<const AstVar*, uint32_t> m_varIds;
     std::unordered_set<const AstVar*> m_locals;
-    std::unordered_map<const AstNodeFTask*, FunctionAccess> m_functions;
-    std::unordered_set<const AstNodeFTask*> m_functionsVisiting;
+    std::unordered_set<const AstNodeFTask*> m_localFTasks;
+    std::unordered_map<const AstNodeFTask*, FTaskAccess> m_ftasks;
+    std::unordered_set<const AstNodeFTask*> m_ftasksVisiting;
     std::map<std::pair<const AstVar*, bool>, uint32_t> m_triggerIds;
     std::string m_rejection;
 
@@ -244,7 +256,7 @@ class ScheduleBuilder final {
         std::set<AstVar*> immediateWrites;
         std::set<AstVar*> delayedWrites;
         const AccessVisitor visitor{
-            procedurep->stmtsp(), m_locals,      m_functions, clocked, reads, writes,
+            procedurep->stmtsp(), m_locals,      m_ftasks,   clocked, reads, writes,
             immediateWrites,      delayedWrites, m_rejection};
         Ast::Process result;
         result.m_procedurep = procedurep;
@@ -460,35 +472,37 @@ public:
             m_varIds.emplace(variable.m_formalp, variable.m_id);
             m_locals.insert(variable.m_formalp);
         }
-        const std::function<bool(AstNodeFTask*)> analyzeFunction = [&](AstNodeFTask* taskp) {
+        item.m_treep->foreach([&](const AstNodeFTask* taskp) { m_localFTasks.insert(taskp); });
+        const std::function<bool(AstNodeFTask*)> analyzeFTask = [&](AstNodeFTask* taskp) {
             if (!taskp) return false;
-            const auto found = m_functions.find(taskp);
-            if (found != m_functions.end()) return found->second.m_eligible;
-            if (!m_functionsVisiting.insert(taskp).second) return false;
-            FunctionAccess access = FunctionAccessVisitor{taskp, m_locals}.take();
+            const auto found = m_ftasks.find(taskp);
+            if (found != m_ftasks.end()) return found->second.m_eligible;
+            if (!m_ftasksVisiting.insert(taskp).second) return false;
+            FTaskAccess access
+                = FTaskAccessVisitor{taskp, m_locals, m_localFTasks.count(taskp) != 0}.take();
             for (AstNodeFTask* const calleep : access.m_callees) {
-                if (!analyzeFunction(calleep)) {
+                if (!analyzeFTask(calleep)) {
                     access.m_eligible = false;
                     continue;
                 }
-                const FunctionAccess& callee = m_functions.at(calleep);
+                const FTaskAccess& callee = m_ftasks.at(calleep);
                 access.m_reads.insert(callee.m_reads.begin(), callee.m_reads.end());
                 access.m_writes.insert(callee.m_writes.begin(), callee.m_writes.end());
             }
             if (access.m_noInline && (!access.m_reads.empty() || !access.m_writes.empty())) {
                 access.m_eligible = false;
             }
-            m_functionsVisiting.erase(taskp);
+            m_ftasksVisiting.erase(taskp);
             const bool eligible = access.m_eligible;
-            m_functions.emplace(taskp, std::move(access));
+            m_ftasks.emplace(taskp, std::move(access));
             return eligible;
         };
-        item.m_treep->foreach([&](AstNodeFTask* taskp) { analyzeFunction(taskp); });
+        item.m_treep->foreach([&](AstNodeFTask* taskp) { analyzeFTask(taskp); });
         for (AstNode* nodep = item.m_treep->stmtsp(); nodep; nodep = nodep->nextp()) {
             AstNodeProcedure* const procedurep = VN_CAST(nodep, NodeProcedure);
             if (!procedurep || !procedurep->stmtsp()) continue;
             procedurep->stmtsp()->foreachAndNext(
-                [&](AstNodeFTaskRef* refp) { analyzeFunction(refp->taskp()); });
+                [&](AstNodeFTaskRef* refp) { analyzeFTask(refp->taskp()); });
         }
         procedures();
         if (m_rejection.empty()) validateDrivers();

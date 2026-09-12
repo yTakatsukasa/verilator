@@ -272,7 +272,7 @@ public:
     }
 };
 
-class FunctionMaterializer final : public VNVisitor {
+class FTaskMaterializer final : public VNVisitor {
     AstCFunc* const m_funcp;
     const std::unordered_map<const AstVar*, AstVarScope*>& m_current;
     std::unordered_map<const AstNodeFTask*, AstNodeFTask*> m_clones;
@@ -288,7 +288,7 @@ class FunctionMaterializer final : public VNVisitor {
             const auto localIt = scopes.find(refp->varp());
             const auto storageIt = m_current.find(refp->varp());
             UASSERT_OBJ(localIt != scopes.end() || storageIt != m_current.end(), refp,
-                        "Subgraph function references unavailable storage");
+                        "Subgraph function/task references unavailable storage");
             AstVarScope* const vscp
                 = localIt != scopes.end() ? localIt->second : storageIt->second;
             refp->varp(vscp->varp());
@@ -301,7 +301,8 @@ class FunctionMaterializer final : public VNVisitor {
         AstNodeFTask*& clonep = m_clones[sourcep];
         if (!clonep) {
             clonep = sourcep->cloneTree(false);
-            clonep->name(m_funcp->name() + "__Vfunc" + cvtToStr(m_clones.size()));
+            const char* const suffix = sourcep->isFunction() ? "__Vfunc" : "__Vtask";
+            clonep->name(m_funcp->name() + suffix + cvtToStr(m_clones.size()));
             scopeVariables(clonep);
             m_funcp->scopep()->addBlocksp(clonep);
             if (clonep->stmtsp()) {
@@ -316,8 +317,7 @@ class FunctionMaterializer final : public VNVisitor {
     }
     void visit(AstNodeFTaskRef* nodep) override {
         iterateChildren(nodep);
-        AstFuncRef* const funcRefp = VN_CAST(nodep, FuncRef);
-        AstNodeFTask* const sourcep = funcRefp ? funcRefp->taskp() : nullptr;
+        AstNodeFTask* const sourcep = nodep->taskp();
         UASSERT_OBJ(sourcep, nodep, "Unsupported call in shared subgraph body");
         AstNodeFTask* const clonep = materialize(sourcep);
         nodep->taskp(clonep);
@@ -327,8 +327,8 @@ class FunctionMaterializer final : public VNVisitor {
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
 public:
-    FunctionMaterializer(AstCFunc* funcp,
-                         const std::unordered_map<const AstVar*, AstVarScope*>& current)
+    FTaskMaterializer(AstCFunc* funcp,
+                      const std::unordered_map<const AstVar*, AstVarScope*>& current)
         : m_funcp{funcp}
         , m_current{current} {}
     void materialize(AstNode* nodep) { iterateAndNextNull(nodep); }
@@ -417,7 +417,7 @@ public:
             return;
         }
 
-        FunctionMaterializer materializer{funcp, current};
+        FTaskMaterializer materializer{funcp, current};
         for (const uint32_t processId : entry.m_processes) {
             const Ast::Process& processItem = process(schedule, entry.m_phase, processId);
             AstNode* const bodyp = processItem.m_procedurep->stmtsp()->cloneTree(true);

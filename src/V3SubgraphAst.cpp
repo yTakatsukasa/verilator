@@ -81,7 +81,11 @@ uint64_t nodeCount(const AstNode* nodep) {
 
 void captureExternalCallees(V3SubgraphAst::Template& item) {
     std::unordered_set<const AstNodeFTask*> localTasks;
-    item.m_treep->foreach([&](const AstNodeFTask* taskp) { localTasks.insert(taskp); });
+    std::vector<AstNodeFTask*> localTaskList;
+    item.m_treep->foreach([&](AstNodeFTask* taskp) {
+        localTasks.insert(taskp);
+        localTaskList.push_back(taskp);
+    });
     std::unordered_map<const AstNodeFTask*, AstNodeFTask*> clones;
     const auto captureCalls = [&](AstNode* nodep) {
         nodep->foreachAndNext([&](AstNodeFTaskRef* refp) {
@@ -99,6 +103,9 @@ void captureExternalCallees(V3SubgraphAst::Template& item) {
         AstNodeProcedure* const procedurep = VN_CAST(nodep, NodeProcedure);
         if (!procedurep || !procedurep->stmtsp()) continue;
         captureCalls(procedurep->stmtsp());
+    }
+    for (AstNodeFTask* const taskp : localTaskList) {
+        if (taskp->stmtsp()) captureCalls(taskp->stmtsp());
     }
     for (size_t index = 0; index < item.m_externalCallees.size(); ++index) {
         AstNodeFTask* const taskp = item.m_externalCallees[index];
