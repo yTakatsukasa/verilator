@@ -79,6 +79,34 @@ uint64_t nodeCount(const AstNode* nodep) {
     return nodes;
 }
 
+std::map<std::string, uint64_t> callCategories(const V3SubgraphAst::Template& item) {
+    std::unordered_set<const AstNodeFTask*> localTasks;
+    item.m_treep->foreach([&](const AstNodeFTask* taskp) { localTasks.insert(taskp); });
+
+    std::map<std::string, uint64_t> result;
+    for (AstNode* nodep = item.m_treep->stmtsp(); nodep; nodep = nodep->nextp()) {
+        AstNodeProcedure* const procedurep = VN_CAST(nodep, NodeProcedure);
+        if (!procedurep) continue;
+        procedurep->stmtsp()->foreachAndNext([&](AstNodeFTaskRef* refp) {
+            AstNodeFTask* const taskp = refp->taskp();
+            if (!taskp) {
+                ++result["unresolved"];
+                return;
+            }
+            const std::string target = localTasks.count(taskp) ? "local" : "external";
+            const std::string lifetime = taskp->lifetime().isAutomatic() ? "automatic"
+                                         : taskp->lifetime().isStatic()  ? "static"
+                                                                         : "unknown";
+            const std::string purity = refp->isPure() ? "pure" : "impure";
+            const std::string kind = taskp->isFunction() ? "function" : "task";
+            const std::string dpi = taskp->dpiImport() ? " DPI" : "";
+            const std::string recursive = taskp->recursive() ? " recursive" : "";
+            ++result[target + " " + lifetime + " " + purity + dpi + recursive + " " + kind];
+        });
+    }
+    return result;
+}
+
 }  // namespace
 
 V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
@@ -128,7 +156,17 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     uint64_t coalescedCalls = 0;
     std::map<std::string, uint64_t> scheduleRejections;
     std::map<std::string, uint64_t> scheduleRejectedInstances;
+    std::map<std::string, uint64_t> callSites;
+    std::map<std::string, uint64_t> callTemplates;
+    std::map<std::string, uint64_t> callInstances;
     for (const Template& item : m_templates) {
+        if (v3Global.opt.stats()) {
+            for (const auto& pair : callCategories(item)) {
+                callSites[pair.first] += pair.second;
+                ++callTemplates[pair.first];
+                callInstances[pair.first] += item.m_instances;
+            }
+        }
         if (item.m_schedule.m_rejection.empty()) {
             ++schedules;
             triggers += item.m_schedule.m_triggers.size();
@@ -159,6 +197,13 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     for (const auto& pair : scheduleRejectedInstances) {
         V3Stats::addStat("Scheduling, Subgraph V3Ast schedule rejection instances, " + pair.first,
                          pair.second);
+    }
+    for (const auto& pair : callSites) {
+        V3Stats::addStat("Scheduling, Subgraph V3Ast call sites, " + pair.first, pair.second);
+        V3Stats::addStat("Scheduling, Subgraph V3Ast call templates, " + pair.first,
+                         callTemplates.at(pair.first));
+        V3Stats::addStat("Scheduling, Subgraph V3Ast call instances, " + pair.first,
+                         callInstances.at(pair.first));
     }
     uint64_t instances = 0;
     for (const Template& item : m_templates) instances += item.m_instances;
