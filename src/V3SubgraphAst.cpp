@@ -86,7 +86,7 @@ std::map<std::string, uint64_t> callCategories(const V3SubgraphAst::Template& it
     std::map<std::string, uint64_t> result;
     for (AstNode* nodep = item.m_treep->stmtsp(); nodep; nodep = nodep->nextp()) {
         AstNodeProcedure* const procedurep = VN_CAST(nodep, NodeProcedure);
-        if (!procedurep) continue;
+        if (!procedurep || !procedurep->stmtsp()) continue;
         procedurep->stmtsp()->foreachAndNext([&](AstNodeFTaskRef* refp) {
             AstNodeFTask* const taskp = refp->taskp();
             if (!taskp) {

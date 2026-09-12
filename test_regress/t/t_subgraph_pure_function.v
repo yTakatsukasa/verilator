@@ -58,6 +58,10 @@ module sg_pure_function (
 
   logic [14:0] q;
 
+  // Empty procedures must not affect call classification or the shared schedule.
+  initial begin end
+  always @(posedge clk) begin end
+
   function automatic logic [14:0] rotate(input logic [14:0] value);
     logic [14:0] temporary;
     temporary = {value[8:0], value[14:9]};
