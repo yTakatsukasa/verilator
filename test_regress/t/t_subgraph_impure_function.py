@@ -18,14 +18,13 @@ test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)"
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 3)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast call sites, local static impure function\s+(\d+)",
+               r"Scheduling, Subgraph V3Ast call sites, local static impure function\s+(\d+)", 1)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast call templates, local static impure function\s+(\d+)",
                1)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph V3Ast call templates, local static impure function\s+(\d+)", 1)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph V3Ast call instances, local static impure function\s+(\d+)", 3)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast call instances, local static impure function\s+(\d+)",
+               3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 4)

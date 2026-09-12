@@ -17,9 +17,9 @@ test.execute()
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 3)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph V3Ast call sites, external automatic pure function\s+(\d+)", 1)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast call sites, external automatic pure function\s+(\d+)",
+               1)
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph V3Ast call templates, external automatic pure function\s+(\d+)", 1)
