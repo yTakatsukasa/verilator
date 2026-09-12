@@ -25,6 +25,7 @@
 
 class AstNetlist;
 class AstNodeExpr;
+class AstNodeFTask;
 class AstNodeModule;
 class AstNodeProcedure;
 class AstVar;
@@ -91,6 +92,9 @@ public:
         AstNodeModule* m_sourcep = nullptr;  // Main-tree specialization; owned by AstNetlist
         AstNodeModule* m_treep = nullptr;  // Detached specialization-local V3Ast; owned here
         uint64_t m_instances = 0;
+        // Direct callees defined outside m_treep. Calls target these detached copies so later
+        // main-tree passes cannot invalidate them before shared bodies are materialized.
+        std::vector<AstNodeFTask*> m_externalCallees;
         std::vector<Variable> m_variables;
         std::vector<Port> m_ports;
         Schedule m_schedule;

@@ -79,6 +79,26 @@ uint64_t nodeCount(const AstNode* nodep) {
     return nodes;
 }
 
+void captureExternalCallees(V3SubgraphAst::Template& item) {
+    std::unordered_set<const AstNodeFTask*> localTasks;
+    item.m_treep->foreach([&](const AstNodeFTask* taskp) { localTasks.insert(taskp); });
+    std::unordered_map<const AstNodeFTask*, AstNodeFTask*> clones;
+    for (AstNode* nodep = item.m_treep->stmtsp(); nodep; nodep = nodep->nextp()) {
+        AstNodeProcedure* const procedurep = VN_CAST(nodep, NodeProcedure);
+        if (!procedurep || !procedurep->stmtsp()) continue;
+        procedurep->stmtsp()->foreachAndNext([&](AstNodeFTaskRef* refp) {
+            AstNodeFTask* const sourcep = refp->taskp();
+            if (!sourcep || localTasks.count(sourcep)) return;
+            AstNodeFTask*& clonep = clones[sourcep];
+            if (!clonep) {
+                clonep = sourcep->cloneTree(false);
+                item.m_externalCallees.push_back(clonep);
+            }
+            refp->taskp(clonep);
+        });
+    }
+}
+
 std::map<std::string, uint64_t> callCategories(const V3SubgraphAst::Template& item) {
     std::unordered_set<const AstNodeFTask*> localTasks;
     item.m_treep->foreach([&](const AstNodeFTask* taskp) { localTasks.insert(taskp); });
@@ -138,6 +158,7 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
                 item.m_ports.push_back(Template::Port{portId, sourcep, formalp});
             }
         }
+        captureExternalCallees(item);
         item.m_schedule = V3SubgraphSchedule::build(item);
         ids.emplace(modp, id);
         nodes += nodeCount(treep);
@@ -234,7 +255,10 @@ V3SubgraphAst::~V3SubgraphAst() {
             if (binding.m_actualp) binding.m_actualp->deleteTree();
         }
     }
-    for (const Template& item : m_templates) item.m_treep->deleteTree();
+    for (const Template& item : m_templates) {
+        for (AstNodeFTask* const taskp : item.m_externalCallees) taskp->deleteTree();
+        item.m_treep->deleteTree();
+    }
 }
 
 void V3SubgraphAst::check() const {
@@ -248,6 +272,10 @@ void V3SubgraphAst::check() const {
                 "Subgraph V3Ast template lost its boundary attribute");
         UASSERT(item.m_sourcep->name() == item.m_treep->name(),
                 "Subgraph V3Ast template changed specialization identity");
+        for (const AstNodeFTask* const taskp : item.m_externalCallees) {
+            UASSERT_OBJ(taskp && !taskp->backp(), item.m_treep,
+                        "External subgraph callee is not detached");
+        }
         uint32_t expectedPortId = 1;
         uint32_t expectedVariableId = 1;
         for (const Template::Variable& variable : item.m_variables) {
