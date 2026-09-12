@@ -30,8 +30,8 @@ for count in (4, 12):
     test.file_grep(stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", count)
     test.file_grep(stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
     test.file_grep(stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
-    test.file_grep(stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 9)
-    test.file_grep(stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 9 * count)
+    test.file_grep(stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
+    test.file_grep(stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 6 * count)
     bodies = []
     for filename in test.glob_some(test.obj_dir + "/" + test.vm_prefix + "*.cpp"):
         with open(filename, encoding="utf8") as handle:
@@ -40,17 +40,17 @@ for count in (4, 12):
                     r"^(?:VL_ATTR_COLD )?void [^\n]*__VsubgraphV3Ast\d+__\d+"
                     r"\([^\n]*\) \{\n.*?^\}", handle.read(), re.M | re.S))
     bodies.sort()
-    if len(bodies) != 6:
-        test.error("Expected exactly six shared V3Ast function definitions")
+    if len(bodies) != 5:
+        test.error("Expected exactly five shared V3Ast function definitions")
     if baseline_bodies is not None and bodies != baseline_bodies:
         test.error("Instance count changed the shared V3Ast function bodies")
     baseline_bodies = bodies
     body_bytes = sum(len(body.encode("utf8")) + 1 for body in bodies)
-    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 6)
+    test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body functions\s+(\d+)", 5)
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast shared body bytes\s+(\d+)", body_bytes)
-    # Later optimization inlines the three specialization initialization calls and keeps the
-    # remaining eight phase calls once per instance.
-    call_sites = 8 * count
+    # Later optimization keeps five shared definitions and six marked call expressions per
+    # instance.
+    call_sites = 6 * count
     test.file_grep(stats, r"Output, C\+\+ subgraph V3Ast call sites\s+(\d+)", call_sites)
     with open(stats, encoding="utf8") as handle:
         call_bytes_match = re.search(r"Output, C\+\+ subgraph V3Ast call expression bytes\s+(\d+)",

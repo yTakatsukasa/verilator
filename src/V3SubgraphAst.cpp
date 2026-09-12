@@ -124,14 +124,24 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     uint64_t schedules = 0;
     uint64_t triggers = 0;
     uint64_t entries = 0;
+    uint64_t coalescedEntries = 0;
+    uint64_t coalescedCalls = 0;
     std::map<std::string, uint64_t> scheduleRejections;
+    std::map<std::string, uint64_t> scheduleRejectedInstances;
     for (const Template& item : m_templates) {
         if (item.m_schedule.m_rejection.empty()) {
             ++schedules;
             triggers += item.m_schedule.m_triggers.size();
             entries += item.m_schedule.m_entries.size();
+            const uint64_t processEntries
+                = item.m_schedule.m_static.size() + item.m_schedule.m_initial.size()
+                  + 2 * item.m_schedule.m_pre.size() + item.m_schedule.m_refresh.size();
+            const uint64_t coalesced = processEntries - item.m_schedule.m_entries.size();
+            coalescedEntries += coalesced;
+            coalescedCalls += coalesced * item.m_instances;
         } else {
             ++scheduleRejections[item.m_schedule.m_rejection];
+            scheduleRejectedInstances[item.m_schedule.m_rejection] += item.m_instances;
         }
     }
     V3Stats::addStat("Scheduling, Subgraph V3Ast schedule builds", m_templates.size());
@@ -140,8 +150,14 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
                      m_templates.size() - schedules);
     V3Stats::addStat("Scheduling, Subgraph V3Ast local triggers", triggers);
     V3Stats::addStat("Scheduling, Subgraph V3Ast phase entries", entries);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast phase entries coalesced", coalescedEntries);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast instance entry calls avoided", coalescedCalls);
     for (const auto& pair : scheduleRejections) {
         V3Stats::addStat("Scheduling, Subgraph V3Ast schedule rejection, " + pair.first,
+                         pair.second);
+    }
+    for (const auto& pair : scheduleRejectedInstances) {
+        V3Stats::addStat("Scheduling, Subgraph V3Ast schedule rejection instances, " + pair.first,
                          pair.second);
     }
     uint64_t instances = 0;
@@ -228,7 +244,7 @@ void V3SubgraphAst::check() const {
             UASSERT_OBJ(storage.m_formalp, item.m_treep, "Subgraph V3Ast storage has no formal");
         }
         for (const Schedule::Entry& entry : schedule.m_entries) {
-            UASSERT(entry.m_process, "Subgraph V3Ast schedule entry has no process");
+            UASSERT(!entry.m_processes.empty(), "Subgraph V3Ast schedule entry has no process");
             for (const uint32_t trigger : entry.m_triggers) {
                 UASSERT(trigger && trigger <= schedule.m_triggers.size(),
                         "Invalid subgraph V3Ast local trigger ID");

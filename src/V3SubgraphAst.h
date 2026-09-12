@@ -45,6 +45,8 @@ public:
         std::vector<uint32_t> m_triggers;  // OR of one-based template-local trigger IDs
         std::vector<AstVar*> m_reads;
         std::vector<AstVar*> m_writes;
+        std::vector<AstVar*> m_immediateWrites;  // Writes visible within the active phase
+        std::vector<AstVar*> m_delayedWrites;  // Writes committed after all active phase entries
     };
     struct Schedule final {
         struct Storage final {
@@ -58,7 +60,8 @@ public:
         };
         struct Entry final {
             Phase m_phase = Phase::REFRESH;
-            uint32_t m_process = 0;  // One-based process within its phase; COMMIT uses m_pre
+            // One-based processes within the phase; COMMIT uses m_pre.
+            std::vector<uint32_t> m_processes;
             std::vector<uint32_t> m_triggers;
             std::vector<Use> m_uses;
         };

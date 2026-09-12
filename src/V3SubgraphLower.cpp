@@ -47,18 +47,18 @@ size_t phaseArgumentCount(Ast::Phase phase) {
                                                                         : 0;
 }
 
-const Ast::Process& process(const Ast::Schedule& schedule, const Ast::Schedule::Entry& entry) {
+const Ast::Process& process(const Ast::Schedule& schedule, Ast::Phase phase, uint32_t processId) {
     const std::vector<Ast::Process>* processesp = nullptr;
-    switch (entry.m_phase) {
+    switch (phase) {
     case Ast::Phase::STATIC: processesp = &schedule.m_static; break;
     case Ast::Phase::INITIAL: processesp = &schedule.m_initial; break;
     case Ast::Phase::PRE:
     case Ast::Phase::COMMIT: processesp = &schedule.m_pre; break;
     case Ast::Phase::REFRESH: processesp = &schedule.m_refresh; break;
     }
-    UASSERT(processesp && entry.m_process && entry.m_process <= processesp->size(),
+    UASSERT(processesp && processId && processId <= processesp->size(),
             "Invalid subgraph V3Ast process ID");
-    return processesp->at(entry.m_process - 1);
+    return processesp->at(processId - 1);
 }
 
 using ParentVisibility = std::vector<std::array<bool, 5>>;
@@ -96,19 +96,11 @@ bool isParentVisibleUse(const ParentVisibility& visibility, const Ast::Schedule:
 }
 
 std::string eligibility(const Ast::Template& item) {
-    static constexpr size_t kMaxEntryArgs = 8;
     if (v3Global.opt.debugSubgraphFreshOrder()) return "fresh order";
     if (v3Global.opt.trace() || v3Global.opt.coverage() || v3Global.opt.threads() != 1)
         return "instrumentation or threads";
     if (!item.m_schedule.m_rejection.empty()) return "schedule";
     if (item.m_schedule.m_triggers.empty() || item.m_schedule.m_pre.empty()) return "clock shape";
-    const ParentVisibility visibility = makeParentVisibility(item.m_schedule);
-    for (const Ast::Schedule::Entry& entry : item.m_schedule.m_entries) {
-        size_t arguments = 0;
-        for (const Ast::Schedule::Use& use : entry.m_uses)
-            if (isParentVisibleUse(visibility, entry, use)) ++arguments;
-        if (arguments > kMaxEntryArgs) return "oversized ABI";
-    }
     return "";
 }
 
@@ -243,12 +235,13 @@ class BodyRelinker final : public VNVisitor {
     const std::unordered_map<const AstVar*, AstVarScope*>& m_current;
     const std::unordered_map<const AstVar*, AstVarScope*>& m_pending;
     const bool m_pre;
+    bool m_delayedLhs = false;
 
     void visit(AstVarRef* nodep) override {
         if (nodep->varScopep()) return;  // Already visited through an AstAssignDly replacement
         const AstVar* const formalp = nodep->varp();
         const bool write = nodep->access().isWriteOrRW();
-        const auto& vars = m_pre && write ? m_pending : m_current;
+        const auto& vars = m_pre && m_delayedLhs && write ? m_pending : m_current;
         const auto it = vars.find(formalp);
         UASSERT_OBJ(it != vars.end(), nodep, "Template variable is absent from phase ABI");
         nodep->varp(it->second->varp());
@@ -256,7 +249,12 @@ class BodyRelinker final : public VNVisitor {
         nodep->classOrPackagep(nullptr);
     }
     void visit(AstAssignDly* nodep) override {
-        iterateChildren(nodep);
+        iterate(nodep->rhsp());
+        {
+            VL_RESTORER(m_delayedLhs);
+            m_delayedLhs = true;
+            iterate(nodep->lhsp());
+        }
         AstNodeExpr* const lhsp = nodep->lhsp()->unlinkFrBack();
         AstNodeExpr* const rhsp = nodep->rhsp()->unlinkFrBack();
         nodep->replaceWith(new AstAssign{nodep->fileline(), lhsp, rhsp});
@@ -283,7 +281,6 @@ public:
     BodyBuilder(const Ast::Template& item, const Ast::Schedule::Entry& entry, AstCFunc* funcp,
                 AstSubgraphCall* callp, const ParentVisibility& visibility) {
         const Ast::Schedule& schedule = item.m_schedule;
-        const Ast::Process& processItem = process(schedule, entry);
         FileLine* const flp = funcp->fileline();
         std::unordered_map<const AstVar*, AstVarScope*> current;
         std::unordered_map<const AstVar*, AstVarScope*> pending;
@@ -337,14 +334,20 @@ public:
         UASSERT_OBJ(!actualp, callp, "Unexpected subgraph V3Ast phase argument");
 
         if (entry.m_phase == Ast::Phase::PRE) {
-            for (AstVar* const formalp : processItem.m_writes) {
+            for (const Ast::Schedule::Use& use : entry.m_uses) {
+                const Ast::Schedule::Storage& storage = schedule.m_storage.at(use.m_storage - 1);
+                if (!storage.m_pending || !use.m_write) continue;
+                AstVar* const formalp = storage.m_formalp;
                 funcp->addStmtsp(
                     new AstAssign{flp, new AstVarRef{flp, pending.at(formalp), VAccess::WRITE},
                                   new AstVarRef{flp, current.at(formalp), VAccess::READ}});
             }
         }
         if (entry.m_phase == Ast::Phase::COMMIT) {
-            for (AstVar* const formalp : processItem.m_writes) {
+            for (const Ast::Schedule::Use& use : entry.m_uses) {
+                const Ast::Schedule::Storage& storage = schedule.m_storage.at(use.m_storage - 1);
+                if (!storage.m_pending || !use.m_read) continue;
+                AstVar* const formalp = storage.m_formalp;
                 funcp->addStmtsp(
                     new AstAssign{flp, new AstVarRef{flp, current.at(formalp), VAccess::WRITE},
                                   new AstVarRef{flp, pending.at(formalp), VAccess::READ}});
@@ -352,9 +355,12 @@ public:
             return;
         }
 
-        AstNode* const bodyp = processItem.m_procedurep->stmtsp()->cloneTree(true);
-        funcp->addStmtsp(bodyp);
-        const BodyRelinker relinker{bodyp, current, pending, entry.m_phase == Ast::Phase::PRE};
+        for (const uint32_t processId : entry.m_processes) {
+            const Ast::Process& processItem = process(schedule, entry.m_phase, processId);
+            AstNode* const bodyp = processItem.m_procedurep->stmtsp()->cloneTree(true);
+            funcp->addStmtsp(bodyp);
+            const BodyRelinker relinker{bodyp, current, pending, entry.m_phase == Ast::Phase::PRE};
+        }
     }
 
     uint64_t arguments() const { return m_arguments; }

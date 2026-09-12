@@ -23,8 +23,8 @@ test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 9)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 12)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 12)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 36)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 10)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 10)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 30)
 
 test.passes()

@@ -23,9 +23,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)"
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 16)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 12)
 
 sched_tree = test.glob_one(test.obj_dir + "/*_sched.tree.json")
 for instance in ("i_pos", "i_pos2", "i_neg", "i_neg2"):

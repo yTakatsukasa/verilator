@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Subgraph template SystemVerilog type semantics
+# DESCRIPTION: Verilator: Coarse shared subgraph NBA wrapper
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -11,20 +11,20 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--binary"])
+test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast templates\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instance memberships\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast port bindings\s+(\d+)", 6)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule builds\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules built\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast local triggers\s+(\d+)", 2)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances fallback\s+(\d+)", 0)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries coalesced\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast instance entry calls avoided\s+(\d+)", 18)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 3)
-test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 3)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 9)
 
 test.passes()
