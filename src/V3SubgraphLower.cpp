@@ -274,6 +274,7 @@ public:
 
 class FunctionMaterializer final : public VNVisitor {
     AstCFunc* const m_funcp;
+    const std::unordered_map<const AstVar*, AstVarScope*>& m_current;
     std::unordered_map<const AstNodeFTask*, AstNodeFTask*> m_clones;
 
     void scopeVariables(AstNodeFTask* taskp) {
@@ -284,10 +285,14 @@ class FunctionMaterializer final : public VNVisitor {
             scopes.emplace(varp, vscp);
         });
         taskp->foreach([&](AstVarRef* refp) {
-            const auto it = scopes.find(refp->varp());
-            UASSERT_OBJ(it != scopes.end(), refp,
-                        "Pure subgraph function references nonlocal storage");
-            refp->varScopep(it->second);
+            const auto localIt = scopes.find(refp->varp());
+            const auto storageIt = m_current.find(refp->varp());
+            UASSERT_OBJ(localIt != scopes.end() || storageIt != m_current.end(), refp,
+                        "Subgraph function references unavailable storage");
+            AstVarScope* const vscp
+                = localIt != scopes.end() ? localIt->second : storageIt->second;
+            refp->varp(vscp->varp());
+            refp->varScopep(vscp);
             refp->classOrPackagep(nullptr);
         });
     }
@@ -310,8 +315,10 @@ class FunctionMaterializer final : public VNVisitor {
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
 public:
-    explicit FunctionMaterializer(AstCFunc* funcp)
-        : m_funcp{funcp} {}
+    FunctionMaterializer(AstCFunc* funcp,
+                         const std::unordered_map<const AstVar*, AstVarScope*>& current)
+        : m_funcp{funcp}
+        , m_current{current} {}
     void materialize(AstNode* nodep) { iterateAndNextNull(nodep); }
 };
 
@@ -398,7 +405,7 @@ public:
             return;
         }
 
-        FunctionMaterializer materializer{funcp};
+        FunctionMaterializer materializer{funcp, current};
         for (const uint32_t processId : entry.m_processes) {
             const Ast::Process& processItem = process(schedule, entry.m_phase, processId);
             AstNode* const bodyp = processItem.m_procedurep->stmtsp()->cloneTree(true);
