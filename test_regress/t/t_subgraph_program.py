@@ -33,9 +33,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot instances\s+(\d+)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot sources\s+(\d+)", 7)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast call templates, local automatic pure function\s+(\d+)",
-               2)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph V3Ast call templates, local automatic pure function\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 8)

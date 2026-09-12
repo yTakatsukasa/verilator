@@ -39,10 +39,9 @@ test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast phase entries\s+(\d+)", 
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 4)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast entry calls\s+(\d+)", 12)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast call sites, local automatic pure function\s+(\d+)",
-               1)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast call instances, local automatic pure function\s+(\d+)",
-               3)
+               r"Scheduling, Subgraph V3Ast call sites, local automatic pure function\s+(\d+)", 1)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph V3Ast call instances, local automatic pure function\s+(\d+)", 3)
 
 test.passes()

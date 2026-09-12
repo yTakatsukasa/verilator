@@ -19,12 +19,10 @@ test.file_grep(test.stats,
                3)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph schedule equivalence unavailable artifacts\s+(\d+)", 6)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph schedule reuse blocked classes, unsafe helper\s+(\d+)", 3)
-test.file_grep(
-    test.stats,
-    r"Scheduling, Subgraph schedule reuse blocked instances, unsafe helper\s+(\d+)", 6)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule reuse blocked classes, unsafe helper\s+(\d+)", 3)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph schedule reuse blocked instances, unsafe helper\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 1)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)

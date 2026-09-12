@@ -15,8 +15,7 @@ test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast candidates\s+(\d+)", 1)
-test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast schedule rejection, task call\s+(\d+)", 1)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedule rejection, task call\s+(\d+)", 1)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph V3Ast schedule rejection instances, task call\s+(\d+)", 2)
 
@@ -25,8 +24,8 @@ for category in (
         "local automatic pure task",
         "local static pure function",
 ):
-    test.file_grep(test.stats,
-                   r"Scheduling, Subgraph V3Ast call sites, " + category + r"\s+(\d+)", 1)
+    test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast call sites, " + category + r"\s+(\d+)",
+                   1)
     test.file_grep(test.stats,
                    r"Scheduling, Subgraph V3Ast call templates, " + category + r"\s+(\d+)", 1)
     test.file_grep(test.stats,
