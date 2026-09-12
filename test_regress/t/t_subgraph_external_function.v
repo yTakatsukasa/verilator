@@ -10,9 +10,13 @@
 // verilog_format: on
 
 package sg_external_function_pkg;
+  function automatic logic [14:0] rotate(input logic [14:0] value);
+    rotate = {value[8:0], value[14:9]};
+  endfunction
+
   function automatic logic [14:0] mix(input logic [14:0] value);
     logic [14:0] rotated;
-    rotated = {value[8:0], value[14:9]};
+    rotated = rotate(value);
     mix = value[0] ? rotated ^ 15'h1234 : rotated + 15'h0123;
   endfunction
 endpackage

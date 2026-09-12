@@ -296,18 +296,30 @@ class FunctionMaterializer final : public VNVisitor {
             refp->classOrPackagep(nullptr);
         });
     }
-    void visit(AstNodeFTaskRef* nodep) override {
-        iterateChildren(nodep);
-        AstFuncRef* const funcRefp = VN_CAST(nodep, FuncRef);
-        AstNodeFTask* const sourcep = funcRefp ? funcRefp->taskp() : nullptr;
-        UASSERT_OBJ(sourcep, nodep, "Unsupported call in shared subgraph body");
+    AstNodeFTask* materialize(AstNodeFTask* sourcep) {
+        UASSERT_OBJ(sourcep, m_funcp, "Unsupported call in shared subgraph body");
         AstNodeFTask*& clonep = m_clones[sourcep];
         if (!clonep) {
             clonep = sourcep->cloneTree(false);
             clonep->name(m_funcp->name() + "__Vfunc" + cvtToStr(m_clones.size()));
             scopeVariables(clonep);
             m_funcp->scopep()->addBlocksp(clonep);
+            if (clonep->stmtsp()) {
+                clonep->stmtsp()->foreachAndNext([&](AstNodeFTaskRef* refp) {
+                    refp->taskp(materialize(refp->taskp()));
+                    refp->name(refp->taskp()->name());
+                    refp->classOrPackagep(nullptr);
+                });
+            }
         }
+        return clonep;
+    }
+    void visit(AstNodeFTaskRef* nodep) override {
+        iterateChildren(nodep);
+        AstFuncRef* const funcRefp = VN_CAST(nodep, FuncRef);
+        AstNodeFTask* const sourcep = funcRefp ? funcRefp->taskp() : nullptr;
+        UASSERT_OBJ(sourcep, nodep, "Unsupported call in shared subgraph body");
+        AstNodeFTask* const clonep = materialize(sourcep);
         nodep->taskp(clonep);
         nodep->name(clonep->name());
         nodep->classOrPackagep(nullptr);

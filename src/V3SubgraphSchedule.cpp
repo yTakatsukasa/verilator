@@ -26,6 +26,7 @@
 
 #include "V3Graph.h"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -45,8 +46,10 @@ public:
 
 struct FunctionAccess final {
     bool m_eligible = false;
+    bool m_noInline = false;
     std::set<AstVar*> m_reads;
     std::set<AstVar*> m_writes;
+    std::vector<AstNodeFTask*> m_callees;
 };
 
 class FunctionAccessVisitor final : public VNVisitorConst {
@@ -54,6 +57,7 @@ class FunctionAccessVisitor final : public VNVisitorConst {
     std::unordered_set<const AstVar*> m_functionVariables;
     std::set<AstVar*> m_reads;
     std::set<AstVar*> m_writes;
+    std::vector<AstNodeFTask*> m_callees;
     bool m_eligible = true;
     bool m_noInline = false;
 
@@ -67,7 +71,15 @@ class FunctionAccessVisitor final : public VNVisitorConst {
         if (nodep->access().isReadOrRW()) m_reads.insert(varp);
         if (nodep->access().isWriteOrRW()) m_writes.insert(varp);
     }
-    void visit(AstNodeFTaskRef*) override { m_eligible = false; }
+    void visit(AstNodeFTaskRef* nodep) override {
+        AstNodeFTask* const taskp = nodep->taskp();
+        if (!taskp) {
+            m_eligible = false;
+        } else {
+            m_callees.push_back(taskp);
+        }
+        iterateChildrenConst(nodep);
+    }
     void visit(AstAssignDly*) override { m_eligible = false; }
     void visit(AstNodeAssign* nodep) override {
         if (nodep->timingControlp()) {
@@ -116,9 +128,11 @@ public:
     }
     FunctionAccess take() {
         FunctionAccess result;
-        result.m_eligible = m_eligible && (!m_noInline || (m_reads.empty() && m_writes.empty()));
+        result.m_eligible = m_eligible;
+        result.m_noInline = m_noInline;
         result.m_reads = std::move(m_reads);
         result.m_writes = std::move(m_writes);
+        result.m_callees = std::move(m_callees);
         return result;
     }
 };
@@ -208,6 +222,7 @@ class ScheduleBuilder final {
     std::unordered_map<const AstVar*, uint32_t> m_varIds;
     std::unordered_set<const AstVar*> m_locals;
     std::unordered_map<const AstNodeFTask*, FunctionAccess> m_functions;
+    std::unordered_set<const AstNodeFTask*> m_functionsVisiting;
     std::map<std::pair<const AstVar*, bool>, uint32_t> m_triggerIds;
     std::string m_rejection;
 
@@ -445,10 +460,28 @@ public:
             m_varIds.emplace(variable.m_formalp, variable.m_id);
             m_locals.insert(variable.m_formalp);
         }
-        const auto analyzeFunction = [&](AstNodeFTask* taskp) {
-            if (!taskp || m_functions.count(taskp)) return;
+        const std::function<bool(AstNodeFTask*)> analyzeFunction = [&](AstNodeFTask* taskp) {
+            if (!taskp) return false;
+            const auto found = m_functions.find(taskp);
+            if (found != m_functions.end()) return found->second.m_eligible;
+            if (!m_functionsVisiting.insert(taskp).second) return false;
             FunctionAccess access = FunctionAccessVisitor{taskp, m_locals}.take();
-            if (access.m_eligible) m_functions.emplace(taskp, std::move(access));
+            for (AstNodeFTask* const calleep : access.m_callees) {
+                if (!analyzeFunction(calleep)) {
+                    access.m_eligible = false;
+                    continue;
+                }
+                const FunctionAccess& callee = m_functions.at(calleep);
+                access.m_reads.insert(callee.m_reads.begin(), callee.m_reads.end());
+                access.m_writes.insert(callee.m_writes.begin(), callee.m_writes.end());
+            }
+            if (access.m_noInline && (!access.m_reads.empty() || !access.m_writes.empty())) {
+                access.m_eligible = false;
+            }
+            m_functionsVisiting.erase(taskp);
+            const bool eligible = access.m_eligible;
+            m_functions.emplace(taskp, std::move(access));
+            return eligible;
         };
         item.m_treep->foreach([&](AstNodeFTask* taskp) { analyzeFunction(taskp); });
         for (AstNode* nodep = item.m_treep->stmtsp(); nodep; nodep = nodep->nextp()) {

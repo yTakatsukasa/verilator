@@ -59,9 +59,13 @@ module sg_impure_function (
   logic [14:0] count;
   logic [14:0] q;
 
-  function logic [14:0] update(input logic [14:0] value);
+  function automatic logic [14:0] bump(input logic [14:0] value);
     count = {count[12:0], count[14:13]} + value;
-    update = count ^ q;
+    bump = count;
+  endfunction
+
+  function logic [14:0] update(input logic [14:0] value);
+    update = bump(value) ^ q;
   endfunction
 
   initial count = 15'h0123;
@@ -79,9 +83,13 @@ module sg_impure_function_ref (
   logic [14:0] count;
   logic [14:0] q;
 
-  function logic [14:0] update(input logic [14:0] value);
+  function automatic logic [14:0] bump(input logic [14:0] value);
     count = {count[12:0], count[14:13]} + value;
-    update = count ^ q;
+    bump = count;
+  endfunction
+
+  function logic [14:0] update(input logic [14:0] value);
+    update = bump(value) ^ q;
   endfunction
 
   initial count = 15'h0123;
