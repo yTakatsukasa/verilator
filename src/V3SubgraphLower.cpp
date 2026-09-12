@@ -272,6 +272,49 @@ public:
     }
 };
 
+class FunctionMaterializer final : public VNVisitor {
+    AstCFunc* const m_funcp;
+    std::unordered_map<const AstNodeFTask*, AstNodeFTask*> m_clones;
+
+    void scopeVariables(AstNodeFTask* taskp) {
+        std::unordered_map<const AstVar*, AstVarScope*> scopes;
+        taskp->foreach([&](AstVar* varp) {
+            AstVarScope* const vscp = new AstVarScope{varp->fileline(), m_funcp->scopep(), varp};
+            m_funcp->scopep()->addVarsp(vscp);
+            scopes.emplace(varp, vscp);
+        });
+        taskp->foreach([&](AstVarRef* refp) {
+            const auto it = scopes.find(refp->varp());
+            UASSERT_OBJ(it != scopes.end(), refp,
+                        "Pure subgraph function references nonlocal storage");
+            refp->varScopep(it->second);
+            refp->classOrPackagep(nullptr);
+        });
+    }
+    void visit(AstNodeFTaskRef* nodep) override {
+        iterateChildren(nodep);
+        AstFuncRef* const funcRefp = VN_CAST(nodep, FuncRef);
+        AstNodeFTask* const sourcep = funcRefp ? funcRefp->taskp() : nullptr;
+        UASSERT_OBJ(sourcep, nodep, "Unsupported call in shared subgraph body");
+        AstNodeFTask*& clonep = m_clones[sourcep];
+        if (!clonep) {
+            clonep = sourcep->cloneTree(false);
+            clonep->name(m_funcp->name() + "__Vfunc" + cvtToStr(m_clones.size()));
+            scopeVariables(clonep);
+            m_funcp->scopep()->addBlocksp(clonep);
+        }
+        nodep->taskp(clonep);
+        nodep->name(clonep->name());
+        nodep->classOrPackagep(nullptr);
+    }
+    void visit(AstNode* nodep) override { iterateChildren(nodep); }
+
+public:
+    explicit FunctionMaterializer(AstCFunc* funcp)
+        : m_funcp{funcp} {}
+    void materialize(AstNode* nodep) { iterateAndNextNull(nodep); }
+};
+
 class BodyBuilder final {
     uint64_t m_arguments = 0;
     uint64_t m_contextVariables = 0;
@@ -355,10 +398,12 @@ public:
             return;
         }
 
+        FunctionMaterializer materializer{funcp};
         for (const uint32_t processId : entry.m_processes) {
             const Ast::Process& processItem = process(schedule, entry.m_phase, processId);
             AstNode* const bodyp = processItem.m_procedurep->stmtsp()->cloneTree(true);
             funcp->addStmtsp(bodyp);
+            materializer.materialize(bodyp);
             const BodyRelinker relinker{bodyp, current, pending, entry.m_phase == Ast::Phase::PRE};
         }
     }

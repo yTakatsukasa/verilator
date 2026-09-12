@@ -43,8 +43,53 @@ public:
         : V3GraphVertex{graphp} {}
 };
 
+class FunctionEligibilityVisitor final : public VNVisitorConst {
+    std::unordered_set<const AstVar*> m_variables;
+    std::unordered_set<const AstVar*> m_references;
+    bool m_eligible = true;
+
+    void addVariable(const AstVar* varp) {
+        m_variables.insert(varp);
+        if (!varp->lifetime().isAutomatic()
+            || (varp->isIO() && !varp->isFuncReturn() && varp->isWritable())) {
+            m_eligible = false;
+        }
+    }
+    void visit(AstVar* nodep) override {
+        addVariable(nodep);
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstNodeVarRef* nodep) override { m_references.insert(nodep->varp()); }
+    void visit(AstNodeFTaskRef*) override { m_eligible = false; }
+    void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+
+public:
+    explicit FunctionEligibilityVisitor(AstNodeFTask* taskp) {
+        const AstVar* const fvarp = VN_CAST(taskp->fvarp(), Var);
+        if (fvarp) {
+            addVariable(fvarp);
+        } else {
+            m_eligible = false;
+        }
+        iterateAndNextConstNull(taskp->stmtsp());
+        for (const AstVar* const varp : m_references) {
+            if (!m_variables.count(varp)) m_eligible = false;
+        }
+    }
+    bool eligible() const { return m_eligible; }
+};
+
+bool simplePureFunction(AstNodeFTask* taskp) {
+    if (!taskp || !taskp->lifetime().isAutomatic() || !taskp->isPure() || taskp->dpiImport()
+        || taskp->recursive() || taskp->classMethod() || !taskp->stmtsp()) {
+        return false;
+    }
+    return FunctionEligibilityVisitor{taskp}.eligible();
+}
+
 class AccessVisitor final : public VNVisitorConst {
     const std::unordered_set<const AstVar*>& m_locals;
+    const std::unordered_set<const AstNodeFTask*>& m_localPureFunctions;
     const bool m_clocked;
     std::set<AstVar*>& m_reads;
     std::set<AstVar*>& m_writes;
@@ -52,6 +97,12 @@ class AccessVisitor final : public VNVisitorConst {
     std::set<AstVar*>& m_delayedWrites;
     std::string& m_rejection;
     bool m_delayedLhs = false;
+
+    bool simplePureFunctionCall(AstNodeFTaskRef* refp) const {
+        AstFuncRef* const funcRefp = VN_CAST(refp, FuncRef);
+        AstNodeFTask* const taskp = funcRefp ? funcRefp->taskp() : nullptr;
+        return taskp && m_localPureFunctions.count(taskp) && refp->isPure();
+    }
 
     void reject(const char* reason) {
         if (m_rejection.empty()) m_rejection = reason;
@@ -80,18 +131,26 @@ class AccessVisitor final : public VNVisitorConst {
             (m_delayedLhs ? m_delayedWrites : m_immediateWrites).insert(varp);
         }
     }
-    void visit(AstNodeFTaskRef*) override { reject("task call"); }
+    void visit(AstNodeFTaskRef* nodep) override {
+        if (!simplePureFunctionCall(nodep)) {
+            reject("task call");
+            return;
+        }
+        iterateChildrenConst(nodep);
+    }
     void visit(AstDelay*) override { reject("timing control"); }
     void visit(AstEventControl*) override { reject("timing control"); }
     void visit(AstFork*) override { reject("fork"); }
     void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
 
 public:
-    AccessVisitor(AstNode* nodep, const std::unordered_set<const AstVar*>& locals, bool clocked,
+    AccessVisitor(AstNode* nodep, const std::unordered_set<const AstVar*>& locals,
+                  const std::unordered_set<const AstNodeFTask*>& localPureFunctions, bool clocked,
                   std::set<AstVar*>& reads, std::set<AstVar*>& writes,
                   std::set<AstVar*>& immediateWrites, std::set<AstVar*>& delayedWrites,
                   std::string& rejection)
         : m_locals{locals}
+        , m_localPureFunctions{localPureFunctions}
         , m_clocked{clocked}
         , m_reads{reads}
         , m_writes{writes}
@@ -107,6 +166,7 @@ class ScheduleBuilder final {
     Ast::Schedule m_schedule;
     std::unordered_map<const AstVar*, uint32_t> m_varIds;
     std::unordered_set<const AstVar*> m_locals;
+    std::unordered_set<const AstNodeFTask*> m_localPureFunctions;
     std::map<std::pair<const AstVar*, bool>, uint32_t> m_triggerIds;
     std::string m_rejection;
 
@@ -127,8 +187,9 @@ class ScheduleBuilder final {
         std::set<AstVar*> writes;
         std::set<AstVar*> immediateWrites;
         std::set<AstVar*> delayedWrites;
-        const AccessVisitor visitor{procedurep->stmtsp(), m_locals,      clocked,    reads, writes,
-                                    immediateWrites,      delayedWrites, m_rejection};
+        const AccessVisitor visitor{
+            procedurep->stmtsp(), m_locals,      m_localPureFunctions, clocked, reads, writes,
+            immediateWrites,      delayedWrites, m_rejection};
         Ast::Process result;
         result.m_procedurep = procedurep;
         result.m_reads = ordered(reads);
@@ -343,6 +404,9 @@ public:
             m_varIds.emplace(variable.m_formalp, variable.m_id);
             m_locals.insert(variable.m_formalp);
         }
+        item.m_treep->foreach([&](AstNodeFTask* taskp) {
+            if (simplePureFunction(taskp)) m_localPureFunctions.insert(taskp);
+        });
         procedures();
         if (m_rejection.empty()) validateDrivers();
         if (m_rejection.empty()) orderRefresh();

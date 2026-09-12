@@ -23,16 +23,23 @@ test.file_grep(tree_filename, r'"name":"sg_prog_dev".*"subgraphBoundary":true')
 test.file_grep(cpp_filename,
                r"Vt_subgraph_program_sg_prog_dev__Pz\d+___nba_sequent__TOP__t__DOT__i_dev0_sub__")
 test.file_grep(sub_cpp_filename, r"___nba_sequent__TOP__t__DOT__i_dev0_sub__")
+test.file_grep(sub_cpp_filename, r"____VsubgraphV3Ast\d+__\d+\(")
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 4)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 42)
-test.file_grep(test.stats, r"Scheduling, Subgraph NBA pruned internal uses\s+(\d+)", 12)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 8)
+test.file_grep(test.stats, r"Scheduling, Subgraph NBA pruned internal uses\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA refresh helpers\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot instances\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA snapshot sources\s+(\d+)", 7)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 0)
+test.file_grep(test.stats,
+               r"Scheduling, Subgraph V3Ast call templates, local automatic pure function\s+(\d+)",
+               2)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast shared bodies\s+(\d+)", 6)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract cuttable uses\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract nodes\s+(\d+)", 8)
-test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 67)
+test.file_grep(test.stats, r"Scheduling, Subgraph order graph contract uses\s+(\d+)", 41)
 
 with open(tree_filename, "r", encoding="utf8") as fh:
     json.load(fh)
