@@ -16,14 +16,12 @@ out_filename = test.obj_dir + "/V" + test.name + "_010_linkdotparam.tree.json"
 cpp_filename = test.obj_dir + "/V" + test.name + "___024root__0.cpp"
 sub_cpp_filename = test.obj_dir + "/V" + test.name + "_sub__0.cpp"
 
-test.compile(
-    verilator_flags2=[
-        "--subgraph-schedule",
-        "--dump-tree-json",
-        "--no-json-edit-nums",
-        "-Wno-SUBGRAPH",
-    ]
-)
+test.compile(verilator_flags2=[
+    "--subgraph-schedule",
+    "--dump-tree-json",
+    "--no-json-edit-nums",
+    "-Wno-SUBGRAPH",
+])
 test.execute()
 
 test.file_grep(out_filename, r'"name":"sub".*"subgraphBoundary":true')
