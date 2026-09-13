@@ -276,8 +276,12 @@ class ScheduleBuilder final {
         std::set<uint32_t> result;
         for (AstSenItem* itemp = treep->sensesp(); itemp; itemp = VN_AS(itemp->nextp(), SenItem)) {
             const bool posedge = itemp->edgeType() == VEdgeType::ET_POSEDGE;
-            if ((!posedge && itemp->edgeType() != VEdgeType::ET_NEGEDGE) || itemp->condp()) {
-                reject("event expression");
+            if (!posedge && itemp->edgeType() != VEdgeType::ET_NEGEDGE) {
+                reject("event edge type");
+                break;
+            }
+            if (itemp->condp()) {
+                reject("event condition");
                 break;
             }
             AstNodeVarRef* const refp = VN_CAST(itemp->sensp(), NodeVarRef);
