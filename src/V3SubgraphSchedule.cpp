@@ -38,6 +38,15 @@ namespace {
 
 using Ast = V3SubgraphAst;
 
+void rejectUnsupported(const AstNode* nodep, const Ast::Template& item, std::string& rejection,
+                       const std::string& reason) {
+    if (!rejection.empty()) return;
+    rejection = reason;
+    nodep->v3warn(SUBGRAPH, "Subgraph scheduling does not support '"
+                                << reason << "' in boundary module " << item.m_treep->prettyNameQ()
+                                << "; using fallback scheduling.");
+}
+
 class ScheduleVertex final : public V3GraphVertex {
 public:
     explicit ScheduleVertex(V3Graph* graphp)
@@ -150,6 +159,7 @@ public:
 };
 
 class AccessVisitor final : public VNVisitorConst {
+    const Ast::Template& m_item;
     const std::unordered_set<const AstVar*>& m_locals;
     const std::unordered_map<const AstNodeFTask*, FTaskAccess>& m_ftasks;
     const bool m_clocked;
@@ -166,25 +176,25 @@ class AccessVisitor final : public VNVisitorConst {
         return it == m_ftasks.end() || !it->second.m_eligible ? nullptr : &it->second;
     }
 
-    void reject(const char* reason) {
-        if (m_rejection.empty()) m_rejection = reason;
+    void reject(const AstNode* nodep, const std::string& reason) {
+        rejectUnsupported(nodep, m_item, m_rejection, reason);
     }
     void visit(AstAssignDly* nodep) override {
-        if (!m_clocked) reject("assignment phase");
-        if (nodep->timingControlp()) reject("assignment timing control");
+        if (!m_clocked) reject(nodep, "assignment phase");
+        if (nodep->timingControlp()) reject(nodep, "assignment timing control");
         iterateConst(nodep->rhsp());
         VL_RESTORER(m_delayedLhs);
         m_delayedLhs = true;
         iterateConst(nodep->lhsp());
     }
     void visit(AstNodeAssign* nodep) override {
-        if (nodep->timingControlp()) reject("assignment timing control");
+        if (nodep->timingControlp()) reject(nodep, "assignment timing control");
         iterateChildrenConst(nodep);
     }
     void visit(AstNodeVarRef* nodep) override {
         AstVar* const varp = nodep->varp();
         if (!varp || !m_locals.count(varp)) {
-            reject("nonlocal variable");
+            reject(nodep, "nonlocal variable");
             return;
         }
         if (nodep->access().isReadOrRW()) m_reads.insert(varp);
@@ -196,7 +206,7 @@ class AccessVisitor final : public VNVisitorConst {
     void visit(AstNodeFTaskRef* nodep) override {
         const FTaskAccess* const accessp = ftaskAccess(nodep);
         if (!accessp) {
-            reject("task call");
+            reject(nodep, "task call");
             return;
         }
         iterateChildrenConst(nodep);
@@ -204,18 +214,20 @@ class AccessVisitor final : public VNVisitorConst {
         m_writes.insert(accessp->m_writes.begin(), accessp->m_writes.end());
         m_immediateWrites.insert(accessp->m_writes.begin(), accessp->m_writes.end());
     }
-    void visit(AstDelay*) override { reject("timing control"); }
-    void visit(AstEventControl*) override { reject("timing control"); }
-    void visit(AstFork*) override { reject("fork"); }
+    void visit(AstDelay* nodep) override { reject(nodep, "timing control"); }
+    void visit(AstEventControl* nodep) override { reject(nodep, "timing control"); }
+    void visit(AstFork* nodep) override { reject(nodep, "fork"); }
     void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
 
 public:
-    AccessVisitor(AstNode* nodep, const std::unordered_set<const AstVar*>& locals,
+    AccessVisitor(AstNode* nodep, const Ast::Template& item,
+                  const std::unordered_set<const AstVar*>& locals,
                   const std::unordered_map<const AstNodeFTask*, FTaskAccess>& ftasks, bool clocked,
                   std::set<AstVar*>& reads, std::set<AstVar*>& writes,
                   std::set<AstVar*>& immediateWrites, std::set<AstVar*>& delayedWrites,
                   std::string& rejection)
-        : m_locals{locals}
+        : m_item{item}
+        , m_locals{locals}
         , m_ftasks{ftasks}
         , m_clocked{clocked}
         , m_reads{reads}
@@ -238,8 +250,8 @@ class ScheduleBuilder final {
     std::map<std::pair<const AstVar*, bool>, uint32_t> m_triggerIds;
     std::string m_rejection;
 
-    void reject(const char* reason) {
-        if (m_rejection.empty()) m_rejection = reason;
+    void reject(const AstNode* nodep, const std::string& reason) {
+        rejectUnsupported(nodep, m_item, m_rejection, reason);
     }
 
     std::vector<AstVar*> ordered(const std::set<AstVar*>& vars) const {
@@ -256,7 +268,7 @@ class ScheduleBuilder final {
         std::set<AstVar*> immediateWrites;
         std::set<AstVar*> delayedWrites;
         const AccessVisitor visitor{
-            procedurep->stmtsp(), m_locals,      m_ftasks,   clocked, reads, writes,
+            procedurep->stmtsp(), m_item,        m_locals,   m_ftasks, clocked, reads, writes,
             immediateWrites,      delayedWrites, m_rejection};
         Ast::Process result;
         result.m_procedurep = procedurep;
@@ -266,7 +278,7 @@ class ScheduleBuilder final {
         result.m_delayedWrites = ordered(delayedWrites);
         if (steady) {
             for (AstVar* const varp : result.m_writes) {
-                if (varp->isInput()) reject("input write");
+                if (varp->isInput()) reject(varp, "input write");
             }
         }
         return result;
@@ -277,17 +289,17 @@ class ScheduleBuilder final {
         for (AstSenItem* itemp = treep->sensesp(); itemp; itemp = VN_AS(itemp->nextp(), SenItem)) {
             const bool posedge = itemp->edgeType() == VEdgeType::ET_POSEDGE;
             if (!posedge && itemp->edgeType() != VEdgeType::ET_NEGEDGE) {
-                reject("event edge type");
+                reject(itemp, "event edge type "s + itemp->edgeType().ascii());
                 break;
             }
             if (itemp->condp()) {
-                reject("event condition");
+                reject(itemp->condp(), "event condition");
                 break;
             }
             AstNodeVarRef* const refp = VN_CAST(itemp->sensp(), NodeVarRef);
             AstVar* const varp = refp ? refp->varp() : nullptr;
             if (!varp || !m_locals.count(varp) || !varp->isInput()) {
-                reject("internal trigger");
+                reject(itemp, "internal trigger");
                 break;
             }
             const uint32_t next = static_cast<uint32_t>(m_schedule.m_triggers.size() + 1);
@@ -318,10 +330,10 @@ class ScheduleBuilder final {
                            || alwaysp->keyword() == VAlwaysKwd::CONT_ASSIGN) {
                     m_schedule.m_refresh.push_back(process(alwaysp, false, true));
                 } else {
-                    reject("combinational procedure");
+                    reject(procedurep, "combinational procedure");
                 }
             } else {
-                reject("procedure kind");
+                reject(procedurep, "procedure kind");
             }
             if (!m_rejection.empty()) return;
         }
@@ -333,7 +345,7 @@ class ScheduleBuilder final {
             for (const AstVar* const varp : process.m_writes) {
                 const auto inserted = clockedDomains.emplace(varp, process.m_triggers);
                 if (!inserted.second && inserted.first->second != process.m_triggers) {
-                    reject("multiple event drivers");
+                    reject(varp, "multiple event drivers");
                     return;
                 }
             }
@@ -342,7 +354,7 @@ class ScheduleBuilder final {
         for (const Ast::Process& process : m_schedule.m_refresh) {
             for (const AstVar* const varp : process.m_writes) {
                 if (clockedDomains.count(varp) || !refreshDrivers.insert(varp).second) {
-                    reject("multiple drivers");
+                    reject(varp, "multiple drivers");
                     return;
                 }
             }
@@ -369,7 +381,7 @@ class ScheduleBuilder final {
         graph.stronglyConnected(&V3GraphEdge::followAlwaysTrue);
         for (const V3GraphVertex& vertex : graph.vertices()) {
             if (vertex.color()) {
-                reject("combinational cycle");
+                reject(m_item.m_treep, "combinational cycle");
                 return;
             }
         }

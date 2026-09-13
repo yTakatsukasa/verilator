@@ -13,6 +13,7 @@ test.scenarios("vlt")
 
 common_flags = [
     "-Wno-ALWCOMBORDER",
+    "-Wno-SUBGRAPH",
     "-Wno-UNOPTFLAT",
 ]
 

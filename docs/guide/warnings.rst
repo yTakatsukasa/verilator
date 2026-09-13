@@ -2239,6 +2239,17 @@ List Of Warnings
    * Run Verilator with :vlopt:`--timing`.
 
 
+.. option:: SUBGRAPH
+
+   Warns that :vlopt:`--subgraph-schedule` encountered a construct it does
+   not support. Verilator uses its normal scheduling path for the affected
+   subgraph boundary module, so simulation behavior is preserved but the
+   subgraph is not shared.
+
+   Use :vlopt:`-Wno-fatal` to continue after this warning, or
+   ``-Wno-SUBGRAPH`` to suppress it.
+
+
 .. option:: SUPERNFIRST
 
    An error that a `super.new` is not the first statement in a `function

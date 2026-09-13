@@ -16,6 +16,7 @@ test.top_filename = "t/t_subgraph_boundary.v"
 out_filename = test.obj_dir + "/V" + test.name + "_010_linkdotparam.tree.json"
 
 test.lint(v_flags=[
+    "-Wno-SUBGRAPH",
     "--subgraph_schedule",
     "--dump-tree-json --no-json-edit-nums +define+USE_VLT",
     "t/t_subgraph_boundary.vlt",

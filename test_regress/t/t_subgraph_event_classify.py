@@ -11,20 +11,22 @@ import vltest_bootstrap
 
 test.scenarios("vlt")
 
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats"])
+test.compile(
+    verilator_flags2=["--no-skip-identical", "--subgraph-schedule", "--stats", "-Wno-fatal"],
+    expect_filename=test.golden_filename)
 test.execute()
 
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast candidates\s+(\d+)", 2)
 test.file_grep(test.stats,
                r"Scheduling, Subgraph V3Ast schedule rejection, event condition\s+(\d+)", 1)
 test.file_grep(test.stats,
-               r"Scheduling, Subgraph V3Ast schedule rejection, event edge type\s+(\d+)", 1)
+               r"Scheduling, Subgraph V3Ast schedule rejection, event edge type BOTH\s+(\d+)", 1)
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph V3Ast schedule rejection instances, event condition\s+(\d+)", 2)
 test.file_grep(
     test.stats,
-    r"Scheduling, Subgraph V3Ast schedule rejection instances, event edge type\s+(\d+)", 2)
+    r"Scheduling, Subgraph V3Ast schedule rejection instances, event edge type BOTH\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules activated\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast instances activated\s+(\d+)", 0)
 test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast schedules fallback\s+(\d+)", 2)
