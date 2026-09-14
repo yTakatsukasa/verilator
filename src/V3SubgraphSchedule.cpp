@@ -72,6 +72,7 @@ size_t unpackedDimensions(const AstVar* varp) {
 struct FTaskAccess final {
     bool m_eligible = false;
     bool m_noInline = false;
+    std::string m_rejection;
     std::set<AstVar*> m_reads;
     std::set<AstVar*> m_writes;
     std::vector<AstNodeFTask*> m_callees;
@@ -85,14 +86,22 @@ class FTaskAccessVisitor final : public VNVisitorConst {
     std::vector<AstNodeFTask*> m_callees;
     bool m_eligible = true;
     bool m_noInline = false;
+    const std::string m_kind;
+    std::string m_rejection;
 
-    void reject() { m_eligible = false; }
+    void reject(const std::string& reason) {
+        m_eligible = false;
+        if (m_rejection.empty()) m_rejection = reason;
+    }
+    std::string callWith(const std::string& detail) const {
+        return m_kind + " call with " + detail;
+    }
 
     void visit(AstNodeVarRef* nodep) override {
         AstVar* const varp = nodep->varp();
         if (!varp || m_ftaskVariables.count(varp)) return;
         if (!m_templateVariables.count(varp)) {
-            reject();
+            reject(callWith("nonlocal variable"));
             return;
         }
         if (nodep->access().isReadOrRW()) m_reads.insert(varp);
@@ -101,30 +110,30 @@ class FTaskAccessVisitor final : public VNVisitorConst {
     void visit(AstNodeFTaskRef* nodep) override {
         AstNodeFTask* const taskp = nodep->taskp();
         if (!taskp) {
-            reject();
+            reject(callWith("unresolved callee"));
         } else {
             m_callees.push_back(taskp);
         }
         iterateChildrenConst(nodep);
     }
-    void visit(AstAssignDly*) override { reject(); }
+    void visit(AstAssignDly*) override { reject(callWith("delayed assignment")); }
     void visit(AstNodeAssign* nodep) override {
         if (nodep->timingControlp()) {
-            reject();
+            reject(callWith("assignment timing control"));
             return;
         }
         iterateChildrenConst(nodep);
     }
-    void visit(AstDelay*) override { reject(); }
-    void visit(AstEventControl*) override { reject(); }
-    void visit(AstFork*) override { reject(); }
+    void visit(AstDelay*) override { reject(callWith("timing control")); }
+    void visit(AstEventControl*) override { reject(callWith("timing control")); }
+    void visit(AstFork*) override { reject(callWith("fork")); }
     void visit(AstPragma* nodep) override {
         if (nodep->pragType() == VPragmaType::NO_INLINE_TASK) m_noInline = true;
     }
     void visit(AstStmtExpr* nodep) override { iterateChildrenConst(nodep); }
     void visit(AstNode* nodep) override {
         if (!nodep->isPure()) {
-            reject();
+            reject(callWith("unsupported side effect"));
             return;
         }
         iterateChildrenConst(nodep);
@@ -134,15 +143,27 @@ public:
     FTaskAccessVisitor(AstNodeFTask* taskp,
                        const std::unordered_set<const AstVar*>& templateVariables,
                        bool instanceLocal)
-        : m_templateVariables{templateVariables} {
-        if (!taskp || taskp->dpiImport() || taskp->recursive() || taskp->classMethod()
-            || !taskp->stmtsp()) {
-            reject();
+        : m_templateVariables{templateVariables}
+        , m_kind{taskp->isFunction() ? "function" : "task"} {
+        if (taskp->dpiImport()) {
+            reject("DPI " + m_kind + " call");
+            return;
+        }
+        if (taskp->recursive()) {
+            reject("recursive " + m_kind + " call");
+            return;
+        }
+        if (taskp->classMethod()) {
+            reject("class method call");
+            return;
+        }
+        if (!taskp->stmtsp()) {
+            reject(m_kind + " call without body");
             return;
         }
         // A static external task can retain package-global argument state between calls.
         if (!instanceLocal && !taskp->isFunction() && !taskp->lifetime().isAutomatic()) {
-            reject();
+            reject("external static task call");
             return;
         }
         const AstVar* const fvarp = VN_CAST(taskp->fvarp(), Var);
@@ -154,11 +175,11 @@ public:
         for (const AstVar* const varp : m_ftaskVariables) {
             if (taskp->isFunction() && varp->isIO() && !varp->isFuncReturn()
                 && varp->isWritable()) {
-                reject();
+                reject("function call with writable argument");
             }
             if (!varp->lifetime().isAutomatic() && !varp->isIO() && !varp->isFuncReturn()
                 && (taskp->isFunction() || !instanceLocal)) {
-                reject();
+                reject(callWith("static local variable"));
             }
         }
         iterateAndNextConstNull(taskp->stmtsp());
@@ -167,6 +188,7 @@ public:
         FTaskAccess result;
         result.m_eligible = m_eligible;
         result.m_noInline = m_noInline;
+        result.m_rejection = std::move(m_rejection);
         result.m_reads = std::move(m_reads);
         result.m_writes = std::move(m_writes);
         result.m_callees = std::move(m_callees);
@@ -193,7 +215,7 @@ class AccessVisitor final : public VNVisitorConst {
     const FTaskAccess* ftaskAccess(AstNodeFTaskRef* refp) const {
         AstNodeFTask* const taskp = refp->taskp();
         const auto it = taskp ? m_ftasks.find(taskp) : m_ftasks.end();
-        return it == m_ftasks.end() || !it->second.m_eligible ? nullptr : &it->second;
+        return it == m_ftasks.end() ? nullptr : &it->second;
     }
 
     void reject(const AstNode* nodep, const std::string& reason) {
@@ -259,8 +281,9 @@ class AccessVisitor final : public VNVisitorConst {
     }
     void visit(AstNodeFTaskRef* nodep) override {
         const FTaskAccess* const accessp = ftaskAccess(nodep);
-        if (!accessp) {
-            reject(nodep, "task call");
+        if (!accessp || !accessp->m_eligible) {
+            reject(nodep, accessp && !accessp->m_rejection.empty() ? accessp->m_rejection
+                                                                   : "unresolved task call");
             return;
         }
         iterateChildrenConst(nodep);
@@ -622,6 +645,16 @@ public:
             for (AstNodeFTask* const calleep : access.m_callees) {
                 if (!analyzeFTask(calleep)) {
                     access.m_eligible = false;
+                    if (access.m_rejection.empty()) {
+                        const auto rejected = m_ftasks.find(calleep);
+                        if (rejected != m_ftasks.end() && !rejected->second.m_rejection.empty()) {
+                            access.m_rejection = rejected->second.m_rejection;
+                        } else {
+                            access.m_rejection = "recursive "s
+                                                 + (calleep->isFunction() ? "function" : "task")
+                                                 + " call";
+                        }
+                    }
                     continue;
                 }
                 const FTaskAccess& callee = m_ftasks.at(calleep);
@@ -630,6 +663,9 @@ public:
             }
             if (access.m_noInline && (!access.m_reads.empty() || !access.m_writes.empty())) {
                 access.m_eligible = false;
+                if (access.m_rejection.empty())
+                    access.m_rejection = "stateful no-inline "s
+                                         + (taskp->isFunction() ? "function" : "task") + " call";
             }
             m_ftasksVisiting.erase(taskp);
             const bool eligible = access.m_eligible;

@@ -1,0 +1,6 @@
+%Warning-SUBGRAPH: t/t_subgraph_task_classify.v:64:27: Subgraph scheduling does not support 'external static task call' in boundary module 'sg_task_classify'; using fallback scheduling.
+                                                     : ... note: In instance 't.i_sg1'
+   64 |     sg_task_classify_pkg::update(drive ^ q, next_value);
+      |                           ^~~~~~
+                   ... For warning description see https://verilator.org/warn/SUBGRAPH?v=latest
+                   ... Use "/* verilator lint_off SUBGRAPH */" and lint_on around source to disable this message.
