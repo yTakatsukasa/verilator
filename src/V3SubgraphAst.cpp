@@ -292,6 +292,9 @@ void V3SubgraphAst::check() const {
         }
         uint32_t expectedPortId = 1;
         uint32_t expectedVariableId = 1;
+        std::unordered_set<const AstSenItem*> templateSenItems;
+        item.m_treep->foreach(
+            [&](const AstSenItem* senItemp) { templateSenItems.insert(senItemp); });
         for (const Template::Variable& variable : item.m_variables) {
             UASSERT(variable.m_id == expectedVariableId++,
                     "Non-contiguous subgraph V3Ast variable ID");
@@ -326,6 +329,8 @@ void V3SubgraphAst::check() const {
         for (const Trigger& trigger : schedule.m_triggers) {
             UASSERT_OBJ(trigger.m_formalp && trigger.m_formalp->isInput(), item.m_treep,
                         "Subgraph V3Ast trigger is not a template input");
+            UASSERT_OBJ(trigger.m_itemp && templateSenItems.count(trigger.m_itemp), item.m_treep,
+                        "Subgraph V3Ast trigger item is not in the template");
         }
         for (const Schedule::Storage& storage : schedule.m_storage) {
             UASSERT_OBJ(storage.m_formalp, item.m_treep, "Subgraph V3Ast storage has no formal");

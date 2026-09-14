@@ -247,7 +247,7 @@ class ScheduleBuilder final {
     std::unordered_set<const AstNodeFTask*> m_localFTasks;
     std::unordered_map<const AstNodeFTask*, FTaskAccess> m_ftasks;
     std::unordered_set<const AstNodeFTask*> m_ftasksVisiting;
-    std::map<std::pair<const AstVar*, bool>, uint32_t> m_triggerIds;
+    std::map<std::pair<const AstVar*, VEdgeType::en>, uint32_t> m_triggerIds;
     std::string m_rejection;
 
     void reject(const AstNode* nodep, const std::string& reason) {
@@ -287,8 +287,9 @@ class ScheduleBuilder final {
     std::vector<uint32_t> triggers(AstSenTree* treep) {
         std::set<uint32_t> result;
         for (AstSenItem* itemp = treep->sensesp(); itemp; itemp = VN_AS(itemp->nextp(), SenItem)) {
-            const bool posedge = itemp->edgeType() == VEdgeType::ET_POSEDGE;
-            if (!posedge && itemp->edgeType() != VEdgeType::ET_NEGEDGE) {
+            const VEdgeType edgeType = itemp->edgeType();
+            if (edgeType != VEdgeType::ET_CHANGED && edgeType != VEdgeType::ET_POSEDGE
+                && edgeType != VEdgeType::ET_NEGEDGE) {
                 reject(itemp, "event edge type "s + itemp->edgeType().ascii());
                 break;
             }
@@ -303,8 +304,8 @@ class ScheduleBuilder final {
                 break;
             }
             const uint32_t next = static_cast<uint32_t>(m_schedule.m_triggers.size() + 1);
-            const auto inserted = m_triggerIds.emplace(std::make_pair(varp, posedge), next);
-            if (inserted.second) m_schedule.m_triggers.push_back(Ast::Trigger{varp, posedge});
+            const auto inserted = m_triggerIds.emplace(std::make_pair(varp, edgeType.m_e), next);
+            if (inserted.second) m_schedule.m_triggers.push_back(Ast::Trigger{varp, itemp});
             result.insert(inserted.first->second);
         }
         return {result.begin(), result.end()};
@@ -476,8 +477,14 @@ class ScheduleBuilder final {
             clockedDomains[process.m_triggers].push_back(static_cast<uint32_t>(index + 1));
         }
         for (const auto& pair : clockedDomains) addEntry(Ast::Phase::PRE, pair.second, pair.first);
-        for (const auto& pair : clockedDomains)
-            addEntry(Ast::Phase::COMMIT, pair.second, pair.first);
+        for (const auto& pair : clockedDomains) {
+            std::vector<uint32_t> delayed;
+            for (const uint32_t processId : pair.second) {
+                if (!m_schedule.m_pre.at(processId - 1).m_delayedWrites.empty())
+                    delayed.push_back(processId);
+            }
+            addEntry(Ast::Phase::COMMIT, delayed, pair.first);
+        }
         addEntry(Ast::Phase::REFRESH, processIds(m_schedule.m_refresh.size()), {});
     }
 

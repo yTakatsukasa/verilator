@@ -28,6 +28,7 @@ class AstNodeExpr;
 class AstNodeFTask;
 class AstNodeModule;
 class AstNodeProcedure;
+class AstSenItem;
 class AstVar;
 
 // Own one detached V3Ast tree for each elaborated subgraph module specialization. The trees are
@@ -39,7 +40,7 @@ public:
     enum class Phase : uint8_t { STATIC, INITIAL, PRE, COMMIT, REFRESH };
     struct Trigger final {
         AstVar* m_formalp = nullptr;  // Template-local input declaration
-        bool m_posedge = false;
+        AstSenItem* m_itemp = nullptr;  // Edge type remains in the template V3Ast
     };
     struct Process final {
         AstNodeProcedure* m_procedurep = nullptr;  // Body remains owned by the template tree

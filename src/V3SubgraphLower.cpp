@@ -188,8 +188,7 @@ class PrepareVisitor final : public VNVisitor {
                     const Ast::Trigger& trigger = schedule.m_triggers.at(triggerId - 1);
                     AstVar* const varp = current.at(trigger.m_formalp);
                     AstSenItem* const senp = new AstSenItem{
-                        flp, trigger.m_posedge ? VEdgeType::ET_POSEDGE : VEdgeType::ET_NEGEDGE,
-                        new AstVarRef{flp, varp, VAccess::READ}};
+                        flp, trigger.m_itemp->edgeType(), new AstVarRef{flp, varp, VAccess::READ}};
                     if (!treep)
                         treep = new AstSenTree{flp, senp};
                     else
