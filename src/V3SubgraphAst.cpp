@@ -293,6 +293,7 @@ void V3SubgraphAst::check() const {
         uint32_t expectedPortId = 1;
         uint32_t expectedVariableId = 1;
         std::unordered_set<const AstSenItem*> templateSenItems;
+        std::unordered_set<const AstVar*> templateVars;
         item.m_treep->foreach(
             [&](const AstSenItem* senItemp) { templateSenItems.insert(senItemp); });
         for (const Template::Variable& variable : item.m_variables) {
@@ -300,6 +301,7 @@ void V3SubgraphAst::check() const {
                     "Non-contiguous subgraph V3Ast variable ID");
             UASSERT_OBJ(variable.m_sourcep && variable.m_formalp, item.m_treep,
                         "Incomplete subgraph V3Ast variable mapping");
+            templateVars.insert(variable.m_formalp);
         }
         for (const Template::Port& port : item.m_ports) {
             UASSERT(port.m_id == expectedPortId++, "Non-contiguous subgraph V3Ast formal ID");
@@ -327,8 +329,8 @@ void V3SubgraphAst::check() const {
         const Schedule& schedule = item.m_schedule;
         if (!schedule.m_rejection.empty()) continue;
         for (const Trigger& trigger : schedule.m_triggers) {
-            UASSERT_OBJ(trigger.m_formalp && trigger.m_formalp->isInput(), item.m_treep,
-                        "Subgraph V3Ast trigger is not a template input");
+            UASSERT_OBJ(trigger.m_formalp && templateVars.count(trigger.m_formalp), item.m_treep,
+                        "Subgraph V3Ast trigger is not a template variable");
             UASSERT_OBJ(trigger.m_itemp && templateSenItems.count(trigger.m_itemp), item.m_treep,
                         "Subgraph V3Ast trigger item is not in the template");
         }

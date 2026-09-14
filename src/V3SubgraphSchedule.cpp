@@ -299,8 +299,8 @@ class ScheduleBuilder final {
             }
             AstNodeVarRef* const refp = VN_CAST(itemp->sensp(), NodeVarRef);
             AstVar* const varp = refp ? refp->varp() : nullptr;
-            if (!varp || !m_locals.count(varp) || !varp->isInput()) {
-                reject(itemp, "internal trigger");
+            if (!varp || !m_locals.count(varp)) {
+                reject(itemp, "nonlocal trigger");
                 break;
             }
             const uint32_t next = static_cast<uint32_t>(m_schedule.m_triggers.size() + 1);

@@ -39,7 +39,7 @@ class V3SubgraphAst final {
 public:
     enum class Phase : uint8_t { STATIC, INITIAL, PRE, COMMIT, REFRESH };
     struct Trigger final {
-        AstVar* m_formalp = nullptr;  // Template-local input declaration
+        AstVar* m_formalp = nullptr;  // Template-local variable declaration
         AstSenItem* m_itemp = nullptr;  // Edge type remains in the template V3Ast
     };
     struct Process final {

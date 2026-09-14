@@ -1,10 +1,10 @@
-%Warning-SUBGRAPH: t/t_subgraph_event_classify.v:105:12: Subgraph scheduling does not support 'event edge type BOTH' in boundary module 'sg_event_edge'; using fallback scheduling.
+%Warning-SUBGRAPH: t/t_subgraph_event_classify.v:115:12: Subgraph scheduling does not support 'event edge type BOTH' in boundary module 'sg_event_edge'; using fallback scheduling.
                                                        : ... note: In instance 't.i_edge1'
-  105 |   always @(edge clk) q <= {q[10:0], q[14:11]} ^ drive;
+  115 |   always @(edge clk) q <= {q[10:0], q[14:11]} ^ drive;
       |            ^~~~
                    ... For warning description see https://verilator.org/warn/SUBGRAPH?v=latest
                    ... Use "/* verilator lint_off SUBGRAPH */" and lint_on around source to disable this message.
-%Warning-SUBGRAPH: t/t_subgraph_event_classify.v:119:28: Subgraph scheduling does not support 'event condition' in boundary module 'sg_event_condition'; using fallback scheduling.
+%Warning-SUBGRAPH: t/t_subgraph_event_classify.v:129:28: Subgraph scheduling does not support 'event condition' in boundary module 'sg_event_condition'; using fallback scheduling.
                                                        : ... note: In instance 't.i_condition1'
-  119 |   always @(posedge clk iff enable) q <= {q[8:0], q[14:9]} + drive;
+  129 |   always @(posedge clk iff enable) q <= {q[8:0], q[14:9]} + drive;
       |                            ^~~~~~
