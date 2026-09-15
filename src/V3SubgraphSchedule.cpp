@@ -53,22 +53,6 @@ public:
         : V3GraphVertex{graphp} {}
 };
 
-struct WriteTarget final {
-    AstVar* m_varp = nullptr;
-    std::vector<int32_t> m_unpackedIndices;
-    bool m_precise = false;
-};
-
-size_t unpackedDimensions(const AstVar* varp) {
-    size_t dimensions = 0;
-    const AstNodeDType* dtypep = varp->dtypep()->skipRefp();
-    while (const AstNodeArrayDType* const arrayp = VN_CAST(dtypep, NodeArrayDType)) {
-        ++dimensions;
-        dtypep = arrayp->subDTypep()->skipRefp();
-    }
-    return dimensions;
-}
-
 struct FTaskAccess final {
     bool m_eligible = false;
     bool m_noInline = false;
@@ -205,12 +189,8 @@ class AccessVisitor final : public VNVisitorConst {
     std::set<AstVar*>& m_writes;
     std::set<AstVar*>& m_immediateWrites;
     std::set<AstVar*>& m_delayedWrites;
-    std::vector<WriteTarget>& m_writeTargets;
     std::string& m_rejection;
     bool m_delayedLhs = false;
-    bool m_writeLhs = false;
-    bool m_preciseWrite = false;
-    std::vector<int32_t> m_unpackedIndices;
 
     const FTaskAccess* ftaskAccess(AstNodeFTaskRef* refp) const {
         AstNodeFTask* const taskp = refp->taskp();
@@ -226,40 +206,12 @@ class AccessVisitor final : public VNVisitorConst {
         if (nodep->timingControlp()) reject(nodep, "assignment timing control");
         iterateConst(nodep->rhsp());
         VL_RESTORER(m_delayedLhs);
-        VL_RESTORER(m_preciseWrite);
-        VL_RESTORER_CLEAR(m_unpackedIndices);
-        VL_RESTORER(m_writeLhs);
         m_delayedLhs = true;
-        m_preciseWrite = true;
-        m_writeLhs = true;
         iterateConst(nodep->lhsp());
     }
     void visit(AstNodeAssign* nodep) override {
         if (nodep->timingControlp()) reject(nodep, "assignment timing control");
-        iterateConst(nodep->rhsp());
-        VL_RESTORER(m_preciseWrite);
-        VL_RESTORER_CLEAR(m_unpackedIndices);
-        VL_RESTORER(m_writeLhs);
-        m_preciseWrite = true;
-        m_writeLhs = true;
-        iterateConst(nodep->lhsp());
-    }
-    void visit(AstArraySel* nodep) override {
-        if (!m_writeLhs) {
-            iterateChildrenConst(nodep);
-            return;
-        }
-        VL_RESTORER(m_preciseWrite);
-        VL_RESTORER_COPY(m_unpackedIndices);
-        if (const AstConst* const indexp = VN_CAST(nodep->bitp(), Const)) {
-            m_unpackedIndices.push_back(indexp->toSInt());
-        } else {
-            m_preciseWrite = false;
-        }
-        iterateConst(nodep->fromp());
-        VL_RESTORER(m_writeLhs);
-        m_writeLhs = false;
-        iterateConst(nodep->bitp());
+        iterateChildrenConst(nodep);
     }
     void visit(AstNodeVarRef* nodep) override {
         AstVar* const varp = nodep->varp();
@@ -271,12 +223,6 @@ class AccessVisitor final : public VNVisitorConst {
         if (nodep->access().isWriteOrRW()) {
             m_writes.insert(varp);
             (m_delayedLhs ? m_delayedWrites : m_immediateWrites).insert(varp);
-            WriteTarget target;
-            target.m_varp = varp;
-            target.m_unpackedIndices = m_unpackedIndices;
-            target.m_precise = m_writeLhs && m_preciseWrite && !m_unpackedIndices.empty()
-                               && m_unpackedIndices.size() == unpackedDimensions(varp);
-            m_writeTargets.push_back(std::move(target));
         }
     }
     void visit(AstNodeFTaskRef* nodep) override {
@@ -290,7 +236,6 @@ class AccessVisitor final : public VNVisitorConst {
         m_reads.insert(accessp->m_reads.begin(), accessp->m_reads.end());
         m_writes.insert(accessp->m_writes.begin(), accessp->m_writes.end());
         m_immediateWrites.insert(accessp->m_writes.begin(), accessp->m_writes.end());
-        for (AstVar* const varp : accessp->m_writes) m_writeTargets.push_back(WriteTarget{varp});
     }
     void visit(AstDelay* nodep) override { reject(nodep, "timing control"); }
     void visit(AstEventControl* nodep) override { reject(nodep, "timing control"); }
@@ -303,7 +248,7 @@ public:
                   const std::unordered_map<const AstNodeFTask*, FTaskAccess>& ftasks, bool clocked,
                   std::set<AstVar*>& reads, std::set<AstVar*>& writes,
                   std::set<AstVar*>& immediateWrites, std::set<AstVar*>& delayedWrites,
-                  std::vector<WriteTarget>& writeTargets, std::string& rejection)
+                  std::string& rejection)
         : m_item{item}
         , m_locals{locals}
         , m_ftasks{ftasks}
@@ -312,7 +257,6 @@ public:
         , m_writes{writes}
         , m_immediateWrites{immediateWrites}
         , m_delayedWrites{delayedWrites}
-        , m_writeTargets{writeTargets}
         , m_rejection{rejection} {
         iterateAndNextConstNull(nodep);
     }
@@ -327,7 +271,6 @@ class ScheduleBuilder final {
     std::unordered_map<const AstNodeFTask*, FTaskAccess> m_ftasks;
     std::unordered_set<const AstNodeFTask*> m_ftasksVisiting;
     std::map<std::pair<const AstVar*, VEdgeType::en>, uint32_t> m_triggerIds;
-    std::map<const AstNodeProcedure*, std::vector<WriteTarget>> m_writeTargets;
     std::string m_rejection;
 
     void reject(const AstNode* nodep, const std::string& reason) {
@@ -347,18 +290,15 @@ class ScheduleBuilder final {
         std::set<AstVar*> writes;
         std::set<AstVar*> immediateWrites;
         std::set<AstVar*> delayedWrites;
-        std::vector<WriteTarget> writeTargets;
         const AccessVisitor visitor{
-            procedurep->stmtsp(), m_item,        m_locals,     m_ftasks,   clocked, reads, writes,
-            immediateWrites,      delayedWrites, writeTargets, m_rejection};
+            procedurep->stmtsp(), m_item,        m_locals,   m_ftasks, clocked, reads, writes,
+            immediateWrites,      delayedWrites, m_rejection};
         Ast::Process result;
         result.m_procedurep = procedurep;
         result.m_reads = ordered(reads);
         result.m_writes = ordered(writes);
         result.m_immediateWrites = ordered(immediateWrites);
         result.m_delayedWrites = ordered(delayedWrites);
-        const bool inserted = m_writeTargets.emplace(procedurep, std::move(writeTargets)).second;
-        UASSERT_OBJ(inserted, procedurep, "Subgraph procedure processed twice");
         if (steady) {
             for (AstVar* const varp : result.m_writes) {
                 if (varp->isInput()) reject(varp, "input write");
@@ -424,78 +364,26 @@ class ScheduleBuilder final {
     }
 
     void validateDrivers() {
-        struct ClockedDrivers final {
-            std::set<std::vector<uint32_t>> m_all;
-            std::set<std::vector<uint32_t>> m_whole;
-            std::map<std::vector<int32_t>, std::set<std::vector<uint32_t>>> m_elements;
-        };
-        std::map<const AstVar*, ClockedDrivers> clockedDrivers;
+        // V3SubgraphLower currently allocates one whole-variable NBA pending slot for every
+        // specialization. It is shared by all event domains. If different domains write the same
+        // variable and either uses an NBA, one domain can overwrite the other's pending snapshot.
+        // General multiple-driver legality is checked by the normal Verilator passes.
+        std::map<const AstVar*, std::map<std::vector<uint32_t>, bool>> domains;
         for (const Ast::Process& process : m_schedule.m_pre) {
-            const std::vector<WriteTarget>& targets = m_writeTargets.at(process.m_procedurep);
-            for (const WriteTarget& target : targets) {
-                const ClockedDrivers& prior = clockedDrivers[target.m_varp];
-                const auto conflicts = [&](const std::set<std::vector<uint32_t>>& domains) {
-                    return !domains.empty()
-                           && (domains.size() != 1 || *domains.begin() != process.m_triggers);
-                };
-                if (conflicts(prior.m_whole)) {
-                    reject(target.m_varp, "multiple event drivers");
-                    return;
-                }
-                if (target.m_precise) {
-                    const auto it = prior.m_elements.find(target.m_unpackedIndices);
-                    if (it != prior.m_elements.end() && conflicts(it->second)) {
-                        reject(target.m_varp, "multiple event drivers");
-                        return;
-                    }
-                } else if (conflicts(prior.m_all)) {
-                    reject(target.m_varp, "multiple event drivers");
-                    return;
-                }
-            }
-            for (const WriteTarget& target : targets) {
-                ClockedDrivers& drivers = clockedDrivers[target.m_varp];
-                drivers.m_all.insert(process.m_triggers);
-                if (target.m_precise) {
-                    drivers.m_elements[target.m_unpackedIndices].insert(process.m_triggers);
-                } else {
-                    drivers.m_whole.insert(process.m_triggers);
-                }
+            for (AstVar* const varp : process.m_writes) {
+                bool& delayed = domains[varp][process.m_triggers];
+                delayed = delayed
+                          || std::find(process.m_delayedWrites.begin(),
+                                       process.m_delayedWrites.end(), varp)
+                                 != process.m_delayedWrites.end();
             }
         }
-        struct RefreshDrivers final {
-            bool m_whole = false;
-            std::set<std::vector<int32_t>> m_elements;
-        };
-        std::map<const AstVar*, RefreshDrivers> refreshDrivers;
-        for (const Ast::Process& process : m_schedule.m_refresh) {
-            const std::vector<WriteTarget>& targets = m_writeTargets.at(process.m_procedurep);
-            for (const WriteTarget& target : targets) {
-                const auto clockedIt = clockedDrivers.find(target.m_varp);
-                if (clockedIt != clockedDrivers.end()) {
-                    const ClockedDrivers& prior = clockedIt->second;
-                    if (!prior.m_whole.empty()
-                        || (target.m_precise
-                                ? prior.m_elements.count(target.m_unpackedIndices) != 0
-                                : !prior.m_elements.empty())) {
-                        reject(target.m_varp, "multiple drivers");
-                        return;
-                    }
-                }
-                const RefreshDrivers& prior = refreshDrivers[target.m_varp];
-                if (prior.m_whole
-                    || (target.m_precise ? prior.m_elements.count(target.m_unpackedIndices) != 0
-                                         : !prior.m_elements.empty())) {
-                    reject(target.m_varp, "multiple drivers");
+        for (const auto& variable : domains) {
+            if (variable.second.size() < 2) continue;
+            for (const auto& domain : variable.second) {
+                if (domain.second) {
+                    reject(variable.first, "shared NBA storage across event domains");
                     return;
-                }
-            }
-            for (const WriteTarget& target : targets) {
-                RefreshDrivers& drivers = refreshDrivers[target.m_varp];
-                if (target.m_precise) {
-                    drivers.m_elements.insert(target.m_unpackedIndices);
-                } else {
-                    drivers.m_whole = true;
                 }
             }
         }

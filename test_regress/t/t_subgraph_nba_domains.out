@@ -1,0 +1,16 @@
+%Warning-SUBGRAPH: t/t_subgraph_nba_domains.v:60:11: Subgraph scheduling does not support 'shared NBA storage across event domains' in boundary module 'sg_nba_domains'; using fallback scheduling.
+                                                   : ... note: In instance 't.i_sg1'
+   60 |   state_t state = 15'h1357;
+      |           ^~~~~
+                   ... For warning description see https://verilator.org/warn/SUBGRAPH?v=latest
+                   ... Use "/* verilator lint_off SUBGRAPH */" and lint_on around source to disable this message.
+%Warning-MULTIDRIVEN: t/t_subgraph_nba_domains.v:60:11: Signal has multiple driving blocks with different clocking: 'state'
+                                                      : ... note: In instance 't.i_sg1'
+                      t/t_subgraph_nba_domains.v:62:30: ... Location of first driving block
+   62 |   always_ff @(posedge clk_a) state.high <= drive[14:8];
+      |                              ^~~~~
+                      t/t_subgraph_nba_domains.v:63:30: ... Location of other driving block
+   63 |   always_ff @(posedge clk_b) state.low <= drive[7:0];
+      |                              ^~~~~
+                      ... For warning description see https://verilator.org/warn/MULTIDRIVEN?v=latest
+                      ... Use "/* verilator lint_off MULTIDRIVEN */" and lint_on around source to disable this message.
