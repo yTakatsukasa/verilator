@@ -235,6 +235,7 @@ public:
     static constexpr uint32_t WORD_SIZE = 1 << WORD_SIZE_LOG2;
 
 private:
+    AstNetlist* const m_netlistp;  // Netlist that owns all generated scheduling state
     const std::string m_name;  // TriggerKit name
     const bool m_slow;  // TriggerKit is for schedulign 'slow' code
     const uint32_t m_nSenseWords;  // Number of words for Sense triggers
@@ -288,8 +289,8 @@ private:
     // Create an AstSenTree that is sensitive to the given trigger indices
     AstSenTree* newTriggerSenTree(AstVarScope* vscp, const std::vector<uint32_t>& indices) const;
 
-    TriggerKit(const std::string& name, bool slow, uint32_t nSenseWords, uint32_t nExtraWords,
-               uint32_t nPreWords,
+    TriggerKit(AstNetlist* netlistp, const std::string& name, bool slow, uint32_t nSenseWords,
+               uint32_t nExtraWords, uint32_t nPreWords,
                std::unordered_map<VNRef<const AstSenItem>, size_t> senItem2TrigIdx, bool useAcc);
     VL_UNCOPYABLE(TriggerKit);
 
@@ -445,8 +446,8 @@ void schedule(AstNetlist*) VL_MT_DISABLED;
 // Sub-steps
 LogicByScope breakCycles(AstNetlist* netlistp,
                          const LogicByScope& combinationalLogic) VL_MT_DISABLED;
-LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLogic,
-                       LogicByScope& hybridLogic) VL_MT_DISABLED;
+LogicRegions partition(AstNetlist* netlistp, LogicByScope& clockedLogic,
+                       LogicByScope& combinationalLogic, LogicByScope& hybridLogic) VL_MT_DISABLED;
 LogicReplicas replicateLogic(LogicRegions&) VL_MT_DISABLED;
 
 // Utility functions used by various steps in scheduling

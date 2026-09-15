@@ -40,6 +40,7 @@ class ScopeVisitor final : public VNVisitor {
     // AstTask::user2p          -> AstTask*.  Replacement task
     const VNUser1InUse m_inuser1;
     const VNUser2InUse m_inuser2;
+    AstNetlist* const m_netlistp;
 
     // TYPES
     // These cannot be unordered unless make a specialized hashing pair (gcc-8)
@@ -151,7 +152,7 @@ class ScopeVisitor final : public VNVisitor {
         AstNode::user1ClearTree();
         m_modp = nodep;
         if (m_modp->isTop()) {
-            v3Global.rootp()->createTopScope(m_scopep);
+            m_netlistp->createTopScope(m_scopep);
         } else {
             m_modp->addStmtsp(m_scopep);
         }
@@ -311,7 +312,10 @@ class ScopeVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit ScopeVisitor(AstNetlist* nodep) { iterate(nodep); }
+    explicit ScopeVisitor(AstNetlist* nodep)
+        : m_netlistp{nodep} {
+        iterate(nodep);
+    }
     ~ScopeVisitor() override = default;
 };
 

@@ -53,7 +53,7 @@ AstVarScope* newLocal(AstCFunc* funcp, AstNodeDType* dtypep, const std::string& 
 AstCFunc* TriggerKit::createDumpExtFunc() const {
     UASSERT(m_nPreWords, "Just call the regular dumping function if there are no pre triggers");
 
-    AstNetlist* const netlistp = v3Global.rootp();
+    AstNetlist* const netlistp = m_netlistp;
     FileLine* const flp = netlistp->topScopep()->fileline();
     AstNodeDType* const u32DTypep = netlistp->findUInt32DType();
     AstNodeDType* const strDtypep = netlistp->findStringDType();
@@ -141,7 +141,7 @@ AstCFunc* TriggerKit::createDumpExtFunc() const {
 }
 
 AstCFunc* TriggerKit::createAnySetFunc(AstUnpackArrayDType* const dtypep) const {
-    AstNetlist* const netlistp = v3Global.rootp();
+    AstNetlist* const netlistp = m_netlistp;
     FileLine* const flp = netlistp->topScopep()->fileline();
     AstNodeDType* const u32DTypep = netlistp->findUInt32DType();
 
@@ -180,7 +180,7 @@ AstCFunc* TriggerKit::createAnySetFunc(AstUnpackArrayDType* const dtypep) const 
     return funcp;
 }
 AstCFunc* TriggerKit::createClearFunc() const {
-    AstNetlist* const netlistp = v3Global.rootp();
+    AstNetlist* const netlistp = m_netlistp;
     FileLine* const flp = netlistp->topScopep()->fileline();
     AstNodeDType* const u32DTypep = netlistp->findUInt32DType();
 
@@ -216,7 +216,7 @@ AstCFunc* TriggerKit::createClearFunc() const {
 }
 AstCFunc* TriggerKit::createOrIntoFunc(AstUnpackArrayDType* const oDtypep,
                                        AstUnpackArrayDType* const iDtypep) const {
-    AstNetlist* const netlistp = v3Global.rootp();
+    AstNetlist* const netlistp = m_netlistp;
     FileLine* const flp = netlistp->topScopep()->fileline();
     AstNodeDType* const u32DTypep = netlistp->findUInt32DType();
 
@@ -262,7 +262,7 @@ AstCFunc* TriggerKit::createOrIntoFunc(AstUnpackArrayDType* const oDtypep,
 }
 
 AstNodeExpr* TriggerKit::newAnySetCall(AstVarScope* const vscp) const {
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     if (!m_nVecWords) return new AstConst{flp, AstConst::BitFalse{}};
 
     AstCFunc* funcp = nullptr;
@@ -284,7 +284,7 @@ AstNodeStmt* TriggerKit::newClearCall(AstVarScope* const vscp) const {
     if (!m_nVecWords) return nullptr;
     UASSERT_OBJ(vscp->dtypep() == m_trigVecDTypep, vscp, "Bad trigger vector type");
     if (!m_clearp) m_clearp = createClearFunc();
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     AstCCall* const callp = new AstCCall{flp, m_clearp};
     callp->addArgsp(new AstVarRef{flp, vscp, VAccess::WRITE});
     callp->dtypeSetVoid();
@@ -303,7 +303,7 @@ AstNodeStmt* TriggerKit::newOrIntoCall(AstVarScope* const oVscp, AstVarScope* co
         funcp = createOrIntoFunc(VN_AS(oVscp->dtypep(), UnpackArrayDType),
                                  VN_AS(iVscp->dtypep(), UnpackArrayDType));
     }
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     AstCCall* const callp = new AstCCall{flp, funcp};
     callp->addArgsp(new AstVarRef{flp, oVscp, VAccess::WRITE});
     callp->addArgsp(new AstVarRef{flp, iVscp, VAccess::READ});
@@ -313,7 +313,7 @@ AstNodeStmt* TriggerKit::newOrIntoCall(AstVarScope* const oVscp, AstVarScope* co
 
 AstNodeStmt* TriggerKit::newCompBaseCall() const {
     if (!m_nVecWords) return nullptr;
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     AstCCall* const callp = new AstCCall{flp, m_compVecp};
     callp->dtypeSetVoid();
     return callp->makeStmt();
@@ -321,7 +321,7 @@ AstNodeStmt* TriggerKit::newCompBaseCall() const {
 
 AstNodeStmt* TriggerKit::newCompExtCall(AstVarScope* vscp) const {
     if (!m_nPreWords) return nullptr;
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     AstCCall* const callp = new AstCCall{flp, m_compExtp};
     callp->addArgsp(new AstVarRef{flp, vscp, VAccess::READ});
     callp->dtypeSetVoid();
@@ -340,7 +340,7 @@ AstNodeStmt* TriggerKit::newDumpCall(AstVarScope* const vscp, const std::string&
     } else {
         vscp->v3fatalSrc("Bad trigger vector type");
     }
-    FileLine* const flp = v3Global.rootp()->topScopep()->fileline();
+    FileLine* const flp = m_netlistp->topScopep()->fileline();
     AstCCall* const callp = new AstCCall{flp, funcp};
     callp->addArgsp(new AstVarRef{flp, vscp, VAccess::READ});
     callp->addArgsp(new AstConst{flp, AstConst::String{}, tag});
@@ -360,13 +360,13 @@ AstNodeStmt* TriggerKit::newDumpCall(AstVarScope* const vscp, const std::string&
 
 AstVarScope* TriggerKit::newTrigVec(const std::string& name) const {
     if (!m_nVecWords) return nullptr;
-    AstScope* const scopep = v3Global.rootp()->topScopep()->scopep();
+    AstScope* const scopep = m_netlistp->topScopep()->scopep();
     return scopep->createTemp("__V" + name + "Triggered", m_trigVecDTypep);
 }
 
 AstSenTree* TriggerKit::newTriggerSenTree(AstVarScope* const vscp,
                                           const std::vector<uint32_t>& indices) const {
-    AstNetlist* const netlistp = v3Global.rootp();
+    AstNetlist* const netlistp = m_netlistp;
     AstTopScope* const topScopep = netlistp->topScopep();
     FileLine* const flp = topScopep->fileline();
 
@@ -502,11 +502,12 @@ void TriggerKit::addValueChangeTriggerAssignment(AstNetlist* netlistp, AstCFunc*
     m_compVecp->addStmtsp(setp);
 }
 
-TriggerKit::TriggerKit(const std::string& name, bool slow, uint32_t nSenseWords,
-                       uint32_t nExtraWords, uint32_t nPreWords,
+TriggerKit::TriggerKit(AstNetlist* netlistp, const std::string& name, bool slow,
+                       uint32_t nSenseWords, uint32_t nExtraWords, uint32_t nPreWords,
                        std::unordered_map<VNRef<const AstSenItem>, size_t> senItem2TrigIdx,
                        bool useAcc)
-    : m_name{name}
+    : m_netlistp{netlistp}
+    , m_name{name}
     , m_slow{slow}
     , m_nSenseWords{nSenseWords}
     , m_nExtraWords{nExtraWords}
@@ -515,7 +516,6 @@ TriggerKit::TriggerKit(const std::string& name, bool slow, uint32_t nSenseWords,
     // If no triggers, we don't need to generate anything
     if (!m_nVecWords) return;
     // Othewise construc the parts of the kit
-    AstNetlist* const netlistp = v3Global.rootp();
     AstScope* const scopep = netlistp->topScopep()->scopep();
     FileLine* const flp = scopep->fileline();
     // Data type of a single trigger word
@@ -635,7 +635,8 @@ TriggerKit TriggerKit::create(AstNetlist* netlistp,  //
     const uint32_t nExtraWords = nExtraTriggers / WORD_SIZE;
 
     // We can now construct the trigger kit - this constructs all items that will be kept
-    TriggerKit kit{name, slow, nSenseWords, nExtraWords, nPreWords, senItem2TrigIdx, useAcc};
+    TriggerKit kit{netlistp,        name,  slow, nSenseWords, nExtraWords, nPreWords,
+                   senItem2TrigIdx, useAcc};
 
     // If there are no triggers we are done
     if (!kit.m_nVecWords) return kit;

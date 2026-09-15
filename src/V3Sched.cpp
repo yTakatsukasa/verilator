@@ -805,8 +805,8 @@ VirtIfaceTriggers::VscpSensMap VirtIfaceTriggers::makeVscpToSensMap(const Trigge
 
 std::unordered_map<const AstSenTree*, AstSenTree*>
 cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, AstSenTree*>& map,
-                                 AstVarScope* vscp) {
-    AstTopScope* const topScopep = v3Global.rootp()->topScopep();
+                                 AstNetlist* netlistp, AstVarScope* vscp) {
+    AstTopScope* const topScopep = netlistp->topScopep();
     // Label global SenTrees by the order they are in the Ast
     const VNUser1InUse user1InUse;
     int n = 0;
@@ -906,7 +906,7 @@ void schedule(AstNetlist* netlistp) {
     // All clocks (signals referenced in an AstSenTree) generated via a blocking assignment
     // (including combinationally generated signals) are computed within the act region.
     LogicRegions logicRegions
-        = partition(logicClasses.m_clocked, logicClasses.m_comb, logicClasses.m_hybrid);
+        = partition(netlistp, logicClasses.m_clocked, logicClasses.m_comb, logicClasses.m_hybrid);
     logicRegions.m_obs = logicClasses.m_observed;
     logicRegions.m_react = logicClasses.m_reactive;
     if (v3Global.opt.stats()) {
@@ -1026,7 +1026,8 @@ void schedule(AstNetlist* netlistp) {
         const bool measureNba = name == "nba" && v3Global.opt.stats();
         VlOs::DeltaWallTime nbaTimer{measureNba};
         AstVarScope* const trigVscp = trigKit.newTrigVec(name);
-        const auto trigMap = cloneMapWithNewTriggerReferences(trigKit.mapVec(), trigVscp);
+        const auto trigMap
+            = cloneMapWithNewTriggerReferences(trigKit.mapVec(), netlistp, trigVscp);
         // Remap sensitivities of the input logic to the triggers
         for (LogicByScope* lbs : logic) remapSensitivities(*lbs, trigMap);
 

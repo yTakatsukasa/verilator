@@ -134,7 +134,7 @@ class SchedGraphBuilder final : public VNVisitor {
     // Predicate for whether a read of the given variable triggers this block
     std::function<bool(AstVarScope*)> m_readTriggersThisLogic;
     // The DPI export trigger variable, if any
-    AstVarScope* const m_dpiExportTriggerp = v3Global.rootp()->dpiExportTriggerp();
+    AstVarScope* const m_dpiExportTriggerp;
 
     SchedVarVertex* getVarVertex(AstVarScope* vscp) const {
         if (!vscp->user1p()) {
@@ -264,8 +264,9 @@ class SchedGraphBuilder final : public VNVisitor {
     }
     // LCOV_EXCL_STOP
 
-    SchedGraphBuilder(const LogicByScope& clockedLogic, const LogicByScope& combinationalLogic,
-                      const LogicByScope& hybridLogic) {
+    SchedGraphBuilder(AstNetlist* netlistp, const LogicByScope& clockedLogic,
+                      const LogicByScope& combinationalLogic, const LogicByScope& hybridLogic)
+        : m_dpiExportTriggerp{netlistp->dpiExportTriggerp()} {
         // Build the data flow graph
         const auto iter = [this](const LogicByScope& lbs) {
             for (const auto& pair : lbs) {
@@ -287,10 +288,10 @@ class SchedGraphBuilder final : public VNVisitor {
 
 public:
     // Build the dataflow graph for partitioning
-    static std::unique_ptr<V3Graph> build(const LogicByScope& clockedLogic,
+    static std::unique_ptr<V3Graph> build(AstNetlist* netlistp, const LogicByScope& clockedLogic,
                                           const LogicByScope& combinationalLogic,
                                           const LogicByScope& hybridLogic) {
-        const SchedGraphBuilder visitor{clockedLogic, combinationalLogic, hybridLogic};
+        const SchedGraphBuilder visitor{netlistp, clockedLogic, combinationalLogic, hybridLogic};
         return std::unique_ptr<V3Graph>{visitor.m_graphp};
     }
 };
@@ -340,13 +341,13 @@ void colorActiveRegion(V3Graph& graph) {
 
 }  // namespace
 
-LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLogic,
-                       LogicByScope& hybridLogic) {
+LogicRegions partition(AstNetlist* netlistp, LogicByScope& clockedLogic,
+                       LogicByScope& combinationalLogic, LogicByScope& hybridLogic) {
     UINFO(2, __FUNCTION__ << ":");
 
     // Build the graph
     const std::unique_ptr<V3Graph> graphp
-        = SchedGraphBuilder::build(clockedLogic, combinationalLogic, hybridLogic);
+        = SchedGraphBuilder::build(netlistp, clockedLogic, combinationalLogic, hybridLogic);
     if (dumpGraphLevel() >= 6) graphp->dumpDotFilePrefixed("sched");
 
     // Partition into Active and NBA regions

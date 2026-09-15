@@ -262,6 +262,7 @@ class DelayedVisitor final : public VNVisitor {
     AstUser1Allocator<AstNodeModule, std::unordered_map<std::string, AstVar*>> m_varMap;
     AstUser1Allocator<AstVarScope, VarScopeInfo> m_vscpInfo;
     AstUser3Allocator<AstVarScope, std::vector<WriteReference>> m_writeRefs;
+    AstNetlist* const m_netlistp;
 
     // STATE - across all visitors
     VInsertionSet<AstSenTree*> m_timingDomains;  // Timing resume domains
@@ -849,7 +850,7 @@ class DelayedVisitor final : public VNVisitor {
         // Create the commit queue variable
         auto* const cqDTypep
             = new AstNBACommitQueueDType{flp, vscp->dtypep()->skipRefp(), N_Partial};
-        v3Global.rootp()->typeTablep()->addTypesp(cqDTypep);
+        m_netlistp->typeTablep()->addTypesp(cqDTypep);
         const std::string name = "__VdlyCommitQueue" + vscp->varp()->shortName();
         AstVarScope* const queueVscp = createTemp(flp, scopep, name, cqDTypep);
         queueVscp->varp()->noReset(true);
@@ -1233,7 +1234,7 @@ class DelayedVisitor final : public VNVisitor {
         if (nodep->user1SetOnce()) return;
 
         if (m_cfuncp) {
-            if (!v3Global.rootp()->nbaEventp()) {
+            if (!m_netlistp->nbaEventp()) {
                 nodep->v3warn(
                     E_NOTIMING,
                     "Delayed assignment in a non-inlined function/task requires --timing");
@@ -1347,7 +1348,10 @@ class DelayedVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit DelayedVisitor(AstNetlist* nodep) { iterate(nodep); }
+    explicit DelayedVisitor(AstNetlist* nodep)
+        : m_netlistp{nodep} {
+        iterate(nodep);
+    }
     ~DelayedVisitor() override {
         V3Stats::addStat("NBA, variables using ShadowVar scheme", m_nSchemeShadowVar);
         V3Stats::addStat("NBA, variables using ShadowVarMasked scheme", m_nSchemeShadowVarMasked);
