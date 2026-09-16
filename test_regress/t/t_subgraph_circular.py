@@ -18,6 +18,14 @@ common_flags = [
 ]
 
 test.compile(verilator_flags2=["--stats", "--subgraph-schedule"] + common_flags)
+test.file_grep(
+    test.stats, r"Scheduling, Subgraph V3Ast ordinary schedule contexts\s+(\d+)", 1
+)
+test.file_grep(
+    test.stats,
+    r"Scheduling, Subgraph V3Ast ordinary schedule context instances\s+(\d+)",
+    1,
+)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA coarse nodes\s+(\d+)", 3)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA groups\s+(\d+)", 2)
 test.file_grep(test.stats, r"Scheduling, Subgraph NBA materialized internal uses\s+(\d+)", 8)

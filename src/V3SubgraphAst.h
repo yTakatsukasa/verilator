@@ -92,6 +92,7 @@ public:
         uint32_t m_id = 0;
         AstNodeModule* m_sourcep = nullptr;  // Main-tree specialization; owned by AstNetlist
         AstNodeModule* m_treep = nullptr;  // Detached specialization-local V3Ast; owned here
+        AstNetlist* m_scheduledp = nullptr;  // Detached ordinary-scheduler result; owned here
         uint64_t m_instances = 0;
         // Transitively referenced callees defined outside m_treep. Calls target these detached
         // copies so later main-tree passes cannot invalidate them before materialization.

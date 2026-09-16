@@ -140,7 +140,10 @@ class ActiveTopVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit ActiveTopVisitor(AstNetlist* nodep) { iterate(nodep); }
+    explicit ActiveTopVisitor(AstNetlist* nodep)
+        : m_finder{nodep} {
+        iterate(nodep);
+    }
     ~ActiveTopVisitor() override = default;
 };
 

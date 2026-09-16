@@ -106,6 +106,16 @@ class V3Stats final {
     static V3Mutex s_mutex;  // Protects accesses
 
 public:
+    // Discard statistics recorded within a speculative transformation.
+    class ScopedRollback final {
+        const size_t m_checkpoint;
+
+    public:
+        ScopedRollback();
+        ~ScopedRollback();
+        VL_UNCOPYABLE(ScopedRollback);
+    };
+
     // Symbolic names for some statistics that are later read by summaryReport()
     static constexpr const char* STAT_CPP_CHARS = "Output, C++ bytes written";
     static constexpr const char* STAT_CPP_FILES = "Output, C++ files written";
@@ -156,6 +166,10 @@ public:
     static void infoHeader(std::ofstream& os, const string& prefix);
     /// Called for final build report
     static void summaryReport();
+
+private:
+    static size_t checkpoint();
+    static void rollback(size_t checkpoint);
 };
 
 #endif  // Guard

@@ -161,6 +161,11 @@ class StatsReport final {
 public:
     // METHODS
     static void addStat(const V3Statistic& stat) { s_allStats.push_back(stat); }
+    static size_t checkpoint() { return s_allStats.size(); }
+    static void rollback(size_t checkpoint) {
+        UASSERT(checkpoint <= s_allStats.size(), "Invalid statistics rollback checkpoint");
+        while (s_allStats.size() > checkpoint) s_allStats.pop_back();
+    }
 
     static double getStatSum(const string& name) {
         // O(n^2) if called a lot; present assumption is only a small call count
@@ -199,6 +204,15 @@ void V3Statistic::dump(std::ofstream& os) const {
 // Top Stats class
 
 void V3Stats::addStat(const V3Statistic& stat) { StatsReport::addStat(stat); }
+
+size_t V3Stats::checkpoint() { return StatsReport::checkpoint(); }
+
+void V3Stats::rollback(size_t checkpoint) { StatsReport::rollback(checkpoint); }
+
+V3Stats::ScopedRollback::ScopedRollback()
+    : m_checkpoint{V3Stats::checkpoint()} {}
+
+V3Stats::ScopedRollback::~ScopedRollback() { V3Stats::rollback(m_checkpoint); }
 
 double V3Stats::getStatSum(const string& name) { return StatsReport::getStatSum(name); }
 

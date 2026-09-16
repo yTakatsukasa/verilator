@@ -23,6 +23,12 @@
 
 #include "V3SubgraphAst.h"
 
+#include "V3Active.h"
+#include "V3ActiveTop.h"
+#include "V3Delayed.h"
+#include "V3Inst.h"
+#include "V3Sched.h"
+#include "V3Scope.h"
 #include "V3Stats.h"
 #include "V3SubgraphSchedule.h"
 
@@ -113,6 +119,24 @@ void captureExternalCallees(V3SubgraphAst::Template& item) {
     }
 }
 
+AstNetlist* scheduleDetached(const V3SubgraphAst::Template& item) {
+    // The ordinary passes currently report global-design statistics. Keep those reports from
+    // shadowing the later main-tree run until scheduling accepts an explicit stats context.
+    const V3Stats::ScopedRollback statsRollback;
+    AstNetlist* const netlistp = new AstNetlist;
+    AstNodeModule* const modp = item.m_treep->cloneTree(false);
+    modp->level(1);
+    modp->subgraphBoundary(false);
+    netlistp->addModulesp(modp);
+    V3Inst::instAll(netlistp);
+    V3Scope::scopeAll(netlistp);
+    V3Active::activeAll(netlistp);
+    V3Delayed::delayedAll(netlistp);
+    V3ActiveTop::activeTopAll(netlistp);
+    V3Sched::schedule(netlistp);
+    return netlistp;
+}
+
 std::map<std::string, uint64_t> callCategories(const V3SubgraphAst::Template& item) {
     std::unordered_set<const AstNodeFTask*> localTasks;
     item.m_treep->foreach([&](const AstNodeFTask* taskp) { localTasks.insert(taskp); });
@@ -174,6 +198,9 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
         }
         captureExternalCallees(item);
         item.m_schedule = V3SubgraphSchedule::build(item);
+        if (item.m_schedule.m_rejection == "combinational cycle") {
+            item.m_scheduledp = scheduleDetached(item);
+        }
         ids.emplace(modp, id);
         nodes += nodeCount(treep);
     }
@@ -189,12 +216,18 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     uint64_t entries = 0;
     uint64_t coalescedEntries = 0;
     uint64_t coalescedCalls = 0;
+    uint64_t scheduleContexts = 0;
+    uint64_t scheduleContextInstances = 0;
     std::map<std::string, uint64_t> scheduleRejections;
     std::map<std::string, uint64_t> scheduleRejectedInstances;
     std::map<std::string, uint64_t> callSites;
     std::map<std::string, uint64_t> callTemplates;
     std::map<std::string, uint64_t> callInstances;
     for (const Template& item : m_templates) {
+        if (item.m_scheduledp) {
+            ++scheduleContexts;
+            scheduleContextInstances += item.m_instances;
+        }
         if (v3Global.opt.stats()) {
             for (const auto& pair : callCategories(item)) {
                 callSites[pair.first] += pair.second;
@@ -225,6 +258,9 @@ V3SubgraphAst::V3SubgraphAst(AstNetlist* netlistp) {
     V3Stats::addStat("Scheduling, Subgraph V3Ast phase entries", entries);
     V3Stats::addStat("Scheduling, Subgraph V3Ast phase entries coalesced", coalescedEntries);
     V3Stats::addStat("Scheduling, Subgraph V3Ast instance entry calls avoided", coalescedCalls);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast ordinary schedule contexts", scheduleContexts);
+    V3Stats::addStat("Scheduling, Subgraph V3Ast ordinary schedule context instances",
+                     scheduleContextInstances);
     for (const auto& pair : scheduleRejections) {
         V3Stats::addStat("Scheduling, Subgraph V3Ast schedule rejection, " + pair.first,
                          pair.second);
@@ -271,6 +307,7 @@ V3SubgraphAst::~V3SubgraphAst() {
     }
     for (const Template& item : m_templates) {
         for (AstNodeFTask* const taskp : item.m_externalCallees) taskp->deleteTree();
+        if (item.m_scheduledp) item.m_scheduledp->deleteTree();
         item.m_treep->deleteTree();
     }
 }
@@ -286,6 +323,14 @@ void V3SubgraphAst::check() const {
                 "Subgraph V3Ast template lost its boundary attribute");
         UASSERT(item.m_sourcep->name() == item.m_treep->name(),
                 "Subgraph V3Ast template changed specialization identity");
+        if (item.m_scheduledp) {
+            UASSERT(!item.m_scheduledp->backp(),
+                    "Subgraph ordinary schedule context is attached to another tree");
+            UASSERT(item.m_scheduledp->topScopep(),
+                    "Subgraph ordinary schedule context has no top scope");
+            UASSERT(item.m_scheduledp->evalFuncp(VEval::ACT),
+                    "Subgraph ordinary schedule context has no eval entry point");
+        }
         for (const AstNodeFTask* const taskp : item.m_externalCallees) {
             UASSERT_OBJ(taskp && !taskp->backp(), item.m_treep,
                         "External subgraph callee is not detached");
