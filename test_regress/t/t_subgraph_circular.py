@@ -18,9 +18,7 @@ common_flags = [
 ]
 
 test.compile(verilator_flags2=["--stats", "--subgraph-schedule"] + common_flags)
-test.file_grep(
-    test.stats, r"Scheduling, Subgraph V3Ast ordinary schedule contexts\s+(\d+)", 1
-)
+test.file_grep(test.stats, r"Scheduling, Subgraph V3Ast ordinary schedule contexts\s+(\d+)", 1)
 test.file_grep(
     test.stats,
     r"Scheduling, Subgraph V3Ast ordinary schedule context instances\s+(\d+)",
