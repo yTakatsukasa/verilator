@@ -868,6 +868,7 @@ void schedule(AstNetlist* netlistp) {
 
     // Step 3: Gather and classify all logic in the design
     LogicClasses logicClasses = gatherLogicClasses(netlistp);
+    SubgraphPlan subgraphPlan{logicClasses};
 
     if (v3Global.opt.stats()) {
         V3Stats::statsStage("sched-gather");
@@ -888,6 +889,7 @@ void schedule(AstNetlist* netlistp) {
 
     // Step 5: Break combinational cycles by introducing hybrid logic
     // Note: breakCycles also removes corresponding logic from logicClasses.m_comb;
+    subgraphPlan.breakCycles(netlistp);
     logicClasses.m_hybrid = breakCycles(netlistp, logicClasses.m_comb);
     if (v3Global.opt.stats()) {
         addSizeStat("size of class: clocked", logicClasses.m_clocked);
@@ -909,6 +911,7 @@ void schedule(AstNetlist* netlistp) {
     // Step 7: Partition the clocked and combinational (including hybrid) logic into pre/act/nba.
     // All clocks (signals referenced in an AstSenTree) generated via a blocking assignment
     // (including combinationally generated signals) are computed within the act region.
+    subgraphPlan.partitionAndReplicate();
     LogicRegions logicRegions
         = partition(logicClasses.m_clocked, logicClasses.m_comb, logicClasses.m_hybrid);
     logicRegions.m_obs = logicClasses.m_observed;
@@ -923,7 +926,7 @@ void schedule(AstNetlist* netlistp) {
     }
 
     // Step 8: Replicate combinational logic
-    LogicReplicas logicReplicas = replicateLogic(logicRegions);
+    LogicReplicas logicReplicas = replicateLogic(logicRegions, &subgraphPlan);
     if (v3Global.opt.stats()) {
         addSizeStat("size of replicated logic: Input", logicReplicas.m_ico);
         addSizeStat("size of replicated logic: Active", logicReplicas.m_act);
@@ -1054,6 +1057,7 @@ void schedule(AstNetlist* netlistp) {
               };
 
         if (name == "nba") {
+            subgraphPlan.materializeNba(trigMap, logic);
             lowerSubgraphNbaLogic(netlistp, logic, trigToSen, cgRefBindings, false,
                                   externalDomains);
         }

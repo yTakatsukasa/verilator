@@ -27,17 +27,42 @@ test.compile(
     ])
 test.execute()
 
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 4)
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 8)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 5)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 10)
+test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 5)
+test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 4)
+test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
+test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 8)
+
+sched_graphs = test.glob_some(test.obj_dir + "/*_sched.dot")
+if len(sched_graphs) != 5:
+    test.error("Expected four child scheduler graphs and one parent graph, got "
+               + str(len(sched_graphs)))
+
+parent_sched = []
+for filename in sched_graphs:
+    with open(filename, 'r', encoding='utf8') as fh:
+        contents = fh.read()
+    if "__Vdly__parent_q" in contents:
+        parent_sched.append(contents)
+if len(parent_sched) != 1:
+    test.error("Expected one parent scheduler graph, got " + str(len(parent_sched)))
+else:
+    parent_sched = parent_sched[0]
+    for instance in ('i_serial0', 'i_serial1', 'i_ring_a', 'i_ring_b'):
+        if instance + "->__Vdly__state" in parent_sched:
+            test.error("Eligible child procedure leaked into parent scheduler: " + instance)
+    if "i_fallback->__Vdly__state" not in parent_sched:
+        test.error("Ineligible child procedure did not remain on the fallback path")
 
 child_graphs = test.glob_some(test.obj_dir + "/*nba_subgraph_pre_*_orderg_pre.dot")
 parent_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_pre.dot")
-if len(child_graphs) != 4:
-    test.error("Expected four child Order graphs, got " + str(len(child_graphs)))
+if len(child_graphs) != 5:
+    test.error("Expected five child Order graphs, got " + str(len(child_graphs)))
 if len(parent_graphs) != 1:
     test.error("Expected one parent NBA Order graph, got " + str(len(parent_graphs)))
 test.file_grep_any(child_graphs, r'__Vdly__state')
-test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 4)
+test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 5)
 
 with open(parent_graphs[0], 'r', encoding='utf8') as fh:
     graph = fh.read()

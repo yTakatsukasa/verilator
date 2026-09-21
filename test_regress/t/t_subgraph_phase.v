@@ -12,6 +12,7 @@ module t (
   output logic [6:0] serial1,
   output logic [6:0] ring_a,
   output logic [6:0] ring_b,
+  output logic [6:0] fallback,
   output logic [6:0] parent_q = 7'd9,
   output logic [6:0] combo
 );
@@ -56,6 +57,31 @@ module t (
     .d(ring_b_in),
     .q(ring_b)
   );
+  sg_phase_async_ff i_fallback (
+    .clk(clk),
+    .reset(reset),
+    .d(data),
+    .q(fallback)
+  );
+
+endmodule
+
+module sg_phase_async_ff (
+  input  logic       clk,
+  input  logic       reset,
+  input  logic [6:0] d,
+  output logic [6:0] q
+);
+  /*verilator subgraph_boundary*/
+
+  logic [6:0] state = 7'd6;
+
+  always_ff @(posedge clk or posedge reset) begin
+    if (reset) state <= 7'd15;
+    else state <= d;
+  end
+
+  assign q = state;
 
 endmodule
 

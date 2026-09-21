@@ -23,6 +23,7 @@ struct Expected final {
     uint8_t serial1 = 2;
     uint8_t ringA = 4;
     uint8_t ringB = 5;
+    uint8_t fallback = 6;
     uint8_t parent = 9;
 };
 
@@ -39,6 +40,7 @@ void checkOutputs(VM_PREFIX* const top, const Expected& expected, uint8_t data) 
     checkValue("serial1", top->serial1, expected.serial1);
     checkValue("ring_a", top->ring_a, expected.ringA);
     checkValue("ring_b", top->ring_b, expected.ringB);
+    checkValue("fallback", top->fallback, expected.fallback);
     checkValue("parent_q", top->parent_q, expected.parent);
     checkValue("combo", top->combo, trunc7(expected.serial1 + expected.ringB) ^ data);
 }
@@ -59,12 +61,13 @@ void evalPosedge(VM_PREFIX* const top, Expected& expected, uint8_t data, bool re
     top->eval();
 
     if (reset) {
-        expected = Expected{10, 11, 12, 13, 14};
+        expected = Expected{10, 11, 12, 13, 15, 14};
     } else {
         expected.serial0 = trunc7(data + 3);
         expected.serial1 = previous.serial0 ^ 0x2a;
         expected.ringA = trunc7(previous.ringB + previous.parent);
         expected.ringB = previous.ringA ^ data;
+        expected.fallback = data;
         expected.parent = trunc7(previous.ringA + data);
     }
     checkOutputs(top, expected, data);

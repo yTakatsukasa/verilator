@@ -35,6 +35,8 @@ class SenExprBuilder;
 
 namespace V3Sched {
 
+class SubgraphPlan;
+
 namespace util {
 using VarScopeSet = std::unordered_set<const AstVarScope*>;
 
@@ -497,7 +499,8 @@ LogicByScope breakCycles(AstNetlist* netlistp,
                          const LogicByScope& combinationalLogic) VL_MT_DISABLED;
 LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLogic,
                        LogicByScope& hybridLogic) VL_MT_DISABLED;
-LogicReplicas replicateLogic(LogicRegions&) VL_MT_DISABLED;
+LogicReplicas replicateLogic(LogicRegions&,
+                             const SubgraphPlan* subgraphPlanp = nullptr) VL_MT_DISABLED;
 
 // Utility functions used by various steps in scheduling
 namespace util {
