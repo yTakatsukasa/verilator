@@ -1831,6 +1831,7 @@ public:
         COVERAGE_BLOCK_OFF,
         HIER_BLOCK,
         HIER_PARAMS,
+        SUBGRAPH_BOUNDARY,
         INLINE_MODULE,
         NO_INLINE_MODULE,
         NO_INLINE_TASK,
@@ -1850,6 +1851,7 @@ public:
             "COVERAGE_BLOCK_OFF",  //
             "HIER_BLOCK",  //
             "HIER_PARAMS",  //
+            "SUBGRAPH_BOUNDARY",  //
             "INLINE_MODULE",  //
             "NO_INLINE_MODULE",  //
             "NO_INLINE_TASK",  //
