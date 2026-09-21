@@ -26,6 +26,8 @@
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
 
+#include <unordered_set>
+
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 //######################################################################
@@ -94,6 +96,7 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderGraph* const m_graphp = new OrderGraph;  // The ordering graph built by this visitor
     OrderLogicVertex* m_logicVxp = nullptr;  // Current logic block being analyzed
     std::vector<AstVarScope*> m_accessedVscps;  // Variables accessed by the current logic block
+    std::unordered_set<const AstVarScope*> m_parentAccessedVscps;
 
     // Map from Trigger reference AstSenItem to the original AstSenTree
     const V3Order::TrigToSenMap& m_trigToSen;
@@ -108,6 +111,7 @@ class OrderGraphBuilder final : public VNVisitor {
     bool m_inClocked = false;  // Underneath clocked AstActive
     bool m_inPre = false;  // Underneath AlwaysPre
     bool m_inPost = false;  // Underneath AstAlwaysPost
+    bool m_softSubgraphRead = false;  // Cuttable non-feedthrough read in a subgraph POST helper
     std::function<bool(const AstVarScope*)> m_readTriggersCombLogic;
     V3Sched::util::VarScopeSet m_forceReadEdgeIgnores;
     const bool m_parallel;  // Ordering for multi-threaded execution (record variable accesses)
@@ -149,6 +153,68 @@ class OrderGraphBuilder final : public VNVisitor {
 
     OrderVarVertex* getVarVertex(AstVarScope* varscp, VarVertexType type) {
         return m_orderUser(varscp).getVarVertex(m_graphp, varscp, type);
+    }
+
+    static bool isSubgraphWrapperCall(const AstCCall* nodep) {
+        const AstCFunc* const funcp = nodep->funcp();
+        const AstScope* const scopep = funcp->scopep();
+        return scopep && scopep->modp()->subgraphBoundary()
+               && 0 == funcp->name().rfind("_eval_body__nba_subgraph_", 0);
+    }
+
+    static bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
+        for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+            if (scanp == basep) return true;
+        }
+        return false;
+    }
+
+    static bool containsSubgraphWrapperCall(AstActive* nodep) {
+        bool found = false;
+        nodep->foreach([&](AstCCall* callp) {
+            if (isSubgraphWrapperCall(callp)) found = true;
+        });
+        return found;
+    }
+
+    bool shouldGroupSubgraphWrapperActive(AstActive* nodep) const {
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (VN_IS(stmtp, NodeProcedure)) return false;
+        }
+        return containsSubgraphWrapperCall(nodep);
+    }
+
+    void addSubgraphWrapperUsage(AstCCall* nodep) {
+        AstScope* const boundaryScopep = nodep->funcp()->scopep();
+        std::unordered_set<const AstCFunc*> visited;
+        std::function<void(AstCFunc*)> scanFunc = [&](AstCFunc* funcp) {
+            if (!visited.insert(funcp).second) return;
+            funcp->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                const bool internal = isUnderScope(vscp->scopep(), boundaryScopep);
+                const bool delayedState = internal && 0 == vscp->varp()->name().rfind("__Vdly", 0);
+                if (internal) {
+                    const bool boundaryPort
+                        = vscp->scopep() == boundaryScopep && vscp->varp()->isIO();
+                    const bool externallyAccessed = m_parentAccessedVscps.count(vscp);
+                    if (!boundaryPort && !delayedState && !externallyAccessed) return;
+                    // The helper locally orders reads after its own state commits. Publishing
+                    // those reads would create an artificial parent-level read-after-write
+                    // cycle; only the commit needs to precede external consumers.
+                    if (externallyAccessed && !boundaryPort && !delayedState
+                        && !refp->access().isWriteOrRW()) {
+                        return;
+                    }
+                }
+                VL_RESTORER(m_softSubgraphRead);
+                m_softSubgraphRead = m_inPost && refp->access().isReadOrRW() && !delayedState;
+                visit(refp);
+            });
+            funcp->foreach([&](AstCCall* callp) {
+                if (!callp->funcp()->entryPoint()) scanFunc(callp->funcp());
+            });
+        };
+        scanFunc(nodep->funcp());
     }
 
     // VISITORS
@@ -193,8 +259,12 @@ class OrderGraphBuilder final : public VNVisitor {
             m_readTriggersCombLogic = [](const AstVarScope*) { return true; };
         }
 
-        // Analyze logic underneath
-        iterateChildren(nodep);
+        // Treat a subgraph wrapper and its boundary contract as one parent graph vertex.
+        if (shouldGroupSubgraphWrapperActive(nodep)) {
+            iterateLogic(nodep);
+        } else {
+            iterateChildren(nodep);
+        }
     }
     void visit(AstNodeVarRef* nodep) override {
         // As we explicitly not visit (see ignored nodes below) any subtree that is not relevant
@@ -275,7 +345,10 @@ class OrderGraphBuilder final : public VNVisitor {
             // Update VarUsage
             varscp->user2Or(VU_GEN);
             // Add edges for produced variables
-            if (m_inPost) {
+            if (m_softSubgraphRead) {
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addSoftEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
+            } else if (m_inPost) {
                 if (!varscp->varp()->ignorePostWrite()) {
                     // Add edge from producing LogicVertex -> produced VarStdVertex
                     OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
@@ -348,6 +421,10 @@ class OrderGraphBuilder final : public VNVisitor {
                 m_graphp->addHardEdge(m_logicVxp, postVxp, WEIGHT_POST);
             }
         }
+    }
+    void visit(AstCCall* nodep) override {
+        if (isSubgraphWrapperCall(nodep)) addSubgraphWrapperUsage(nodep);
+        iterateChildren(nodep);
     }
     // A covergroup sample() is not inlined and may read design signals through cross-scope
     // references held by the covergroup. This attributes those references to the calling block.
@@ -434,6 +511,24 @@ class OrderGraphBuilder final : public VNVisitor {
         : m_trigToSen{trigToSen}
         , m_parallel{parallel}
         , m_cgRefBindings{cgRefBindings} {
+        // Keep internal state hidden unless logic outside a subgraph helper also accesses it.
+        const bool hasSubgraphWrapper
+            = std::any_of(coll.begin(), coll.end(), [](const V3Sched::LogicByScope* lbsp) {
+                  return std::any_of(lbsp->begin(), lbsp->end(), [](const auto& pair) {
+                      return containsSubgraphWrapperCall(pair.second);
+                  });
+              });
+        if (hasSubgraphWrapper) {
+            for (const V3Sched::LogicByScope* const lbsp : coll) {
+                for (const auto& pair : *lbsp) {
+                    AstActive* const activep = pair.second;
+                    if (containsSubgraphWrapperCall(activep)) continue;
+                    activep->foreach([&](AstNodeVarRef* refp) {
+                        m_parentAccessedVscps.insert(refp->varScopep());
+                    });
+                }
+            }
+        }
         // Build the graph
         for (const V3Sched::LogicByScope* const lbsp : coll) {
             for (const auto& pair : *lbsp) {
