@@ -498,7 +498,8 @@ void schedule(AstNetlist*) VL_MT_DISABLED;
 LogicByScope breakCycles(AstNetlist* netlistp,
                          const LogicByScope& combinationalLogic) VL_MT_DISABLED;
 LogicRegions partition(LogicByScope& clockedLogic, LogicByScope& combinationalLogic,
-                       LogicByScope& hybridLogic) VL_MT_DISABLED;
+                       LogicByScope& hybridLogic,
+                       const SubgraphPlan* subgraphPlanp = nullptr) VL_MT_DISABLED;
 LogicReplicas replicateLogic(LogicRegions&,
                              const SubgraphPlan* subgraphPlanp = nullptr) VL_MT_DISABLED;
 

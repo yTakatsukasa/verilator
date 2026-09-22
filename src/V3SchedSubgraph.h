@@ -41,15 +41,18 @@ public:
         bool m_write = false;
     };
 
-    explicit SubgraphPlan(LogicClasses& logicClasses);
+    explicit SubgraphPlan(AstNetlist* netlistp);
     ~SubgraphPlan();
     VL_UNCOPYABLE(SubgraphPlan);
 
+    bool extract(AstScope* scopep, AstActive* activep);
     void breakCycles(AstNetlist* netlistp);
     void partitionAndReplicate();
     void materializeNba(const std::unordered_map<const AstSenTree*, AstSenTree*>& senTreeMap,
                         const std::vector<LogicByScope*>& parentLogic);
     void foreachUse(const std::function<void(const Use&)>& callback) const;
+    void foreachBoundary(const std::function<void(AstScope*, AstSenTree*,
+                                                  const std::vector<Use>&)>& callback) const;
 };
 
 void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,

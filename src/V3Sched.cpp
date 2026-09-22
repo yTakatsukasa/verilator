@@ -217,11 +217,12 @@ void createEvalRegion(
 //============================================================================
 // Collect and classify all logic in the design
 
-LogicClasses gatherLogicClasses(AstNetlist* netlistp) {
+LogicClasses gatherLogicClasses(AstNetlist* netlistp, SubgraphPlan& subgraphPlan) {
     LogicClasses result;
 
     netlistp->foreach([&](AstScope* scopep) {
         scopep->foreach([&](AstActive* activep) {
+            if (subgraphPlan.extract(scopep, activep)) return;
             AstSenTree* const senTreep = activep->sentreep();
             if (senTreep->hasStatic()) {
                 UASSERT_OBJ(!senTreep->sensesp()->nextp(), activep,
@@ -867,8 +868,8 @@ void schedule(AstNetlist* netlistp) {
     TimingKit timingKit = prepareTiming(netlistp);
 
     // Step 3: Gather and classify all logic in the design
-    LogicClasses logicClasses = gatherLogicClasses(netlistp);
-    SubgraphPlan subgraphPlan{logicClasses};
+    SubgraphPlan subgraphPlan{netlistp};
+    LogicClasses logicClasses = gatherLogicClasses(netlistp, subgraphPlan);
 
     if (v3Global.opt.stats()) {
         V3Stats::statsStage("sched-gather");
@@ -912,8 +913,8 @@ void schedule(AstNetlist* netlistp) {
     // All clocks (signals referenced in an AstSenTree) generated via a blocking assignment
     // (including combinationally generated signals) are computed within the act region.
     subgraphPlan.partitionAndReplicate();
-    LogicRegions logicRegions
-        = partition(logicClasses.m_clocked, logicClasses.m_comb, logicClasses.m_hybrid);
+    LogicRegions logicRegions = partition(logicClasses.m_clocked, logicClasses.m_comb,
+                                          logicClasses.m_hybrid, &subgraphPlan);
     logicRegions.m_obs = logicClasses.m_observed;
     logicRegions.m_react = logicClasses.m_reactive;
     if (v3Global.opt.stats()) {

@@ -553,6 +553,7 @@ void AstCFunc::dump(std::ostream& str) const {
     if (needProcess()) str << " [NPRC]";
     if (entryPoint()) str << " [ENTRY]";
     if (noLife()) str << " [NOLIFE]";
+    if (subgraphWrapper()) str << " [SUBGRAPH_WRAPPER]";
     if (isConst().isKnown()) str << (isConst().trueKnown() ? " [CONST]" : " [!CONST]");
     if (m_cost) str << " cost=" << m_cost;
     if (!m_rtnType.empty()) str << " rt=" << m_rtnType;
@@ -576,6 +577,7 @@ void AstCFunc::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, isCoroutine);
     dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonBoolFuncIf(str, noLife);
+    dumpJsonBoolFuncIf(str, subgraphWrapper);
     dumpJsonStr(str, "isConst", isConst().ascii());
     dumpJsonNum(str, "cost", m_cost);
     dumpJsonStr(str, "ifdef", ifdef());

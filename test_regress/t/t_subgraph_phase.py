@@ -49,9 +49,29 @@ if len(parent_sched) != 1:
     test.error("Expected one parent scheduler graph, got " + str(len(parent_sched)))
 else:
     parent_sched = parent_sched[0]
+    partition_nodes = dict(re.findall(r'^\s*n(\d+)\s+\[fontsize=8 label="([^"]*)"',
+                                   parent_sched, re.MULTILINE))
+    partition_edges = set(re.findall(r'\bn(\d+) -> n(\d+)', parent_sched))
+    clocks = [node for node, label in partition_nodes.items() if label == 'posedge clk']
+    if len(clocks) != 1:
+        test.error("Expected one parent clock event")
     for instance in ('i_serial0', 'i_serial1', 'i_ring_a', 'i_ring_b'):
-        if instance + "->__Vdly__state" in parent_sched:
-            test.error("Eligible child procedure leaked into parent scheduler: " + instance)
+        boundary = [node for node, label in partition_nodes.items()
+                    if label.startswith(r'SUBGRAPH\n') and label.endswith(instance)]
+        if len(boundary) != 1:
+            test.error("Expected one parent partition boundary for " + instance)
+            continue
+        for variable in ('__Vdly__state', '__PVT__state'):
+            value = [node for node, label in partition_nodes.items()
+                     if label.endswith(instance + '->' + variable)]
+            if len(value) != 1 or (boundary[0], value[0]) not in partition_edges:
+                test.error("Missing parent boundary write for " + instance + " " + variable)
+            if variable == '__Vdly__state' and len(value) == 1:
+                writers = [source for source, target in partition_edges if target == value[0]]
+                if writers != boundary:
+                    test.error("Eligible child procedure leaked into parent scheduler: " + instance)
+        if len(clocks) == 1 and (clocks[0], boundary[0]) not in partition_edges:
+            test.error("Missing parent boundary clock for " + instance)
     if "i_fallback->__Vdly__state" not in parent_sched:
         test.error("Ineligible child procedure did not remain on the fallback path")
 

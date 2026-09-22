@@ -157,9 +157,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     static bool isSubgraphWrapperCall(const AstCCall* nodep) {
         const AstCFunc* const funcp = nodep->funcp();
-        const AstScope* const scopep = funcp->scopep();
-        return scopep && scopep->modp()->subgraphBoundary()
-               && 0 == funcp->name().rfind("_eval_body__nba_subgraph_", 0);
+        return funcp->subgraphWrapper();
     }
 
     static bool isUnderScope(const AstScope* scopep, const AstScope* basep) {

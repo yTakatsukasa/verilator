@@ -134,6 +134,7 @@ void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep
 struct SubgraphPlan::Impl final {
     struct Group final {
         AstScope* m_scopep = nullptr;
+        AstSenTree* m_senTreep = nullptr;
         LogicByScope m_clocked;
         LogicByScope m_comb;
         LogicByScope m_hybrid;
@@ -143,43 +144,45 @@ struct SubgraphPlan::Impl final {
     };
 
     std::vector<Group> m_groups;
+    std::map<AstScope*, size_t> m_accepted;
 };
 
-SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
+SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     : m_impl{new Impl} {
     if (!v3Global.opt.subgraphSchedule()) return;
 
     std::vector<EarlyCandidate> candidates;
     std::map<AstScope*, size_t> candidateIndex;
-    const auto addCandidates = [&](const LogicByScope& lbs, bool clocked) {
-        for (const auto& pair : lbs) {
-            AstScope* const boundaryScopep = findBoundaryScope(pair.first);
-            if (!boundaryScopep) continue;
+    LogicByScope allClocked;
+    LogicByScope allComb;
+    netlistp->foreach([&](AstScope* scopep) {
+        scopep->foreach([&](AstActive* activep) {
+            AstSenTree* const senTreep = activep->sentreep();
+            const bool clocked = senTreep->hasClocked();
+            const bool comb = senTreep->hasCombo();
+            if (clocked) allClocked.emplace_back(scopep, activep);
+            if (comb) allComb.emplace_back(scopep, activep);
+            AstScope* const boundaryScopep = findBoundaryScope(scopep);
+            if (!boundaryScopep || (!clocked && !comb)) return;
             const auto inserted = candidateIndex.emplace(boundaryScopep, candidates.size());
             if (inserted.second) {
                 candidates.emplace_back();
                 candidates.back().m_scopep = boundaryScopep;
             }
             EarlyCandidate& candidate = candidates[inserted.first->second];
-            (clocked ? candidate.m_clocked : candidate.m_comb).push_back(pair);
-        }
-    };
-    addCandidates(logicClasses.m_clocked, true);
-    addCandidates(logicClasses.m_comb, false);
-
-    const auto rejectUnsupportedClass = [&](const LogicByScope& lbs) {
-        for (const auto& pair : lbs) {
-            AstScope* const boundaryScopep = findBoundaryScope(pair.first);
-            const auto it = candidateIndex.find(boundaryScopep);
-            if (it != candidateIndex.end()) reject(candidates[it->second], "unsupported region");
-        }
-    };
-    rejectUnsupportedClass(logicClasses.m_postponed);
-    rejectUnsupportedClass(logicClasses.m_observed);
-    rejectUnsupportedClass(logicClasses.m_reactive);
-    rejectUnsupportedClass(logicClasses.m_hybrid);
+            if (clocked && !VN_IS(activep->stmtsp(), AlwaysObserved)
+                && !VN_IS(activep->stmtsp(), AlwaysReactive)) {
+                candidate.m_clocked.emplace_back(scopep, activep);
+            } else if (comb && !VN_IS(activep->stmtsp(), AlwaysPostponed)) {
+                candidate.m_comb.emplace_back(scopep, activep);
+            } else {
+                reject(candidate, "unsupported region");
+            }
+        });
+    });
 
     for (EarlyCandidate& candidate : candidates) {
+        if (v3Global.usesZeroDelay()) reject(candidate, "zero-delay design");
         if (candidate.m_clocked.empty()) {
             reject(candidate, "no clocked logic");
             continue;
@@ -217,10 +220,9 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
         }
     }
 
-    // A boundary value used as a parent clock would require the boundary write contract during
-    // partitioning. Keep that case on the established late path in this experiment. Follow
-    // combinational assignments so an output alias or a short combinational chain cannot hide
-    // the dependency.
+    // A boundary value used as a parent clock can move the boundary into the Active region,
+    // which this NBA-only experiment cannot schedule. Follow combinational assignments so an
+    // output alias or a short combinational chain cannot hide that dependency.
     for (EarlyCandidate& candidate : candidates) {
         std::unordered_set<AstVarScope*> tainted;
         const auto seedInternal = [&](const auto& pairs) {
@@ -238,7 +240,7 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
         bool changed = true;
         while (changed) {
             changed = false;
-            for (const auto& pair : logicClasses.m_comb) {
+            for (const auto& pair : allComb) {
                 bool readsTainted = false;
                 pair.second->foreach([&](AstNodeVarRef* refp) {
                     if (refp->access().isReadOrRW() && tainted.count(refp->varScopep())) {
@@ -254,7 +256,7 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
             }
         }
 
-        for (const auto& pair : logicClasses.m_clocked) {
+        for (const auto& pair : allClocked) {
             if (findBoundaryScope(pair.first) == candidate.m_scopep) continue;
             pair.second->sentreep()->foreach([&](AstNodeVarRef* refp) {
                 if (tainted.count(refp->varScopep())) {
@@ -264,8 +266,9 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
         }
     }
 
-    std::map<AstScope*, size_t> accepted;
     uint64_t rejected = 0;
+    uint64_t clocked = 0;
+    uint64_t combinational = 0;
     for (EarlyCandidate& candidate : candidates) {
         if (!candidate.m_rejection.empty()) {
             ++rejected;
@@ -277,32 +280,9 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
         m_impl->m_groups.emplace_back();
         Impl::Group& group = m_impl->m_groups[groupIndex];
         group.m_scopep = candidate.m_scopep;
-        accepted.emplace(candidate.m_scopep, groupIndex);
-    }
-
-    const auto extract = [&](LogicByScope& source, bool clocked) {
-        LogicByScope parent;
-        parent.reserve(source.size());
-        for (const auto& pair : source) {
-            const auto it = accepted.find(findBoundaryScope(pair.first));
-            if (it == accepted.end()) {
-                parent.emplace_back(pair);
-                continue;
-            }
-            Impl::Group& group = m_impl->m_groups[it->second];
-            LogicByScope& target = clocked ? group.m_clocked : group.m_comb;
-            target.emplace_back(pair);
-        }
-        source = std::move(parent);
-    };
-    extract(logicClasses.m_clocked, true);
-    extract(logicClasses.m_comb, false);
-
-    uint64_t clocked = 0;
-    uint64_t combinational = 0;
-    for (const Impl::Group& group : m_impl->m_groups) {
-        clocked += group.m_clocked.size();
-        combinational += group.m_comb.size();
+        m_impl->m_accepted.emplace(candidate.m_scopep, groupIndex);
+        clocked += candidate.m_clocked.size();
+        combinational += candidate.m_comb.size();
     }
     V3Stats::addStat("Scheduling, Subgraph early candidates", candidates.size());
     V3Stats::addStat("Scheduling, Subgraph early groups", m_impl->m_groups.size());
@@ -313,8 +293,28 @@ SubgraphPlan::SubgraphPlan(LogicClasses& logicClasses)
 
 SubgraphPlan::~SubgraphPlan() = default;
 
+bool SubgraphPlan::extract(AstScope* scopep, AstActive* activep) {
+    const auto it = m_impl->m_accepted.find(findBoundaryScope(scopep));
+    if (it == m_impl->m_accepted.end()) return false;
+    Impl::Group& group = m_impl->m_groups[it->second];
+    AstSenTree* const senTreep = activep->sentreep();
+    if (senTreep->hasClocked()) {
+        if (!group.m_senTreep) group.m_senTreep = senTreep;
+        group.m_clocked.emplace_back(scopep, activep);
+    } else if (senTreep->hasCombo()) {
+        group.m_comb.emplace_back(scopep, activep);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 void SubgraphPlan::breakCycles(AstNetlist* netlistp) {
     for (Impl::Group& group : m_impl->m_groups) {
+        // The parent cycle graph has no boundary edges for this NBA-only experiment.
+        // Keep that invariant explicit before analyzing the parent combinational logic.
+        UASSERT_OBJ(group.m_comb.empty(), group.m_scopep,
+                    "Subgraph combinational effects need parent cycle edges");
         group.m_hybrid = V3Sched::breakCycles(netlistp, group.m_comb);
     }
 }
@@ -343,6 +343,14 @@ void SubgraphPlan::partitionAndReplicate() {
         };
         collect(group.m_regions.m_nba);
         collect(group.m_replicas.m_nba);
+    }
+}
+
+void SubgraphPlan::foreachBoundary(
+    const std::function<void(AstScope*, AstSenTree*, const std::vector<Use>&)>& callback) const {
+    for (const Impl::Group& group : m_impl->m_groups) {
+        UASSERT_OBJ(group.m_senTreep, group.m_scopep, "Missing subgraph clocked sensitivity");
+        callback(group.m_scopep, group.m_senTreep, group.m_uses);
     }
 }
 
@@ -413,6 +421,7 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
                 = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag, false,
                                  slow, externalDomains, group.m_boundaryScopep);
             if (!funcp) return;
+            funcp->subgraphWrapper(true);
             util::splitCheck(funcp);
 
             AstActive* const wrapperp
