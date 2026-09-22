@@ -3920,6 +3920,7 @@ void AstVar::dump(std::ostream& str) const {
     if (noCReset()) str << " [!CRST]";
     if (noReset()) str << " [!RST]";
     if (processQueue()) str << " [PROCQ]";
+    if (subgraphPublished()) str << " [SUBGRAPH-PUBLISHED]";
     if (sampled()) str << " [SAMPLED]";
     if (attrFsmState()) str << " [aFSMSTATE]";
     if (attrFsmResetArc()) str << " [aFSMRESETARC]";
@@ -3958,6 +3959,7 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, noCReset);
     dumpJsonBoolFuncIf(str, noReset);
     dumpJsonBoolFuncIf(str, processQueue);
+    dumpJsonBoolFuncIf(str, subgraphPublished);
     dumpJsonBoolFuncIf(str, sampled);
     dumpJsonBoolFuncIf(str, attrFsmState);
     dumpJsonBoolFuncIf(str, attrFsmResetArc);

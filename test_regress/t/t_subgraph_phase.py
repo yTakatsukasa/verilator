@@ -34,6 +34,12 @@ test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
 test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 10)
 test.file_grep(test.stats, r'Scheduling, Subgraph captured inputs\s+(\d+)', 15)
+test.file_grep(test.stats, r'Scheduling, Subgraph published outputs\s+(\d+)', 5)
+published_headers = test.glob_some(test.obj_dir + "/*sg_phase_direct_ff.h")
+if len(published_headers) != 1:
+    test.error("Expected one direct FF implementation header")
+else:
+    test.file_grep(published_headers[0], r'__VsubgraphPublished__0')
 
 sched_graphs = test.glob_some(test.obj_dir + "/*_sched.dot")
 if len(sched_graphs) != 6:
@@ -46,6 +52,13 @@ boundary_cases = {
     'i_serial1': ('__Vdly__state', '__PVT__state'),
     'i_ring_a': ('__Vdly__state', '__PVT__state'),
     'i_ring_b': ('__Vdly__state', '__PVT__state'),
+}
+published_targets = {
+    'i_direct': 'direct',
+    'i_serial0': 'serial0',
+    'i_serial1': 'serial1',
+    'i_ring_a': 'ring_a',
+    'i_ring_b': 'ring_b',
 }
 parent_sched = []
 for filename in sched_graphs:
@@ -80,6 +93,23 @@ else:
                     test.error("Eligible child procedure leaked into parent scheduler: " + instance)
         if len(clocks) == 1 and (clocks[0], boundary[0]) not in partition_edges:
             test.error("Missing parent boundary clock for " + instance)
+        source = [node for node, label in partition_nodes.items()
+                  if label.endswith(instance + '->' + variables[1])]
+        published = [node for node, label in partition_nodes.items()
+                     if label.endswith(instance + '->__VsubgraphPublished__0')]
+        target = [node for node, label in partition_nodes.items()
+                  if label == 'TOP->' + published_targets[instance]]
+        if len(source) != 1 or len(published) != 1 or len(target) != 1:
+            test.error("Missing distinct source, published value, or output for " + instance)
+            continue
+        publish_logic = [node for node in partition_nodes
+                         if (source[0], node) in partition_edges
+                         and (node, published[0]) in partition_edges]
+        output_logic = [node for node in partition_nodes
+                        if (published[0], node) in partition_edges
+                        and (node, target[0]) in partition_edges]
+        if len(publish_logic) != 1 or len(output_logic) != 1:
+            test.error("Missing source to published output path for " + instance)
     if "i_fallback->__Vdly__state" not in parent_sched:
         test.error("Ineligible child procedure did not remain on the fallback path")
 
@@ -160,8 +190,8 @@ for instance, (delayed_name, state_name) in boundary_cases.items():
             test.error("Missing uncut capture/evaluate dependency for {} {}".format(
                 instance, nodes[saved]))
     if instance == 'i_ring_a':
-        for source_instance, source_var in (('i_serial0', '__PVT__state'),
-                                            ('i_ring_b', '__PVT__state'),
+        for source_instance, source_var in (('i_serial0', '__VsubgraphPublished__0'),
+                                            ('i_ring_b', '__VsubgraphPublished__0'),
                                             ('TOP', 'parent_q')):
             old_value_post = find_node(source_instance, source_var, 'POST')
             if not any((writer, old_value_post) in acyclic_edges
