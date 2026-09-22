@@ -27,18 +27,25 @@ test.compile(
     ])
 test.execute()
 
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 5)
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 10)
-test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 5)
-test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 4)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 6)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 12)
+test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 6)
+test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
-test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 8)
+test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 10)
 
 sched_graphs = test.glob_some(test.obj_dir + "/*_sched.dot")
-if len(sched_graphs) != 5:
-    test.error("Expected four child scheduler graphs and one parent graph, got "
+if len(sched_graphs) != 6:
+    test.error("Expected five child scheduler graphs and one parent graph, got "
                + str(len(sched_graphs)))
 
+boundary_cases = {
+    'i_direct': ('__Vdly__q', 'q'),
+    'i_serial0': ('__Vdly__state', '__PVT__state'),
+    'i_serial1': ('__Vdly__state', '__PVT__state'),
+    'i_ring_a': ('__Vdly__state', '__PVT__state'),
+    'i_ring_b': ('__Vdly__state', '__PVT__state'),
+}
 parent_sched = []
 for filename in sched_graphs:
     with open(filename, 'r', encoding='utf8') as fh:
@@ -55,18 +62,18 @@ else:
     clocks = [node for node, label in partition_nodes.items() if label == 'posedge clk']
     if len(clocks) != 1:
         test.error("Expected one parent clock event")
-    for instance in ('i_serial0', 'i_serial1', 'i_ring_a', 'i_ring_b'):
+    for instance, variables in boundary_cases.items():
         boundary = [node for node, label in partition_nodes.items()
                     if label.startswith(r'SUBGRAPH\n') and label.endswith(instance)]
         if len(boundary) != 1:
             test.error("Expected one parent partition boundary for " + instance)
             continue
-        for variable in ('__Vdly__state', '__PVT__state'):
+        for variable in variables:
             value = [node for node, label in partition_nodes.items()
                      if label.endswith(instance + '->' + variable)]
             if len(value) != 1 or (boundary[0], value[0]) not in partition_edges:
                 test.error("Missing parent boundary write for " + instance + " " + variable)
-            if variable == '__Vdly__state' and len(value) == 1:
+            if variable.startswith('__Vdly__') and len(value) == 1:
                 writers = [source for source, target in partition_edges if target == value[0]]
                 if writers != boundary:
                     test.error("Eligible child procedure leaked into parent scheduler: " + instance)
@@ -77,12 +84,13 @@ else:
 
 child_graphs = test.glob_some(test.obj_dir + "/*nba_subgraph_pre_*_orderg_pre.dot")
 parent_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_pre.dot")
-if len(child_graphs) != 5:
-    test.error("Expected five child Order graphs, got " + str(len(child_graphs)))
+if len(child_graphs) != 6:
+    test.error("Expected six child Order graphs, got " + str(len(child_graphs)))
 if len(parent_graphs) != 1:
     test.error("Expected one parent NBA Order graph, got " + str(len(parent_graphs)))
 test.file_grep_any(child_graphs, r'__Vdly__state')
-test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 5)
+test.file_grep_any(child_graphs, r'__Vdly__q')
+test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 6)
 
 with open(parent_graphs[0], 'r', encoding='utf8') as fh:
     graph = fh.read()
@@ -107,11 +115,11 @@ def find_node(instance, variable, marker):
     return matches[0]
 
 
-for instance in ('i_serial0', 'i_serial1', 'i_ring_a', 'i_ring_b'):
-    delayed_pord = find_node(instance, '__Vdly__state', 'PORD')
-    delayed_value = find_node(instance, '__Vdly__state', None)
-    state_post = find_node(instance, '__PVT__state', 'POST')
-    state_value = find_node(instance, '__PVT__state', None)
+for instance, (delayed_name, state_name) in boundary_cases.items():
+    delayed_pord = find_node(instance, delayed_name, 'PORD')
+    delayed_value = find_node(instance, delayed_name, None)
+    state_post = find_node(instance, state_name, 'POST')
+    state_value = find_node(instance, state_name, None)
 
     evaluate = [target for source, target in edges
                 if source == delayed_pord and 'ACTIVE' in nodes.get(target, '')]

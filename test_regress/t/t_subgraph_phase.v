@@ -12,6 +12,7 @@ module t (
   output logic [6:0] serial1,
   output logic [6:0] ring_a,
   output logic [6:0] ring_b,
+  output logic [6:0] direct,
   output logic [6:0] fallback,
   output logic [6:0] parent_q = 7'd9,
   output logic [6:0] combo
@@ -63,6 +64,27 @@ module t (
     .d(data),
     .q(fallback)
   );
+  sg_phase_direct_ff i_direct (
+    .clk(clk),
+    .reset(reset),
+    .d(serial0),
+    .q(direct)
+  );
+
+endmodule
+
+module sg_phase_direct_ff (
+  input  logic       clk,
+  input  logic       reset,
+  input  logic [6:0] d,
+  output logic [6:0] q = 7'd3
+);
+  /*verilator subgraph_boundary*/
+
+  always_ff @(posedge clk) begin
+    if (reset) q <= 7'd16;
+    else q <= d;
+  end
 
 endmodule
 
