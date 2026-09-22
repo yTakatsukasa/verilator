@@ -67,7 +67,7 @@ void evalPosedge(VM_PREFIX* const top, Expected& expected, uint8_t data, bool re
     } else {
         expected.serial0 = trunc7(data + 3);
         expected.serial1 = previous.serial0 ^ 0x2a;
-        expected.ringA = trunc7(previous.ringB + previous.parent);
+        expected.ringA = trunc7(previous.ringB + previous.serial0 + previous.parent);
         expected.ringB = previous.ringA ^ data;
         expected.direct = previous.serial0;
         expected.fallback = data;

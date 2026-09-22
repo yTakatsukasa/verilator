@@ -47,12 +47,22 @@ bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
 }
 
 struct SubgraphGroup final {
+    struct Capture final {
+        AstVarScope* m_sourcep = nullptr;
+        AstVarScope* m_savedp = nullptr;
+    };
     AstScope* m_boundaryScopep = nullptr;
     AstSenTree* m_senTreep = nullptr;
     FileLine* m_filelinep = nullptr;
     LogicByScope* m_ownerp = nullptr;
     LogicByScope m_preLogic;
     LogicByScope m_postLogic;
+    std::vector<Capture> m_captures;
+};
+
+struct CaptureVars final {
+    std::map<AstNodeModule*, std::map<AstVar*, std::vector<AstVar*>>> m_slots;
+    std::map<AstNodeModule*, size_t> m_nextNameIndex;
 };
 
 AstScope* findBoundaryScope(AstScope* scopep) {
@@ -127,6 +137,62 @@ void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep
     }
     if (activep->backp()) activep->unlinkFrBack();
     activep->deleteTree();
+}
+
+void captureSubgraphInputs(SubgraphGroup& group, CaptureVars& savedVars) {
+    AstScope* const boundaryScopep = group.m_boundaryScopep;
+    std::map<AstVarScope*, AstVarScope*> savedScopes;
+    std::map<AstVar*, size_t> sourceOccurrences;
+    const auto rewrite = [&](LogicByScope& lbs) {
+        lbs.foreachLogic([&](AstNode* nodep) {
+            nodep->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const sourcep = refp->varScopep();
+                const bool portInput
+                    = sourcep->scopep() == boundaryScopep && sourcep->varp()->isNonOutput();
+                const bool external = !isUnderScope(sourcep->scopep(), boundaryScopep);
+                if (!refp->access().isReadOnly() || (!portInput && !external)) { return; }
+                const auto inserted = savedScopes.emplace(sourcep, nullptr);
+                if (inserted.second) {
+                    AstVar* const sourceVarp = sourcep->varp();
+                    AstNodeModule* const modp = boundaryScopep->modp();
+                    const size_t occurrence = sourceOccurrences[sourceVarp]++;
+                    std::vector<AstVar*>& slots = savedVars.m_slots[modp][sourceVarp];
+                    if (slots.size() <= occurrence) slots.resize(occurrence + 1);
+                    AstVar*& savedVarp = slots[occurrence];
+                    if (!savedVarp) {
+                        const string name
+                            = "__VsubgraphCapture__" + cvtToStr(savedVars.m_nextNameIndex[modp]++);
+                        savedVarp = new AstVar{sourcep->fileline(), VVarType::BLOCKTEMP, name,
+                                               sourcep->dtypep()};
+                        modp->addStmtsp(savedVarp);
+                    }
+                    UASSERT_OBJ(savedVarp->width() == sourcep->width(), sourcep,
+                                "Capture slot has inconsistent widths across instances");
+                    AstVarScope* const savedp
+                        = new AstVarScope{sourcep->fileline(), boundaryScopep, savedVarp};
+                    boundaryScopep->addVarsp(savedp);
+                    inserted.first->second = savedp;
+                    group.m_captures.push_back({sourcep, savedp});
+                }
+                AstVarScope* const savedp = inserted.first->second;
+                refp->varScopep(savedp);
+                refp->varp(savedp->varp());
+            });
+        });
+    };
+    // NBA right-hand sides are evaluated in the pre phase. Post-phase reads must retain
+    // their normal commit-time semantics rather than being silently sampled early.
+    rewrite(group.m_preLogic);
+
+    for (const SubgraphGroup::Capture& capture : group.m_captures) {
+        FileLine* const flp = capture.m_sourcep->fileline();
+        AstActive* const activep = new AstActive{flp, "subgraph-capture", group.m_senTreep};
+        activep->addStmtsp(
+            new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr,
+                          new AstAssign{flp, new AstVarRef{flp, capture.m_savedp, VAccess::WRITE},
+                                        new AstVarRef{flp, capture.m_sourcep, VAccess::READ}}});
+        group.m_ownerp->emplace_back(boundaryScopep, activep);
+    }
 }
 
 }  // namespace
@@ -380,11 +446,13 @@ void SubgraphPlan::foreachUse(const std::function<void(const Use&)>& callback) c
     }
 }
 
-void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
-                           const V3Order::TrigToSenMap& trigToSen,
-                           const CovergroupRefBindings& cgRefBindings, bool slow,
-                           const V3Order::ExternalDomainsProvider& externalDomains) {
-    if (!v3Global.opt.subgraphSchedule()) return;
+V3Order::FreshReads
+lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
+                      const V3Order::TrigToSenMap& trigToSen,
+                      const CovergroupRefBindings& cgRefBindings, bool slow,
+                      const V3Order::ExternalDomainsProvider& externalDomains) {
+    V3Order::FreshReads freshReads;
+    if (!v3Global.opt.subgraphSchedule()) return freshReads;
 
     std::vector<SubgraphGroup> groups;
     for (LogicByScope* const lbsp : logic) {
@@ -409,10 +477,15 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
 
     uint64_t orderedLogic = 0;
     unsigned groupIndex = 0;
+    CaptureVars savedVars;
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
         UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep,
                     "Subgraph NBA logic has no clocked sensitivity");
+        captureSubgraphInputs(group, savedVars);
+        for (const SubgraphGroup::Capture& capture : group.m_captures) {
+            freshReads[group.m_boundaryScopep].push_back(capture.m_savedp);
+        }
 
         const auto orderPhase = [&](LogicByScope& phaseLogic, const string& phase, bool post) {
             if (phaseLogic.empty()) return;
@@ -444,6 +517,10 @@ void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*
 
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
+    uint64_t capturedInputs = 0;
+    for (const auto& pair : freshReads) capturedInputs += pair.second.size();
+    V3Stats::addStat("Scheduling, Subgraph captured inputs", capturedInputs);
+    return freshReads;
 }
 
 }  // namespace V3Sched

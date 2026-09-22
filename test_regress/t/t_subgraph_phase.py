@@ -33,6 +33,7 @@ test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 6)
 test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
 test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 10)
+test.file_grep(test.stats, r'Scheduling, Subgraph captured inputs\s+(\d+)', 15)
 
 sched_graphs = test.glob_some(test.obj_dir + "/*_sched.dot")
 if len(sched_graphs) != 6:
@@ -84,10 +85,13 @@ else:
 
 child_graphs = test.glob_some(test.obj_dir + "/*nba_subgraph_pre_*_orderg_pre.dot")
 parent_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_pre.dot")
+parent_acyc_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_acyc.dot")
 if len(child_graphs) != 6:
     test.error("Expected six child Order graphs, got " + str(len(child_graphs)))
 if len(parent_graphs) != 1:
     test.error("Expected one parent NBA Order graph, got " + str(len(parent_graphs)))
+if len(parent_acyc_graphs) != 1:
+    test.error("Expected one acyclic parent NBA Order graph, got " + str(len(parent_acyc_graphs)))
 test.file_grep_any(child_graphs, r'__Vdly__state')
 test.file_grep_any(child_graphs, r'__Vdly__q')
 test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 6)
@@ -97,6 +101,8 @@ with open(parent_graphs[0], 'r', encoding='utf8') as fh:
 
 nodes = dict(re.findall(r'^\s*n(\d+)\s+\[.*label="(.*?)", color=', graph, re.MULTILINE))
 edges = set(re.findall(r'^\s*n(\d+) -> n(\d+)', graph, re.MULTILINE))
+with open(parent_acyc_graphs[0], 'r', encoding='utf8') as fh:
+    acyclic_edges = set(re.findall(r'^\s*n(\d+) -> n(\d+)', fh.read(), re.MULTILINE))
 
 
 def find_node(instance, variable, marker):
@@ -136,5 +142,31 @@ for instance, (delayed_name, state_name) in boundary_cases.items():
     if missing:
         test.error("Missing capture/evaluate/publish dependency for {}: {}".format(
             instance, sorted(missing)))
+
+    captured = [node for node, label in nodes.items()
+                if instance + '->__VsubgraphCapture__' in label]
+    if not captured:
+        test.error("Missing captured inputs for " + instance)
+    if instance == 'i_ring_a' and len(captured) != 4:
+        test.error("Expected four distinct ring_a captures, got " + str(len(captured)))
+    capture_writers = []
+    for saved in captured:
+        writers = [source for source, target in edges
+                   if target == saved and 'ALWAYS' in nodes.get(source, '')]
+        capture_writers.extend(writers)
+        required = {(saved, evaluate[0])}
+        required.update((writer, saved) for writer in writers)
+        if len(writers) != 1 or not required.issubset(edges & acyclic_edges):
+            test.error("Missing uncut capture/evaluate dependency for {} {}".format(
+                instance, nodes[saved]))
+    if instance == 'i_ring_a':
+        for source_instance, source_var in (('i_serial0', '__PVT__state'),
+                                            ('i_ring_b', '__PVT__state'),
+                                            ('TOP', 'parent_q')):
+            old_value_post = find_node(source_instance, source_var, 'POST')
+            if not any((writer, old_value_post) in acyclic_edges
+                       for writer in capture_writers):
+                test.error("Missing old-value capture before publish for {} {}".format(
+                    source_instance, source_var))
 
 test.passes()

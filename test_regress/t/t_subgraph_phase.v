@@ -25,7 +25,7 @@ module t (
 
   assign serial0_in = data + 7'd3;
   assign serial1_in = serial0 ^ 7'h2a;
-  assign ring_a_in = ring_b + parent_q;
+  assign ring_a_in = ring_b + serial0 + parent_q;
   assign ring_b_in = ring_a ^ data;
   assign combo = (serial1 + ring_b) ^ data;
 

@@ -55,10 +55,11 @@ public:
                                                   const std::vector<Use>&)>& callback) const;
 };
 
-void lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
-                           const V3Order::TrigToSenMap& trigToSen,
-                           const CovergroupRefBindings& cgRefBindings, bool slow,
-                           const V3Order::ExternalDomainsProvider& externalDomains);
+V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
+                                          const std::vector<LogicByScope*>& logic,
+                                          const V3Order::TrigToSenMap& trigToSen,
+                                          const CovergroupRefBindings& cgRefBindings, bool slow,
+                                          const V3Order::ExternalDomainsProvider& externalDomains);
 
 }  // namespace V3Sched
 

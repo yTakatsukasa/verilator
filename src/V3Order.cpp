@@ -107,10 +107,10 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
                          bool parallel,  //
                          bool slow,  //
                          const ExternalDomainsProvider& externalDomains,  //
-                         AstScope* resultScopep) {
+                         AstScope* resultScopep, const FreshReads* freshReadsp) {
     // Build the OrderGraph
     const std::unique_ptr<OrderGraph> graph
-        = buildOrderGraph(netlistp, logic, trigToSen, cgRefBindings, parallel);
+        = buildOrderGraph(netlistp, logic, trigToSen, cgRefBindings, parallel, freshReadsp);
     // Order it
     orderOrderGraph(*graph, tag);
     // Assign sensitivity domains to combinational logic

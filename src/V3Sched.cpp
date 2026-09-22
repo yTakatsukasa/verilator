@@ -1057,15 +1057,16 @@ void schedule(AstNetlist* netlistp) {
                   }
               };
 
+        V3Order::FreshReads freshReads;
         if (name == "nba") {
             subgraphPlan.materializeNba(trigMap, logic);
-            lowerSubgraphNbaLogic(netlistp, logic, trigToSen, cgRefBindings, false,
-                                  externalDomains);
+            freshReads = lowerSubgraphNbaLogic(netlistp, logic, trigToSen, cgRefBindings, false,
+                                               externalDomains);
         }
 
-        AstCFunc* const funcp
-            = V3Order::order(netlistp, logic, trigToSen, cgRefBindings, name,
-                             name == "nba" && v3Global.opt.mtasks(), false, externalDomains);
+        AstCFunc* const funcp = V3Order::order(netlistp, logic, trigToSen, cgRefBindings, name,
+                                               name == "nba" && v3Global.opt.mtasks(), false,
+                                               externalDomains, nullptr, &freshReads);
 
         return {trigVscp, funcp};
     };

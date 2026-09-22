@@ -97,6 +97,8 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderLogicVertex* m_logicVxp = nullptr;  // Current logic block being analyzed
     std::vector<AstVarScope*> m_accessedVscps;  // Variables accessed by the current logic block
     std::unordered_set<const AstVarScope*> m_parentAccessedVscps;
+    const V3Order::FreshReads* const m_freshReadsp;
+    std::unordered_set<const AstVarScope*> m_freshReadSet;
 
     // Map from Trigger reference AstSenItem to the original AstSenTree
     const V3Order::TrigToSenMap& m_trigToSen;
@@ -213,6 +215,16 @@ class OrderGraphBuilder final : public VNVisitor {
             });
         };
         scanFunc(nodep->funcp());
+        // Child Order may place the input read in an entry-point helper that is deliberately
+        // opaque to this scan. Its capture dependency is nevertheless part of the boundary.
+        if (!m_inPost && m_freshReadsp) {
+            const auto it = m_freshReadsp->find(boundaryScopep);
+            if (it != m_freshReadsp->end()) {
+                for (AstVarScope* const savedp : it->second) {
+                    accountVarAccess(savedp, VAccess::READ, nodep);
+                }
+            }
+        }
     }
 
     // VISITORS
@@ -362,6 +374,10 @@ class OrderGraphBuilder final : public VNVisitor {
                 // Add edge from produced VarPostVertex -> to producing LogicVertex
                 OrderVarVertex* const postVxp = getVarVertex(varscp, VarVertexType::POST);
                 m_graphp->addHardEdge(postVxp, m_logicVxp, WEIGHT_POST);
+            } else if (m_inClocked && m_freshReadSet.count(varscp)) {
+                // Captured inputs become available to the child helper on this same edge.
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(m_logicVxp, varVxp, WEIGHT_NORMAL);
             } else if (m_inPre) {  // AstAlwaysPre
                 // Add edge from producing LogicVertex -> produced VarPordVertex
                 OrderVarVertex* const ordVxp = getVarVertex(varscp, VarVertexType::PORD);
@@ -393,6 +409,11 @@ class OrderGraphBuilder final : public VNVisitor {
                     // Add edge from consumed VarStdVertex -> to consuming LogicVertex
                     m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_MEDIUM);
                 }
+            } else if (m_inClocked && !m_inPre && m_freshReadSet.count(varscp)) {
+                // This clocked helper reads a value captured on the current edge. Treat it as
+                // a fresh value, so the capture assignment must precede the helper call.
+                OrderVarVertex* const varVxp = getVarVertex(varscp, VarVertexType::STD);
+                m_graphp->addHardEdge(varVxp, m_logicVxp, WEIGHT_NORMAL);
             } else if (!m_inClocked) {  // Combinational logic
                 if (m_readTriggersCombLogic(varscp)) {
                     // Ignore explicit sensitivities
@@ -505,10 +526,17 @@ class OrderGraphBuilder final : public VNVisitor {
     // CONSTRUCTOR
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
                       const V3Order::TrigToSenMap& trigToSen,
-                      const V3Sched::CovergroupRefBindings& cgRefBindings, bool parallel)
-        : m_trigToSen{trigToSen}
+                      const V3Sched::CovergroupRefBindings& cgRefBindings, bool parallel,
+                      const V3Order::FreshReads* freshReadsp)
+        : m_freshReadsp{freshReadsp}
+        , m_trigToSen{trigToSen}
         , m_parallel{parallel}
         , m_cgRefBindings{cgRefBindings} {
+        if (freshReadsp) {
+            for (const auto& pair : *freshReadsp) {
+                for (AstVarScope* const savedp : pair.second) m_freshReadSet.emplace(savedp);
+            }
+        }
         // Keep internal state hidden unless logic outside a subgraph helper also accesses it.
         const bool hasSubgraphWrapper
             = std::any_of(coll.begin(), coll.end(), [](const V3Sched::LogicByScope* lbsp) {
@@ -545,9 +573,11 @@ public:
                                              const std::vector<V3Sched::LogicByScope*>& coll,
                                              const V3Order::TrigToSenMap& trigToSen,
                                              const V3Sched::CovergroupRefBindings& cgRefBindings,
-                                             bool parallel) {
+                                             bool parallel,
+                                             const V3Order::FreshReads* freshReadsp) {
         return std::unique_ptr<OrderGraph>{
-            OrderGraphBuilder{nodep, coll, trigToSen, cgRefBindings, parallel}.m_graphp};
+            OrderGraphBuilder{nodep, coll, trigToSen, cgRefBindings, parallel, freshReadsp}
+                .m_graphp};
     }
 };
 
@@ -556,6 +586,7 @@ V3Order::buildOrderGraph(AstNetlist* netlistp,  //
                          const std::vector<V3Sched::LogicByScope*>& coll,  //
                          const V3Order::TrigToSenMap& trigToSen,  //
                          const V3Sched::CovergroupRefBindings& cgRefBindings,  //
-                         bool parallel) {
-    return OrderGraphBuilder::apply(netlistp, coll, trigToSen, cgRefBindings, parallel);
+                         bool parallel, const V3Order::FreshReads* freshReadsp) {
+    return OrderGraphBuilder::apply(netlistp, coll, trigToSen, cgRefBindings, parallel,
+                                    freshReadsp);
 }
