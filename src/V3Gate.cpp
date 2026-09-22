@@ -169,6 +169,11 @@ public:
                 vVtxp->clearReducibleAndDedupable("SigPublic");
                 vVtxp->setConsumed("SigPublic");
             }
+            if (vscp->varp()->subgraphPublished()) {
+                // Keep the value read by the parent distinct from the internal state.
+                vVtxp->clearReducibleAndDedupable("SubgraphPublished");
+                vVtxp->setConsumed("SubgraphPublished");
+            }
             if (vscp->varp()->isIO() && vscp->scopep()->isTop()) {
                 // We may need to convert to/from sysc/reg sigs
                 vVtxp->setIsTop();

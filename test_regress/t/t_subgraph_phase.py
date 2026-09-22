@@ -34,7 +34,7 @@ test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
 test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 10)
 test.file_grep(test.stats, r'Scheduling, Subgraph captured inputs\s+(\d+)', 15)
-test.file_grep(test.stats, r'Scheduling, Subgraph published outputs\s+(\d+)', 5)
+test.file_grep(test.stats, r'Inst, Subgraph published outputs\s+(\d+)', 6)
 published_headers = test.glob_some(test.obj_dir + "/*sg_phase_direct_ff.h")
 if len(published_headers) != 1:
     test.error("Expected one direct FF implementation header")

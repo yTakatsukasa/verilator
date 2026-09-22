@@ -82,6 +82,8 @@ class DataflowOptimize final {
                 const bool hasExtRd =  //
                     varp->isPrimaryIO()  // Top level port - readable
                     || varp->isSigUserRdPublic()  // Readable by user
+                    || varp->subgraphPublished()  // Read by the parent across the subgraph
+                                                  // boundary
                     || varp->constPoolEntry()  // Stored in AstConstPool hashmap, but read only
                     ;
                 const bool hasExtWr =  //

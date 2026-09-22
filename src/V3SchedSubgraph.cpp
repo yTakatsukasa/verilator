@@ -27,7 +27,6 @@
 
 #include "V3SchedSubgraph.h"
 
-#include "V3SenTree.h"
 #include "V3Stats.h"
 
 #include <map>
@@ -66,17 +65,20 @@ struct CaptureVars final {
     std::map<AstNodeModule*, size_t> m_nextNameIndex;
 };
 
-struct PublishedOutput final {
-    AstVarScope* m_sourcep = nullptr;
-    AstScope* m_boundaryScopep = nullptr;
-    std::vector<AstNodeVarRef*> m_parentReads;
-};
-
 AstScope* findBoundaryScope(AstScope* scopep) {
     for (AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
         if (scanp->modp()->subgraphBoundary()) return scanp;
     }
     return nullptr;
+}
+
+bool isPublishActive(const AstActive* activep) {
+    const AstAlways* const alwaysp = VN_CAST(activep->stmtsp(), Always);
+    if (!alwaysp || alwaysp->nextp()) return false;
+    const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
+    if (!assp || assp->nextp()) return false;
+    const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+    return lhsp && lhsp->varp()->subgraphPublished();
 }
 
 struct EarlyCandidate final {
@@ -202,86 +204,6 @@ void captureSubgraphInputs(SubgraphGroup& group, CaptureVars& savedVars) {
     }
 }
 
-void publishSubgraphOutputs(AstNetlist* netlistp, const std::vector<EarlyCandidate>& candidates,
-                            const std::map<AstScope*, size_t>& accepted) {
-    std::map<AstVarScope*, AstScope*> writtenOwners;
-    for (const EarlyCandidate& candidate : candidates) {
-        if (!accepted.count(candidate.m_scopep)) continue;
-        for (const auto& pair : candidate.m_clocked) {
-            pair.second->foreach([&](AstNodeVarRef* refp) {
-                if (refp->access().isWriteOrRW()
-                    && isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
-                    writtenOwners.emplace(refp->varScopep(), candidate.m_scopep);
-                }
-            });
-        }
-    }
-
-    std::vector<PublishedOutput> outputs;
-    std::map<AstVarScope*, size_t> outputIndex;
-    netlistp->foreach([&](AstScope* scopep) {
-        scopep->foreach([&](AstActive* activep) {
-            activep->foreach([&](AstNodeVarRef* refp) {
-                if (!refp->access().isReadOnly()) return;
-                const auto ownerIt = writtenOwners.find(refp->varScopep());
-                if (ownerIt == writtenOwners.end()) return;
-                AstScope* const boundaryScopep = ownerIt->second;
-                if (isUnderScope(scopep, boundaryScopep)) return;
-                const auto inserted = outputIndex.emplace(refp->varScopep(), outputs.size());
-                if (inserted.second) {
-                    outputs.push_back({refp->varScopep(), boundaryScopep, {}});
-                }
-                outputs[inserted.first->second].m_parentReads.push_back(refp);
-            });
-        });
-    });
-
-    SenTreeFinder finder{netlistp};
-    std::map<AstNodeModule*, std::map<AstVar*, std::vector<AstVar*>>> publishedVars;
-    std::map<AstNodeModule*, size_t> nextNameIndex;
-    std::map<AstScope*, std::map<AstVar*, size_t>> sourceOccurrences;
-    for (PublishedOutput& output : outputs) {
-        AstVarScope* const sourcep = output.m_sourcep;
-        AstScope* const boundaryScopep = output.m_boundaryScopep;
-        AstNodeModule* const modp = boundaryScopep->modp();
-        AstVar* const sourceVarp = sourcep->varp();
-        const size_t occurrence = sourceOccurrences[boundaryScopep][sourceVarp]++;
-        std::vector<AstVar*>& slots = publishedVars[modp][sourceVarp];
-        if (slots.size() <= occurrence) slots.resize(occurrence + 1);
-        AstVar*& publishedVarp = slots[occurrence];
-        if (!publishedVarp) {
-            const string name = "__VsubgraphPublished__" + cvtToStr(nextNameIndex[modp]++);
-            publishedVarp
-                = new AstVar{sourcep->fileline(), VVarType::MODULETEMP, name, sourcep->dtypep()};
-            publishedVarp->noSubst(true);
-            publishedVarp->subgraphPublished(true);
-            modp->addStmtsp(publishedVarp);
-        }
-        AstVarScope* const publishedp
-            = new AstVarScope{sourcep->fileline(), boundaryScopep, publishedVarp};
-        boundaryScopep->addVarsp(publishedp);
-        for (AstNodeVarRef* const refp : output.m_parentReads) {
-            refp->varScopep(publishedp);
-            refp->varp(publishedVarp);
-        }
-
-        FileLine* const flp = sourcep->fileline();
-        AstSenTree* const localSenTreep
-            = new AstSenTree{flp, new AstSenItem{flp, AstSenItem::Combo{}}};
-        AstSenTree* const senTreep = finder.getSenTree(localSenTreep);
-        localSenTreep->deleteTree();
-        AstActive* const activep = new AstActive{flp, "subgraph-publish", senTreep};
-        activep->addStmtsp(
-            new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr,
-                          new AstAssign{flp, new AstVarRef{flp, publishedp, VAccess::WRITE},
-                                        new AstVarRef{flp, sourcep, VAccess::READ}}});
-        AstScope* const parentScopep = boundaryScopep->aboveScopep();
-        UASSERT_OBJ(parentScopep, boundaryScopep, "Subgraph boundary has no parent scope");
-        parentScopep->addBlocksp(activep);
-    }
-    V3Stats::addStat("Scheduling, Subgraph published outputs", outputs.size());
-}
-
 }  // namespace
 
 struct SubgraphPlan::Impl final {
@@ -317,6 +239,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             if (comb) allComb.emplace_back(scopep, activep);
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
             if (!boundaryScopep || (!clocked && !comb)) return;
+            if (comb && isPublishActive(activep)) return;
             const auto inserted = candidateIndex.emplace(boundaryScopep, candidates.size());
             if (inserted.second) {
                 candidates.emplace_back();
@@ -437,7 +360,6 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         clocked += candidate.m_clocked.size();
         combinational += candidate.m_comb.size();
     }
-    publishSubgraphOutputs(netlistp, candidates, m_impl->m_accepted);
     V3Stats::addStat("Scheduling, Subgraph early candidates", candidates.size());
     V3Stats::addStat("Scheduling, Subgraph early groups", m_impl->m_groups.size());
     V3Stats::addStat("Scheduling, Subgraph early fallbacks", rejected);
@@ -448,6 +370,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
 SubgraphPlan::~SubgraphPlan() = default;
 
 bool SubgraphPlan::extract(AstScope* scopep, AstActive* activep) {
+    if (isPublishActive(activep)) return false;
     const auto it = m_impl->m_accepted.find(findBoundaryScope(scopep));
     if (it == m_impl->m_accepted.end()) return false;
     Impl::Group& group = m_impl->m_groups[it->second];

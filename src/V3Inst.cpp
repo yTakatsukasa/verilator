@@ -26,6 +26,7 @@
 #include "V3Inst.h"
 
 #include "V3Const.h"
+#include "V3Stats.h"
 #include "V3Width.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -47,6 +48,9 @@ class InstVisitor final : public VNVisitor {
 
     // STATE
     AstCell* m_cellp = nullptr;  // Current cell
+    std::map<AstVar*, AstVar*> m_publishedByPort;
+    std::map<AstNodeModule*, unsigned> m_nextPublishedIndex;
+    uint64_t m_publishedConnections = 0;
 
     // VISITORS
     void visit(AstCell* nodep) override {
@@ -78,8 +82,32 @@ class InstVisitor final : public VNVisitor {
             if (nodep->modVarp()->isInout()) {
                 nodep->v3fatalSrc("Unsupported: Verilator is a 2-state simulator");
             } else if (nodep->modVarp()->isWritable()) {
-                AstNodeExpr* const rhsp = new AstVarXRef{exprp->fileline(), nodep->modVarp(),
-                                                         m_cellp->name(), VAccess::READ};
+                AstVar* portVarp = nodep->modVarp();
+                if (v3Global.opt.subgraphSchedule() && m_cellp->modp()->subgraphBoundary()) {
+                    const auto inserted = m_publishedByPort.emplace(portVarp, nullptr);
+                    AstVar*& publishedVarp = inserted.first->second;
+                    if (inserted.second) {
+                        const string name = "__VsubgraphPublished__"
+                                            + cvtToStr(m_nextPublishedIndex[m_cellp->modp()]++);
+                        publishedVarp = new AstVar{nodep->fileline(), VVarType::MODULETEMP, name,
+                                                   portVarp->dtypep()};
+                        publishedVarp->noSubst(true);
+                        publishedVarp->subgraphPublished(true);
+                        m_cellp->modp()->addStmtsp(publishedVarp);
+                    }
+                    AstVarXRef* const pubLhsp = new AstVarXRef{exprp->fileline(), publishedVarp,
+                                                               m_cellp->name(), VAccess::WRITE};
+                    markContinuousLhs(pubLhsp);
+                    AstNodeExpr* const portRhsp = new AstVarXRef{exprp->fileline(), portVarp,
+                                                                 m_cellp->name(), VAccess::READ};
+                    AstAssignW* const publishp
+                        = new AstAssignW{exprp->fileline(), pubLhsp, portRhsp};
+                    m_cellp->addNextHere(new AstAlways{publishp});
+                    portVarp = publishedVarp;
+                    ++m_publishedConnections;
+                }
+                AstNodeExpr* const rhsp
+                    = new AstVarXRef{exprp->fileline(), portVarp, m_cellp->name(), VAccess::READ};
                 markContinuousLhs(exprp);
                 AstAssignW* const assp = new AstAssignW{exprp->fileline(), exprp, rhsp};
                 m_cellp->addNextHere(new AstAlways{assp});
@@ -128,7 +156,9 @@ class InstVisitor final : public VNVisitor {
 public:
     // CONSTRUCTORS
     explicit InstVisitor(AstNetlist* nodep) { iterate(nodep); }
-    ~InstVisitor() override = default;
+    ~InstVisitor() override {
+        V3Stats::addStat("Inst, Subgraph published outputs", m_publishedConnections);
+    }
 };
 
 //######################################################################
