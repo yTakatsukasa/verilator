@@ -83,7 +83,8 @@ class InstVisitor final : public VNVisitor {
                 nodep->v3fatalSrc("Unsupported: Verilator is a 2-state simulator");
             } else if (nodep->modVarp()->isWritable()) {
                 AstVar* portVarp = nodep->modVarp();
-                if (v3Global.opt.subgraphSchedule() && m_cellp->modp()->subgraphBoundary()) {
+                if (v3Global.opt.subgraphSchedule() && m_cellp->modp()->subgraphBoundary()
+                    && portVarp->subgraphPortId()) {
                     const auto inserted = m_publishedByPort.emplace(portVarp, nullptr);
                     AstVar*& publishedVarp = inserted.first->second;
                     if (inserted.second) {
@@ -93,6 +94,7 @@ class InstVisitor final : public VNVisitor {
                                                    portVarp->dtypep()};
                         publishedVarp->noSubst(true);
                         publishedVarp->subgraphPublished(true);
+                        publishedVarp->subgraphPortId(portVarp->subgraphPortId());
                         m_cellp->modp()->addStmtsp(publishedVarp);
                     }
                     AstVarXRef* const pubLhsp = new AstVarXRef{exprp->fileline(), publishedVarp,

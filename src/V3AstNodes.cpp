@@ -3264,8 +3264,12 @@ void AstScope::dump(std::ostream& str) const {
     str << " [abovep=" << nodeAddr(aboveScopep()) << "]";
     str << " [cellp=" << nodeAddr(aboveCellp()) << "]";
     str << " [modp=" << nodeAddr(modp()) << "]";
+    if (subgraphInstanceId()) str << " [SUBGRAPH-INSTANCE:" << subgraphInstanceId() << "]";
 }
-void AstScope::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstScope::dumpJson(std::ostream& str) const {
+    if (subgraphInstanceId()) dumpJsonNumFunc(str, subgraphInstanceId);
+    dumpJsonGen(str);
+}
 string AstScope::nameDotless() const {
     string result = shortName();
     string::size_type pos;
@@ -3274,7 +3278,7 @@ string AstScope::nameDotless() const {
 }
 bool AstScope::sameNode(const AstNode* samep) const {
     const AstScope* const asamep = VN_DBG_AS(samep, Scope);
-    return name() == asamep->name()
+    return name() == asamep->name() && subgraphInstanceId() == asamep->subgraphInstanceId()
            && ((!aboveScopep() && !asamep->aboveScopep())
                || (aboveScopep() && asamep->aboveScopep()
                    && aboveScopep()->name() == asamep->aboveScopep()->name()));
@@ -3921,6 +3925,7 @@ void AstVar::dump(std::ostream& str) const {
     if (noReset()) str << " [!RST]";
     if (processQueue()) str << " [PROCQ]";
     if (subgraphPublished()) str << " [SUBGRAPH-PUBLISHED]";
+    if (subgraphPortId()) str << " [SUBGRAPH-PORT:" << subgraphPortId() << "]";
     if (sampled()) str << " [SAMPLED]";
     if (attrFsmState()) str << " [aFSMSTATE]";
     if (attrFsmResetArc()) str << " [aFSMRESETARC]";
@@ -3960,6 +3965,7 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, noReset);
     dumpJsonBoolFuncIf(str, processQueue);
     dumpJsonBoolFuncIf(str, subgraphPublished);
+    if (subgraphPortId()) dumpJsonNumFunc(str, subgraphPortId);
     dumpJsonBoolFuncIf(str, sampled);
     dumpJsonBoolFuncIf(str, attrFsmState);
     dumpJsonBoolFuncIf(str, attrFsmResetArc);

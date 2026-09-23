@@ -1854,6 +1854,7 @@ class AstScope final : public AstNode {
 
     // An AstScope->name() is special: . indicates an uninlined scope, __DOT__ an inlined scope
     string m_name;  // Name
+    uint32_t m_subgraphInstanceId = 0;  // Boundary instance identity, independent of renaming
 public:
     AstScope(FileLine* fl, AstNodeModule* modp, const string& name, AstScope* aboveScopep,
              AstCell* aboveCellp)
@@ -1879,6 +1880,8 @@ public:
     AstScope* aboveScopep() const VL_MT_SAFE { return m_aboveScopep; }
     AstCell* aboveCellp() const { return m_aboveCellp; }
     bool isTop() const VL_MT_SAFE { return aboveScopep() == nullptr; }  // At top of hierarchy
+    uint32_t subgraphInstanceId() const { return m_subgraphInstanceId; }
+    void subgraphInstanceId(uint32_t id) { m_subgraphInstanceId = id; }
     // Create new MODULETEMP variable under this scope
     AstVarScope* createTemp(const string& name, unsigned width);
     AstVarScope* createTemp(const string& name, AstNodeDType* dtypep);
@@ -2257,6 +2260,7 @@ class AstVar final : public AstNode {
 
     string m_name;  // Name of variable
     string m_origName;  // Original name before dot addition
+    uint32_t m_subgraphPortId = 0;  // Stable elaborated boundary port identity, zero if none
     string m_tag;  // Holds the string of the verilator tag -- used in JSON output.
     VVarType m_varType;  // Type of variable
     VDirection m_direction;  // Direction input/output etc
@@ -2558,6 +2562,8 @@ public:
     bool noSubst() const { return m_noSubst; }
     void noSubst(bool flag) { m_noSubst = flag; }
     bool subgraphPublished() const { return m_subgraphPublished; }
+    uint32_t subgraphPortId() const { return m_subgraphPortId; }
+    void subgraphPortId(uint32_t id) { m_subgraphPortId = id; }
     void subgraphPublished(bool flag) { m_subgraphPublished = flag; }
     bool processQueue() const { return m_processQueue; }
     void processQueue(bool flag) { m_processQueue = flag; }

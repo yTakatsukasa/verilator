@@ -27,6 +27,18 @@ test.compile(
     ])
 test.execute()
 
+test.file_grep(test.stats, r'Subgraph boundary, elaborated specializations\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, elaborated ports\s+(\d+)', 24)
+test.file_grep(test.stats, r'Subgraph boundary, elaborated NBA assignments\s+(\d+)', 12)
+test.file_grep(test.stats, r'Subgraph boundary, elaborated events\s+(\d+)', 7)
+test.file_grep(test.stats, r'Subgraph boundary, prepared connections\s+(\d+)', 24)
+test.file_grep(test.stats, r'Subgraph boundary, resolved instances\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, scoped publications\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, delayed publications\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, NBA publications\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, NBA shadow pairs\s+(\d+)', 6)
+test.file_grep(test.stats, r'Subgraph boundary, connected wrappers\s+(\d+)', 12)
+
 test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 6)
 test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 12)
 test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 6)

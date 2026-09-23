@@ -163,7 +163,8 @@ bool AstVar::sameNode(const AstNode* samep) const {
     const AstVar* const asamep = VN_DBG_AS(samep, Var);
     return m_name == asamep->m_name && varType() == asamep->varType()
            && covergroupRefMember() == asamep->covergroupRefMember()
-           && subgraphPublished() == asamep->subgraphPublished();
+           && subgraphPublished() == asamep->subgraphPublished()
+           && subgraphPortId() == asamep->subgraphPortId();
 }
 
 AstMatchMasked::AstMatchMasked(FileLine* fl, AstNodeExpr* lhsp, AstVarScope* matchp)
