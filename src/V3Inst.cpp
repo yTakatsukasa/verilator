@@ -48,18 +48,94 @@ class InstVisitor final : public VNVisitor {
 
     // STATE
     AstCell* m_cellp = nullptr;  // Current cell
+    AstNodeExpr* m_clockExprp = nullptr;  // Unscoped connection to the current cell's clock
+    struct SharedInput final {
+        AstVar* m_clockp = nullptr;
+        AstVar* m_datap = nullptr;
+        AstVar* m_savedp = nullptr;
+    };
+    std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
+    std::map<AstNodeModule*, SharedInput> m_sharedInputs;
     std::map<AstVar*, AstVar*> m_publishedByPort;
     std::map<AstNodeModule*, unsigned> m_nextPublishedIndex;
     uint64_t m_publishedConnections = 0;
+    uint64_t m_sharedCaptures = 0;
+
+    void prepareSharedInput(AstNodeModule* modp) {
+        if (!v3Global.opt.subgraphSchedule() || !modp->subgraphBoundary()
+            || m_cellsByModule[modp].size() < 2 || m_sharedInputs.count(modp)) {
+            return;
+        }
+        AstAlways* seqp = nullptr;
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            const AstAlways* const alwaysp = VN_CAST(stmtp, Always);
+            if (!alwaysp || alwaysp->keyword() != VAlwaysKwd::ALWAYS_FF) continue;
+            if (seqp) return;
+            seqp = VN_AS(stmtp, Always);
+        }
+        if (!seqp || !seqp->sentreep() || !seqp->sentreep()->sensesp()
+            || seqp->sentreep()->sensesp()->nextp()) {
+            return;
+        }
+        const AstSenItem* const itemp = seqp->sentreep()->sensesp();
+        const AstNodeVarRef* const clockp = itemp->varrefp();
+        AstAssignDly* const assp = VN_CAST(seqp->stmtsp(), AssignDly);
+        if (!clockp || itemp->edgeType() != VEdgeType::ET_POSEDGE || !assp || assp->nextp()) {
+            return;
+        }
+        AstVarRef* const datap = VN_CAST(assp->rhsp(), VarRef);
+        if (!datap || !clockp->varp()->subgraphPortId() || !datap->varp()->subgraphPortId()
+            || !clockp->varp()->isNonOutput() || !datap->varp()->isNonOutput()) {
+            return;
+        }
+        // The body is rewritten once, so every instance needs both connections.
+        for (const AstCell* const cellp : m_cellsByModule[modp]) {
+            bool clockConnected = false;
+            bool dataConnected = false;
+            for (const AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                if (pinp->modVarp() == clockp->varp()) {
+                    clockConnected = VN_IS(pinp->exprp(), VarRef);
+                }
+                if (pinp->modVarp() == datap->varp()) {
+                    dataConnected = pinp->exprp() && pinp->exprp()->isPure();
+                }
+            }
+            if (!clockConnected || !dataConnected) return;
+        }
+        FileLine* const flp = datap->fileline();
+        AstVar* const savedp = new AstVar{
+            flp, VVarType::BLOCKTEMP,
+            "__VsubgraphInput__" + cvtToStr(datap->varp()->subgraphPortId()), datap->dtypep()};
+        savedp->noSubst(true);
+        modp->addStmtsp(savedp);
+        m_sharedInputs.emplace(modp, SharedInput{clockp->varp(), datap->varp(), savedp});
+        datap->varp(savedp);
+    }
 
     // VISITORS
     void visit(AstCell* nodep) override {
         UINFO(4, "  CELL   " << nodep);
         VL_RESTORER(m_cellp);
         m_cellp = nodep;
+        prepareSharedInput(nodep->modp());
+        AstNodeExpr* clockExprp = nullptr;
+        const auto it = m_sharedInputs.find(nodep->modp());
+        if (it != m_sharedInputs.end()) {
+            for (AstPin* pinp = nodep->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                if (pinp->modVarp() == it->second.m_clockp && pinp->exprp()) {
+                    clockExprp = VN_AS(pinp->exprp()->cloneTree(false), NodeExpr);
+                    break;
+                }
+            }
+        }
         // VV*****  We reset user1p() on each cell!!!
         AstNode::user1ClearTree();
-        iterateChildren(nodep);
+        {
+            VL_RESTORER(m_clockExprp);
+            m_clockExprp = clockExprp;
+            iterateChildren(nodep);
+        }
+        if (clockExprp) clockExprp->deleteTree();
     }
     void visit(AstPin* nodep) override {
         // PIN(p,expr) -> ASSIGNW(VARXREF(p),expr)    (if sub's input)
@@ -114,6 +190,21 @@ class InstVisitor final : public VNVisitor {
                 AstAssignW* const assp = new AstAssignW{exprp->fileline(), exprp, rhsp};
                 m_cellp->addNextHere(new AstAlways{assp});
             } else if (nodep->modVarp()->isNonOutput()) {
+                const auto shared = m_sharedInputs.find(m_cellp->modp());
+                if (shared != m_sharedInputs.end() && m_clockExprp
+                    && nodep->modVarp() == shared->second.m_datap) {
+                    FileLine* const flp = exprp->fileline();
+                    AstSenTree* const senp
+                        = new AstSenTree{flp, new AstSenItem{flp, VEdgeType::ET_POSEDGE,
+                                                             m_clockExprp->cloneTree(false)}};
+                    AstVarXRef* const lhsp = new AstVarXRef{flp, shared->second.m_savedp,
+                                                            m_cellp->name(), VAccess::WRITE};
+                    AstAlways* const capturep
+                        = new AstAlways{flp, VAlwaysKwd::ALWAYS, senp,
+                                        new AstAssign{flp, lhsp, exprp->cloneTree(false)}};
+                    m_cellp->addNextHere(capturep);
+                    ++m_sharedCaptures;
+                }
                 // Don't bother moving constants now,
                 // we'll be pushing the const down to the cell soon enough.
                 AstVarXRef* const lhsp = new AstVarXRef{exprp->fileline(), nodep->modVarp(),
@@ -157,9 +248,13 @@ class InstVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit InstVisitor(AstNetlist* nodep) { iterate(nodep); }
+    explicit InstVisitor(AstNetlist* nodep) {
+        nodep->foreach([&](AstCell* cellp) { m_cellsByModule[cellp->modp()].push_back(cellp); });
+        iterate(nodep);
+    }
     ~InstVisitor() override {
         V3Stats::addStat("Inst, Subgraph published outputs", m_publishedConnections);
+        V3Stats::addStat("Inst, Subgraph shared input captures", m_sharedCaptures);
     }
 };
 
