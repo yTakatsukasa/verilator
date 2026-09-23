@@ -557,6 +557,7 @@ class AstCFunc final : public AstNode {
                         // state
     bool m_isCovergroupSample : 1;  // Automatic covergroup sample() function
     bool m_subgraphWrapper : 1;  // Ordered child NBA function called at a subgraph boundary
+    bool m_subgraphShareable : 1;  // Receiver-relative child body retained for combining
     int m_cost;  // Function call cost
 public:
     AstCFunc(FileLine* fl, const string& name, AstScope* scopep, const string& rtnType = "")
@@ -590,6 +591,7 @@ public:
         m_noLife = false;
         m_isCovergroupSample = false;
         m_subgraphWrapper = false;
+        m_subgraphShareable = false;
         m_cost = v3Global.opt.instrCountDpi();  // As proxy for unknown general DPI cost
     }
     ASTGEN_MEMBERS_AstCFunc;
@@ -602,6 +604,7 @@ public:
         return ((isTrace() == asamep->isTrace()) && (rtnTypeVoid() == asamep->rtnTypeVoid())
                 && (argTypes() == asamep->argTypes()) && isLoose() == asamep->isLoose()
                 && subgraphWrapper() == asamep->subgraphWrapper()
+                && subgraphShareable() == asamep->subgraphShareable()
                 && (!(dpiImportPrototype() || dpiExportImpl()) || name() == asamep->name()));
     }
     //
@@ -675,6 +678,8 @@ public:
     void isCovergroupSample(bool flag) { m_isCovergroupSample = flag; }
     bool subgraphWrapper() const { return m_subgraphWrapper; }
     void subgraphWrapper(bool flag) { m_subgraphWrapper = flag; }
+    bool subgraphShareable() const { return m_subgraphShareable; }
+    void subgraphShareable(bool flag) { m_subgraphShareable = flag; }
     void cost(int cost) { m_cost = cost; }
     // Special methods
     bool emptyBody() const {

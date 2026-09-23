@@ -12,13 +12,19 @@ import re
 import vltest_bootstrap
 
 test.scenarios('vlt')
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--dumpi-graph", "6"])
+test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "--dumpi-graph", "6",
+                               "--dumpi-tree-json", "9"])
 test.execute()
 
 test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 2)
+test.file_grep(test.stats, r'Scheduling, Subgraph shareable CFuncs\s+(\d+)', 4)
 implementation = test.obj_dir + "/" + test.vm_prefix + "_sg_template_capture__0.cpp"
-test.file_grep(implementation, r'vlSelfRef\.q = vlSelfRef\.__VsubgraphInput__2;')
+test.file_grep_count(implementation, r'vlSelfRef\.q = vlSelfRef\.__VsubgraphInput__2;', 1)
+test.file_grep_count(implementation,
+                     r'_nba_subgraph_pre_0_sequent__TOP__t__DOT__i_a__0\(vlSelf\);', 2)
 test.file_grep_not(implementation, r'vlSelfRef\.q = 0x2aU;')
+test.file_grep(test.obj_dir + "/" + test.vm_prefix + ".tree.json",
+               r'"subgraphShareable":true')
 
 graph = test.glob_one(test.obj_dir + "/*nba_orderg_pre.dot")
 acyclic = test.glob_one(test.obj_dir + "/*nba_orderg_acyc.dot")

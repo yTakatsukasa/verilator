@@ -487,8 +487,11 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
     }
 
     uint64_t orderedLogic = 0;
+    uint64_t shareableFunctions = 0;
     unsigned groupIndex = 0;
     CaptureVars savedVars;
+    std::map<AstNodeModule*, unsigned> groupsByModule;
+    for (const SubgraphGroup& group : groups) ++groupsByModule[group.m_boundaryScopep->modp()];
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
         UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep,
@@ -500,6 +503,20 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
 
         const auto orderPhase = [&](LogicByScope& phaseLogic, const string& phase, bool post) {
             if (phaseLogic.empty()) return;
+            const bool mayShare
+                = groupsByModule[group.m_boundaryScopep->modp()] > 1
+                  && std::all_of(phaseLogic.begin(), phaseLogic.end(), [&](const auto& pair) {
+                         return pair.first == group.m_boundaryScopep;
+                     });
+            std::unordered_set<AstCFunc*> oldFunctions;
+            if (mayShare) {
+                for (AstNode* blockp = group.m_boundaryScopep->blocksp(); blockp;
+                     blockp = blockp->nextp()) {
+                    if (AstCFunc* const cfuncp = VN_CAST(blockp, CFunc)) {
+                        oldFunctions.insert(cfuncp);
+                    }
+                }
+            }
             const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
             AstCFunc* const funcp
                 = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag, false,
@@ -507,6 +524,26 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
             if (!funcp) return;
             funcp->subgraphWrapper(true);
             util::splitCheck(funcp);
+            if (mayShare) {
+                for (AstNode* blockp = group.m_boundaryScopep->blocksp(); blockp;
+                     blockp = blockp->nextp()) {
+                    AstCFunc* const cfuncp = VN_CAST(blockp, CFunc);
+                    if (!cfuncp || oldFunctions.count(cfuncp)) continue;
+                    bool hasInstanceContext = false;
+                    cfuncp->foreach([&](AstNode* nodep) {
+                        if (VN_IS(nodep, NodeCCall) || VN_IS(nodep, NodeFTaskRef)
+                            || VN_IS(nodep, CExpr) || VN_IS(nodep, CExprUser)
+                            || VN_IS(nodep, CStmt) || VN_IS(nodep, CStmtUser)
+                            || VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)) {
+                            hasInstanceContext = true;
+                        }
+                    });
+                    if (hasInstanceContext) continue;
+                    cfuncp->dontCombine(false);
+                    cfuncp->subgraphShareable(true);
+                    ++shareableFunctions;
+                }
+            }
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
@@ -528,6 +565,7 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
 
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
+    V3Stats::addStat("Scheduling, Subgraph shareable CFuncs", shareableFunctions);
     uint64_t capturedInputs = 0;
     for (const auto& pair : freshReads) capturedInputs += pair.second.size();
     V3Stats::addStat("Scheduling, Subgraph captured inputs", capturedInputs);
