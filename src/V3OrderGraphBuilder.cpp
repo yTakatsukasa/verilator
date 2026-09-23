@@ -26,6 +26,7 @@
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
 
+#include <unordered_map>
 #include <unordered_set>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -185,12 +186,30 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphWrapperUsage(AstCCall* nodep) {
-        AstScope* const boundaryScopep = nodep->funcp()->scopep();
+        AstScope* const implementationScopep = nodep->funcp()->scopep();
+        AstScope* const boundaryScopep = nodep->subgraphReceiverScopep()
+                                             ? nodep->subgraphReceiverScopep()
+                                             : implementationScopep;
+        std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+        if (boundaryScopep != implementationScopep) {
+            UASSERT_OBJ(boundaryScopep->modp() == implementationScopep->modp(), nodep,
+                        "Subgraph receiver has a different specialization");
+            for (AstVarScope* vscp = boundaryScopep->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.emplace(vscp->varp(), vscp);
+            }
+        }
         std::unordered_set<const AstCFunc*> visited;
         std::function<void(AstCFunc*)> scanFunc = [&](AstCFunc* funcp) {
             if (!visited.insert(funcp).second) return;
             funcp->foreach([&](AstNodeVarRef* refp) {
-                AstVarScope* const vscp = refp->varScopep();
+                AstVarScope* vscp = refp->varScopep();
+                if (!receiverVars.empty() && vscp->scopep() == implementationScopep) {
+                    const auto it = receiverVars.find(vscp->varp());
+                    UASSERT_OBJ(it != receiverVars.end(), refp,
+                                "Shared subgraph state missing from receiver scope");
+                    vscp = it->second;
+                }
                 const bool internal = isUnderScope(vscp->scopep(), boundaryScopep);
                 const bool delayedState = internal && 0 == vscp->varp()->name().rfind("__Vdly", 0);
                 if (internal) {
@@ -208,7 +227,11 @@ class OrderGraphBuilder final : public VNVisitor {
                 }
                 VL_RESTORER(m_softSubgraphRead);
                 m_softSubgraphRead = m_inPost && refp->access().isReadOrRW() && !delayedState;
-                visit(refp);
+                if (vscp == refp->varScopep()) {
+                    visit(refp);
+                } else {
+                    accountVarAccess(vscp, refp->access(), refp);
+                }
             });
             funcp->foreach([&](AstCCall* callp) {
                 if (!callp->funcp()->entryPoint()) scanFunc(callp->funcp());

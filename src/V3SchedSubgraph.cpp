@@ -457,6 +457,65 @@ void SubgraphPlan::foreachUse(const std::function<void(const Use&)>& callback) c
     }
 }
 
+static bool sameReceiverLogic(const LogicByScope& representative, const LogicByScope& candidate,
+                              AstScope* representativeScopep, AstScope* candidateScopep) {
+    if (representative.size() != candidate.size()) return false;
+    std::map<const AstVar*, AstVarScope*> representativeVars;
+    for (AstVarScope* vscp = representativeScopep->varsp(); vscp;
+         vscp = VN_AS(vscp->nextp(), VarScope)) {
+        representativeVars.emplace(vscp->varp(), vscp);
+    }
+    for (size_t i = 0; i < representative.size(); ++i) {
+        const auto& source = representative[i];
+        const auto& target = candidate[i];
+        if (source.first != representativeScopep || target.first != candidateScopep
+            || !source.second->sentreep()->sameTree(target.second->sentreep())) {
+            return false;
+        }
+        AstNode* const sourcep = source.second->stmtsp();
+        AstNode* const targetp = target.second->stmtsp();
+        if (!sourcep || !targetp) {
+            if (sourcep != targetp) return false;
+            continue;
+        }
+        AstNode* const clonedp = targetp->cloneTree(true);
+        bool compatible = true;
+        clonedp->foreachAndNext([&](AstNode* nodep) {
+            if (VN_IS(nodep, NodeCCall) || VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName)
+                || VN_IS(nodep, VarXRef) || VN_IS(nodep, CExpr) || VN_IS(nodep, CExprUser)
+                || VN_IS(nodep, CStmt) || VN_IS(nodep, CStmtUser)) {
+                compatible = false;
+            }
+            if (AstVarRef* const refp = VN_CAST(nodep, VarRef)) {
+                if (refp->varScopep()->scopep() != candidateScopep) return;
+                const auto it = representativeVars.find(refp->varp());
+                if (it == representativeVars.end()) {
+                    compatible = false;
+                } else {
+                    refp->varScopep(it->second);
+                }
+            }
+        });
+        if (compatible) compatible = sourcep->sameTree(clonedp);
+        clonedp->deleteTree();
+        if (!compatible) return false;
+    }
+    return true;
+}
+
+static bool sameReceiverGroup(const SubgraphGroup& representative,
+                              const SubgraphGroup& candidate) {
+    if (representative.m_boundaryScopep->modp() != candidate.m_boundaryScopep->modp()
+        || !representative.m_senTreep || !candidate.m_senTreep
+        || !representative.m_senTreep->sameTree(candidate.m_senTreep)) {
+        return false;
+    }
+    return sameReceiverLogic(representative.m_preLogic, candidate.m_preLogic,
+                             representative.m_boundaryScopep, candidate.m_boundaryScopep)
+           && sameReceiverLogic(representative.m_postLogic, candidate.m_postLogic,
+                                representative.m_boundaryScopep, candidate.m_boundaryScopep);
+}
+
 V3Order::FreshReads
 lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
                       const V3Order::TrigToSenMap& trigToSen,
@@ -488,10 +547,27 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
 
     uint64_t orderedLogic = 0;
     uint64_t shareableFunctions = 0;
+    uint64_t sharedOrderSkips = 0;
     unsigned groupIndex = 0;
     CaptureVars savedVars;
     std::map<AstNodeModule*, unsigned> groupsByModule;
     for (const SubgraphGroup& group : groups) ++groupsByModule[group.m_boundaryScopep->modp()];
+    std::vector<size_t> representative(groups.size());
+    std::vector<std::array<AstCFunc*, 2>> orderedFunctions(groups.size());
+    std::map<AstNodeModule*, size_t> firstByModule;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        representative[i] = i;
+        AstNodeModule* const modp = groups[i].m_boundaryScopep->modp();
+        if (groupsByModule[modp] != 2) continue;
+        const auto inserted = firstByModule.emplace(modp, i);
+        if (!inserted.second && sameReceiverGroup(groups[inserted.first->second], groups[i])) {
+            representative[i] = inserted.first->second;
+        }
+    }
+    std::vector<bool> sharedRepresentative(groups.size(), false);
+    for (size_t i = 0; i < groups.size(); ++i) {
+        if (representative[i] != i) sharedRepresentative[representative[i]] = true;
+    }
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
         UASSERT_OBJ(group.m_senTreep, group.m_boundaryScopep,
@@ -517,14 +593,28 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
                     }
                 }
             }
-            const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
-            AstCFunc* const funcp
-                = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag, false,
-                                 slow, externalDomains, group.m_boundaryScopep);
-            if (!funcp) return;
-            funcp->subgraphWrapper(true);
-            util::splitCheck(funcp);
-            if (mayShare) {
+            AstCFunc* funcp = nullptr;
+            if (representative[groupIndex] != groupIndex) {
+                funcp = orderedFunctions[representative[groupIndex]][post];
+                UASSERT_OBJ(funcp, group.m_boundaryScopep,
+                            "Shared subgraph has no representative function");
+                for (const auto& pair : phaseLogic) pair.second->deleteTree();
+                phaseLogic.clear();
+                ++sharedOrderSkips;
+            } else {
+                const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
+                funcp = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag,
+                                       false, slow, externalDomains, group.m_boundaryScopep);
+                if (!funcp) return;
+                funcp->subgraphWrapper(true);
+                if (sharedRepresentative[groupIndex]) {
+                    funcp->subgraphShareable(true);
+                    ++shareableFunctions;
+                }
+                util::splitCheck(funcp);
+                orderedFunctions[groupIndex][post] = funcp;
+            }
+            if (mayShare && representative[groupIndex] == groupIndex) {
                 for (AstNode* blockp = group.m_boundaryScopep->blocksp(); blockp;
                      blockp = blockp->nextp()) {
                     AstCFunc* const cfuncp = VN_CAST(blockp, CFunc);
@@ -547,13 +637,17 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
 
             AstActive* const wrapperp
                 = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
-            AstNode* const callp = util::callVoidFunc(funcp);
+            AstCCall* const callp = new AstCCall{group.m_filelinep, funcp};
+            callp->dtypeSetVoid();
+            if (representative[groupIndex] != groupIndex) {
+                callp->subgraphReceiverScopep(group.m_boundaryScopep);
+            }
             if (post) {
                 AstAlwaysPost* const postp = new AstAlwaysPost{group.m_filelinep};
-                postp->addStmtsp(callp);
+                postp->addStmtsp(callp->makeStmt());
                 wrapperp->addStmtsp(postp);
             } else {
-                wrapperp->addStmtsp(callp);
+                wrapperp->addStmtsp(callp->makeStmt());
             }
             group.m_ownerp->emplace_back(group.m_boundaryScopep, wrapperp);
         };
@@ -566,6 +660,7 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
     V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph shareable CFuncs", shareableFunctions);
+    V3Stats::addStat("Scheduling, Subgraph shared Order skips", sharedOrderSkips);
     uint64_t capturedInputs = 0;
     for (const auto& pair : freshReads) capturedInputs += pair.second.size();
     V3Stats::addStat("Scheduling, Subgraph captured inputs", capturedInputs);

@@ -29,6 +29,8 @@
 #include "V3AstUserAllocator.h"
 #include "V3Stats.h"
 
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -54,6 +56,7 @@ class LocalizeVisitor final : public VNVisitor {
 
     // STATE - across all visitors
     std::vector<AstVarScope*> m_varScopeps;  // List of variables to consider for localization
+    std::unordered_set<const AstVarScope*> m_sharedReceiverVarsp;
     VDouble0 m_statLocVars;  // Statistic tracking
 
     // STATE - for current visit position (use VL_RESTORER)
@@ -62,6 +65,7 @@ class LocalizeVisitor final : public VNVisitor {
 
     // METHODS
     bool isOptimizable(AstVarScope* nodep) {
+        if (m_sharedReceiverVarsp.count(nodep)) return false;
         // Don't want to malloc/free the backing store all the time
         if (VN_IS(nodep->dtypep(), NBACommitQueueDType)) return false;
         // Do not localize strings. They result in unnecessary initialization
@@ -161,6 +165,30 @@ class LocalizeVisitor final : public VNVisitor {
 
     void visit(AstCCall* nodep) override {
         m_cfuncp->user1(true);  // Mark caller as not a leaf function
+        if (AstScope* const receiverp = nodep->subgraphReceiverScopep()) {
+            AstScope* const implementationp = nodep->funcp()->scopep();
+            UASSERT_OBJ(receiverp->modp() == implementationp->modp(), nodep,
+                        "Subgraph receiver has a different specialization");
+            std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+            for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.emplace(vscp->varp(), vscp);
+            }
+            std::unordered_set<const AstCFunc*> visited;
+            std::function<void(AstCFunc*)> markReceiverUses = [&](AstCFunc* funcp) {
+                if (!visited.insert(funcp).second) return;
+                funcp->foreach([&](AstNodeVarRef* refp) {
+                    AstVarScope* const vscp = refp->varScopep();
+                    if (vscp->scopep() != implementationp) return;
+                    const auto it = receiverVars.find(vscp->varp());
+                    UASSERT_OBJ(it != receiverVars.end(), refp,
+                                "Shared subgraph state missing from receiver scope");
+                    m_sharedReceiverVarsp.insert(it->second);
+                });
+                funcp->foreach([&](AstCCall* callp) { markReceiverUses(callp->funcp()); });
+            };
+            markReceiverUses(nodep->funcp());
+        }
         iterateChildrenConst(nodep);
     }
 

@@ -499,6 +499,17 @@ void AstCAwait::dump(std::ostream& str) const {
     }
 }
 void AstCAwait::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstCCall::dump(std::ostream& str) const {
+    Super::dump(str);
+    if (subgraphReceiverScopep()) {
+        str << " [SUBGRAPH_RECEIVER] " << subgraphReceiverScopep()->name();
+    }
+}
+void AstCCall::dumpJson(std::ostream& str) const {
+    Super::dumpJson(str);
+    if (subgraphReceiverScopep())
+        dumpJsonPtr(str, "subgraphReceiverScopep", subgraphReceiverScopep());
+}
 void AstCCast::dump(std::ostream& str) const {
     Super::dump(str);
     str << " sz" << size();
