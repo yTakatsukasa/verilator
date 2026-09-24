@@ -73,8 +73,9 @@ class InstVisitor final : public VNVisitor {
     }
 
     void prepareSharedInput(AstNodeModule* modp) {
-        if (!v3Global.opt.subgraphSchedule() || !modp->subgraphBoundary()
-            || m_instantiationsByModule[modp] < 2
+        // The pre-scope shared-procedure path currently requires serial Order.
+        if (!v3Global.opt.subgraphSchedule() || v3Global.opt.threads() > 1
+            || !modp->subgraphBoundary() || m_instantiationsByModule[modp] < 2
             || m_instantiationsByModule[modp] != m_cellsByModule[modp].size()
             || m_sharedInputs.count(modp)) {
             return;

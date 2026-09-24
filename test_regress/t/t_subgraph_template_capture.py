@@ -18,7 +18,7 @@ test.execute()
 
 test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 2)
 test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 2)
-test.file_grep(test.stats, r'Scheduling, Subgraph receiver actives\s+(\d+)', 3)
+test.file_grep(test.stats, r'Scheduling, Subgraph receiver actives\s+(\d+)', 1)
 test.file_grep(test.stats, r'Scheduling, Subgraph shareable CFuncs\s+(\d+)', 4)
 test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 2)
 implementation = test.obj_dir + "/" + test.vm_prefix + "_sg_template_capture__0.cpp"

@@ -141,50 +141,76 @@ void splitBoundaryCombinationalLogic(AstNetlist* netlistp) {
     }
 }
 
-void materializeSharedReceiverLogic(AstNetlist* netlistp) {
-    std::vector<AstScope*> receivers;
+using SharedReceivers = std::unordered_map<AstScope*, std::vector<AstScope*>>;
+
+SharedReceivers prepareSharedReceiverState(AstNetlist* netlistp) {
+    SharedReceivers receivers;
     netlistp->foreach([&](AstScope* scopep) {
-        if (scopep->subgraphImplementationScopep()) receivers.push_back(scopep);
+        if (AstScope* const implementationp = scopep->subgraphImplementationScopep()) {
+            receivers[implementationp].push_back(scopep);
+        }
     });
-    uint64_t materialized = 0;
     uint64_t lateVarScopes = 0;
-    for (AstScope* const receiverp : receivers) {
-        AstScope* const implementationp = receiverp->subgraphImplementationScopep();
-        UASSERT_OBJ(receiverp->modp() == implementationp->modp(), receiverp,
-                    "Subgraph receiver has a different specialization");
-        std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
-        for (AstVarScope* vscp = receiverp->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
-            receiverVars.emplace(vscp->varp(), vscp);
+    for (const auto& entry : receivers) {
+        AstScope* const implementationp = entry.first;
+        for (AstScope* const receiverp : entry.second) {
+            UASSERT_OBJ(receiverp->modp() == implementationp->modp(), receiverp,
+                        "Subgraph receiver has a different specialization");
+            std::unordered_set<const AstVar*> receiverVars;
+            for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.insert(vscp->varp());
+            }
+            for (AstVarScope* vscp = implementationp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                if (!receiverVars.insert(vscp->varp()).second) continue;
+                AstVarScope* const newp
+                    = new AstVarScope{vscp->fileline(), receiverp, vscp->varp()};
+                receiverp->addVarsp(newp);
+                ++lateVarScopes;
+            }
         }
-        for (AstVarScope* vscp = implementationp->varsp(); vscp;
-             vscp = VN_AS(vscp->nextp(), VarScope)) {
-            if (receiverVars.count(vscp->varp())) continue;
-            AstVarScope* const newp = new AstVarScope{vscp->fileline(), receiverp, vscp->varp()};
-            receiverp->addVarsp(newp);
-            receiverVars.emplace(vscp->varp(), newp);
-            ++lateVarScopes;
-        }
-        for (AstNode* blockp = implementationp->blocksp(); blockp; blockp = blockp->nextp()) {
-            AstActive* const activep = VN_CAST(blockp, Active);
-            if (!activep || activep->sentreep()->hasCombo() || isPublishActive(activep)) continue;
-            AstActive* const clonep = activep->cloneTree(false);
-            clonep->foreach([&](AstNodeVarRef* refp) {
-                AstVarScope* const vscp = refp->varScopep();
-                if (vscp->scopep() != implementationp) return;
-                const auto it = receiverVars.find(vscp->varp());
-                UASSERT_OBJ(it != receiverVars.end(), refp,
-                            "Shared subgraph state missing from receiver scope");
-                refp->varScopep(it->second);
-            });
-            receiverp->addBlocksp(clonep);
-            ++materialized;
-        }
-        receiverp->subgraphImplementationScopep(nullptr);
     }
-    V3Stats::addStat("Scheduling, Subgraph receiver actives", materialized);
     V3Stats::addStat("Scheduling, Subgraph receiver late VarScopes", lateVarScopes);
     V3Stats::addStat("Scheduling, Subgraph receiver late VarScope bytes",
                      lateVarScopes * sizeof(AstVarScope));
+    return receivers;
+}
+
+uint64_t materializeSharedReceiverLogic(const SharedReceivers& receivers,
+                                        const std::unordered_set<AstScope*>& accepted) {
+    uint64_t materialized = 0;
+    for (const auto& entry : receivers) {
+        AstScope* const implementationp = entry.first;
+        const bool sharedClocked = accepted.count(implementationp);
+        for (AstScope* const receiverp : entry.second) {
+            std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+            for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.emplace(vscp->varp(), vscp);
+            }
+            for (AstNode* blockp = implementationp->blocksp(); blockp; blockp = blockp->nextp()) {
+                AstActive* const activep = VN_CAST(blockp, Active);
+                if (!activep || activep->sentreep()->hasCombo() || isPublishActive(activep))
+                    continue;
+                if (sharedClocked && activep->sentreep()->hasClocked()) continue;
+                AstActive* const clonep = activep->cloneTree(false);
+                clonep->foreach([&](AstNodeVarRef* refp) {
+                    AstVarScope* const vscp = refp->varScopep();
+                    if (vscp->scopep() != implementationp) return;
+                    const auto it = receiverVars.find(vscp->varp());
+                    UASSERT_OBJ(it != receiverVars.end(), refp,
+                                "Shared subgraph state missing from receiver scope");
+                    refp->varScopep(it->second);
+                });
+                receiverp->addBlocksp(clonep);
+                ++materialized;
+            }
+            if (!sharedClocked) receiverp->subgraphImplementationScopep(nullptr);
+        }
+    }
+    V3Stats::addStat("Scheduling, Subgraph receiver actives", materialized);
+    return materialized;
 }
 
 struct EarlyCandidate final {
@@ -328,6 +354,8 @@ struct SubgraphPlan::Impl final {
         LogicRegions m_regions;
         LogicReplicas m_replicas;
         std::vector<Use> m_uses;
+        std::vector<AstScope*> m_receivers;
+        std::vector<std::vector<Use>> m_receiverUses;
     };
 
     std::vector<Group> m_groups;
@@ -337,7 +365,7 @@ struct SubgraphPlan::Impl final {
 SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     : m_impl{new Impl} {
     if (!v3Global.opt.subgraphSchedule()) return;
-    materializeSharedReceiverLogic(netlistp);
+    const SharedReceivers sharedReceivers = prepareSharedReceiverState(netlistp);
     splitBoundaryCombinationalLogic(netlistp);
 
     std::vector<EarlyCandidate> candidates;
@@ -432,6 +460,17 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         };
         seedInternal(candidate.m_clocked);
         seedInternal(candidate.m_comb);
+        // Receiver procedures have not been cloned. Include their state in the parent-clock
+        // check so an instance-specific generated clock cannot bypass admission.
+        const auto receivers = sharedReceivers.find(candidate.m_scopep);
+        if (receivers != sharedReceivers.end()) {
+            for (AstScope* const receiverp : receivers->second) {
+                for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                     vscp = VN_AS(vscp->nextp(), VarScope)) {
+                    tainted.insert(vscp);
+                }
+            }
+        }
 
         bool changed = true;
         while (changed) {
@@ -465,6 +504,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     uint64_t rejected = 0;
     uint64_t clocked = 0;
     uint64_t combinational = 0;
+    uint64_t acceptedInstances = 0;
+    std::unordered_set<AstScope*> acceptedScopes;
     for (EarlyCandidate& candidate : candidates) {
         if (!candidate.m_rejection.empty()) {
             ++rejected;
@@ -477,11 +518,16 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         Impl::Group& group = m_impl->m_groups[groupIndex];
         group.m_scopep = candidate.m_scopep;
         m_impl->m_accepted.emplace(candidate.m_scopep, groupIndex);
+        acceptedScopes.insert(candidate.m_scopep);
+        const auto receivers = sharedReceivers.find(candidate.m_scopep);
+        if (receivers != sharedReceivers.end()) group.m_receivers = receivers->second;
+        acceptedInstances += 1 + group.m_receivers.size();
         clocked += candidate.m_clocked.size();
         combinational += candidate.m_comb.size();
     }
+    materializeSharedReceiverLogic(sharedReceivers, acceptedScopes);
     V3Stats::addStat("Scheduling, Subgraph early candidates", candidates.size());
-    V3Stats::addStat("Scheduling, Subgraph early groups", m_impl->m_groups.size());
+    V3Stats::addStat("Scheduling, Subgraph early groups", acceptedInstances);
     V3Stats::addStat("Scheduling, Subgraph early fallbacks", rejected);
     V3Stats::addStat("Scheduling, Subgraph early clocked actives", clocked);
     V3Stats::addStat("Scheduling, Subgraph early combinational actives", combinational);
@@ -542,6 +588,26 @@ void SubgraphPlan::partitionAndReplicate() {
         };
         collect(group.m_regions.m_nba);
         collect(group.m_replicas.m_nba);
+        for (AstScope* const receiverp : group.m_receivers) {
+            std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+            for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.emplace(vscp->varp(), vscp);
+            }
+            std::vector<Use> uses;
+            uses.reserve(group.m_uses.size());
+            for (const Use& use : group.m_uses) {
+                AstVarScope* vscp = use.m_vscp;
+                if (vscp->scopep() == group.m_scopep) {
+                    const auto it = receiverVars.find(vscp->varp());
+                    UASSERT_OBJ(it != receiverVars.end(), receiverp,
+                                "Shared subgraph state missing from receiver scope");
+                    vscp = it->second;
+                }
+                uses.emplace_back(Use{vscp, use.m_read, use.m_write});
+            }
+            group.m_receiverUses.emplace_back(std::move(uses));
+        }
     }
 }
 
@@ -550,6 +616,9 @@ void SubgraphPlan::foreachBoundary(
     for (const Impl::Group& group : m_impl->m_groups) {
         UASSERT_OBJ(group.m_senTreep, group.m_scopep, "Missing subgraph clocked sensitivity");
         callback(group.m_scopep, group.m_senTreep, group.m_uses);
+        for (size_t i = 0; i < group.m_receivers.size(); ++i) {
+            callback(group.m_receivers[i], group.m_senTreep, group.m_receiverUses[i]);
+        }
     }
 }
 
@@ -576,6 +645,9 @@ void SubgraphPlan::materializeNba(
 void SubgraphPlan::foreachUse(const std::function<void(const Use&)>& callback) const {
     for (const Impl::Group& group : m_impl->m_groups) {
         for (const Use& use : group.m_uses) callback(use);
+        for (const std::vector<Use>& uses : group.m_receiverUses) {
+            for (const Use& use : uses) callback(use);
+        }
     }
 }
 
@@ -673,8 +745,17 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
     uint64_t sharedOrderSkips = 0;
     unsigned groupIndex = 0;
     CaptureVars savedVars;
+    SharedReceivers sharedReceivers;
+    netlistp->foreach([&](AstScope* scopep) {
+        if (AstScope* const implementationp = scopep->subgraphImplementationScopep()) {
+            sharedReceivers[implementationp].push_back(scopep);
+        }
+    });
     std::map<AstNodeModule*, unsigned> groupsByModule;
     for (const SubgraphGroup& group : groups) ++groupsByModule[group.m_boundaryScopep->modp()];
+    for (const auto& entry : sharedReceivers) {
+        groupsByModule[entry.first->modp()] += entry.second.size();
+    }
     std::vector<size_t> representative(groups.size());
     std::vector<std::array<AstCFunc*, 2>> orderedFunctions(groups.size());
     std::map<AstNodeModule*, size_t> firstByModule;
@@ -690,6 +771,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
     std::vector<bool> sharedRepresentative(groups.size(), false);
     for (size_t i = 0; i < groups.size(); ++i) {
         if (representative[i] != i) sharedRepresentative[representative[i]] = true;
+        if (sharedReceivers.count(groups[i].m_boundaryScopep)) sharedRepresentative[i] = true;
     }
     for (SubgraphGroup& group : groups) {
         orderedLogic += group.m_preLogic.size() + group.m_postLogic.size();
@@ -796,7 +878,36 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
         ++groupIndex;
     }
 
-    V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size());
+    uint64_t directReceivers = 0;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        const SubgraphGroup& group = groups[i];
+        const auto receivers = sharedReceivers.find(group.m_boundaryScopep);
+        if (receivers == sharedReceivers.end()) continue;
+        for (AstScope* const receiverp : receivers->second) {
+            for (bool post : {false, true}) {
+                AstCFunc* const funcp = orderedFunctions[representative[i]][post];
+                if (!funcp) continue;
+                AstActive* const activep
+                    = new AstActive{group.m_filelinep, "subgraph", group.m_senTreep};
+                AstCCall* const callp = new AstCCall{group.m_filelinep, funcp};
+                callp->dtypeSetVoid();
+                callp->subgraphReceiverScopep(receiverp);
+                if (post) {
+                    AstAlwaysPost* const postp = new AstAlwaysPost{group.m_filelinep};
+                    postp->addStmtsp(callp->makeStmt());
+                    activep->addStmtsp(postp);
+                } else {
+                    activep->addStmtsp(callp->makeStmt());
+                }
+                group.m_ownerp->emplace_back(receiverp, activep);
+                ++sharedOrderSkips;
+            }
+            receiverp->subgraphImplementationScopep(nullptr);
+            ++directReceivers;
+        }
+    }
+
+    V3Stats::addStat("Scheduling, Subgraph NBA groups", groups.size() + directReceivers);
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph shareable CFuncs", shareableFunctions);
     V3Stats::addStat("Scheduling, Subgraph shared Order skips", sharedOrderSkips);

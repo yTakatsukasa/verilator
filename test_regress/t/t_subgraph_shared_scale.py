@@ -17,6 +17,9 @@ test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 32)
 test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 62)
 test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 32)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 0)
+test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 2)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 2)
+test.file_grep(test.stats, r'Scheduling, Subgraph receiver actives\s+(\d+)', 31)
 test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 62)
 child_implementation = test.obj_dir + "/" + test.vm_prefix + "_sg_shared_scale__0.cpp"
 root_implementation = test.obj_dir + "/" + test.vm_prefix + "___024root__0.cpp"
