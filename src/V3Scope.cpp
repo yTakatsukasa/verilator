@@ -191,10 +191,10 @@ class ScopeVisitor final : public VNVisitor {
             nodep, scopename, m_aboveScopep, m_aboveCellp};
         const uint64_t totalInstantiations
             = m_totalInstantiations.emplace(nodep, nodep->user3()).first->second;
-        if (totalInstantiations == 2) {
-            if (nodep->user3() == 2 && shareableSubgraphModule(nodep)) {
+        if (totalInstantiations >= 2) {
+            if (nodep->user3() == totalInstantiations && shareableSubgraphModule(nodep)) {
                 m_subgraphImplementationScopes.emplace(nodep, m_scopep);
-            } else if (nodep->user3() == 1) {
+            } else {
                 const auto it = m_subgraphImplementationScopes.find(nodep);
                 if (it != m_subgraphImplementationScopes.end()
                     && it->second->aboveScopep() == m_aboveScopep) {
@@ -300,7 +300,7 @@ class ScopeVisitor final : public VNVisitor {
                 refp->varp()->noSubst(true);
             });
             ++m_sharedProcedures;
-            pushDeletep(nodep->unlinkFrBack());
+            if (m_last) pushDeletep(nodep->unlinkFrBack());
             return;
         }
         // Add to list of blocks under this scope
@@ -490,5 +490,29 @@ void V3Scope::scopeAll(AstNetlist* nodep) {
         const ScopeVisitor visitor{nodep};
         ScopeCleanupVisitor{nodep};
     }  // Destruct before checking
+    if (v3Global.opt.stats()) {
+        uint64_t boundaryScopes = 0;
+        uint64_t boundaryVarScopes = 0;
+        uint64_t boundaryProcedures = 0;
+        uint64_t boundaryProcedureNodes = 0;
+        nodep->foreach([&](AstScope* scopep) {
+            if (!scopep->modp()->subgraphBoundary()) return;
+            ++boundaryScopes;
+            for (AstVarScope* vscp = scopep->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                ++boundaryVarScopes;
+            }
+            for (AstNode* blockp = scopep->blocksp(); blockp; blockp = blockp->nextp()) {
+                if (!VN_IS(blockp, NodeProcedure)) continue;
+                ++boundaryProcedures;
+                boundaryProcedureNodes += blockp->nodeCount();
+            }
+        });
+        V3Stats::addStat("Scope, AST nodes", nodep->nodeCount());
+        V3Stats::addStat("Scope, Subgraph boundary scopes", boundaryScopes);
+        V3Stats::addStat("Scope, Subgraph boundary VarScopes", boundaryVarScopes);
+        V3Stats::addStat("Scope, Subgraph boundary procedures", boundaryProcedures);
+        V3Stats::addStat("Scope, Subgraph boundary procedure AST nodes", boundaryProcedureNodes);
+    }
     V3Global::dumpCheckGlobalTree("scope", 0, dumpTreeEitherLevel() >= 3);
 }

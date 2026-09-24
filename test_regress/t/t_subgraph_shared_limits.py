@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Shared subgraph logic requires two receivers with one clock
+# DESCRIPTION: Verilator: Shared subgraph logic respects clock domains and hierarchy
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -15,8 +15,8 @@ test.compile(make_main=False, verilator_flags2=[
 ])
 test.execute()
 
-test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 0)
-test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 0)
-test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 0)
+test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 7)
+test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 5)
+test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 10)
 
 test.passes()

@@ -73,7 +73,8 @@ class InstVisitor final : public VNVisitor {
 
     void prepareSharedInput(AstNodeModule* modp) {
         if (!v3Global.opt.subgraphSchedule() || !modp->subgraphBoundary()
-            || m_instantiationsByModule[modp] != 2 || m_cellsByModule[modp].size() != 2
+            || m_instantiationsByModule[modp] < 2
+            || m_instantiationsByModule[modp] != m_cellsByModule[modp].size()
             || m_sharedInputs.count(modp)) {
             return;
         }

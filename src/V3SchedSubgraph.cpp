@@ -605,7 +605,7 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
     for (size_t i = 0; i < groups.size(); ++i) {
         representative[i] = i;
         AstNodeModule* const modp = groups[i].m_boundaryScopep->modp();
-        if (groupsByModule[modp] != 2) continue;
+        if (groupsByModule[modp] < 2) continue;
         const auto inserted = firstByModule.emplace(modp, i);
         if (!inserted.second && sameReceiverGroup(groups[inserted.first->second], groups[i])) {
             representative[i] = inserted.first->second;

@@ -1,4 +1,4 @@
-// DESCRIPTION: Verilator: Shared subgraph logic requires two receivers with one clock
+// DESCRIPTION: Verilator: Shared subgraph logic respects clock domains and hierarchy
 //
 // This file ONLY is placed under the Creative Commons Public Domain.
 // SPDX-FileCopyrightText: 2026 Wilson Snyder
