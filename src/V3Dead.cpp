@@ -722,6 +722,7 @@ class DeadVisitor final : public VNVisitor {
         }
     }
     bool mightElimVar(const AstVar* nodep) const {
+        if (nodep->subgraphSharedState()) return false;
         if (nodep->isSigPublic()) return false;  // Can't elim publics!
         if (nodep->isPrimaryIO() || nodep->isClassMember() || nodep->sensIfacep()) return false;
         if (nodep->isTemp() && !nodep->isTrace()) return true;

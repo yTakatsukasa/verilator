@@ -58,6 +58,7 @@ struct V3SubgraphBoundary::Impl final {
     std::vector<Connection> m_connections;
     std::vector<Event> m_events;
     std::set<uint32_t> m_connectedOutputs;
+    std::set<std::pair<const AstCell*, uint32_t>> m_connectedInstanceOutputs;
     std::map<std::pair<uint32_t, uint32_t>, int> m_scoped;
     unsigned m_specializations = 0;
     unsigned m_nbaAssignments = 0;
@@ -103,6 +104,13 @@ struct V3SubgraphBoundary::Impl final {
         netlistp->foreach([&](AstVarScope* vscp) {
             if (!vscp->varp()->subgraphPublished()) return;
             const Port& metadata = port(vscp->varp());
+            const std::pair<const AstCell*, uint32_t> connection{vscp->scopep()->aboveCellp(),
+                                                                 vscp->varp()->subgraphPortId()};
+            if (!m_connectedInstanceOutputs.count(connection)) {
+                UASSERT_OBJ(writers[vscp] == 0, vscp,
+                            "Unconnected boundary output has a publication driver");
+                return;
+            }
             UASSERT_OBJ(m_connectedOutputs.count(vscp->varp()->subgraphPortId()), vscp,
                         "Publication has no prepared output connection");
             UASSERT_OBJ(metadata.m_direction == VDirection::OUTPUT, vscp,
@@ -125,6 +133,23 @@ struct V3SubgraphBoundary::Impl final {
         unsigned nbaPairs = 0;
         unsigned nbaPublications = 0;
         if (afterDelayed) {
+            std::map<const AstVarScope*, const AstVarScope*> representativeState;
+            netlistp->foreach([&](AstScope* scopep) {
+                AstScope* const implementationp = scopep->subgraphImplementationScopep();
+                if (!implementationp) return;
+                std::map<const AstVar*, const AstVarScope*> implementationVars;
+                for (AstVarScope* vscp = implementationp->varsp(); vscp;
+                     vscp = VN_AS(vscp->nextp(), VarScope)) {
+                    implementationVars.emplace(vscp->varp(), vscp);
+                }
+                for (AstVarScope* vscp = scopep->varsp(); vscp;
+                     vscp = VN_AS(vscp->nextp(), VarScope)) {
+                    const auto it = implementationVars.find(vscp->varp());
+                    if (it != implementationVars.end()) {
+                        representativeState.emplace(vscp, it->second);
+                    }
+                }
+            });
             for (const auto& pair : post) {
                 const auto it = pre.find(pair.second);
                 if (it == pre.end()) continue;  // Other NBA lowering schemes have no shadow pre
@@ -135,9 +160,17 @@ struct V3SubgraphBoundary::Impl final {
                             "NBA shadow escaped the boundary instance");
                 ++nbaPairs;
             }
+            for (const auto& pair : representativeState) {
+                const auto it = post.find(pair.second);
+                if (it != post.end() && pre.count(it->second)) ++nbaPairs;
+            }
             V3Stats::addStat("Subgraph boundary, NBA shadow pairs", nbaPairs);
             for (const auto& source : sources) {
-                const auto it = post.find(source.second);
+                const auto representative = representativeState.find(source.second);
+                const AstVarScope* const statep = representative == representativeState.end()
+                                                      ? source.second
+                                                      : representative->second;
+                const auto it = post.find(statep);
                 if (it == post.end() || !pre.count(it->second)) continue;
                 UASSERT_OBJ(source.first->scopep() == source.second->scopep(), source.first,
                             "Published NBA state belongs to a different boundary instance");
@@ -226,6 +259,7 @@ void V3SubgraphBoundary::prepare(AstNetlist* netlistp) {
             if (!pinp->exprp()) continue;
             if (metadata.m_direction == VDirection::OUTPUT) {
                 m_impl->m_connectedOutputs.insert(portp->subgraphPortId());
+                m_impl->m_connectedInstanceOutputs.emplace(cellp, portp->subgraphPortId());
             }
             Impl::Connection connection{cellp->name(),
                                         portp->subgraphPortId(),

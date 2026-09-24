@@ -174,6 +174,10 @@ public:
                 vVtxp->clearReducibleAndDedupable("SubgraphPublished");
                 vVtxp->setConsumed("SubgraphPublished");
             }
+            if (vscp->varp()->subgraphSharedState()) {
+                vVtxp->clearReducibleAndDedupable("SubgraphSharedState");
+                vVtxp->setConsumed("SubgraphSharedState");
+            }
             if (vscp->varp()->isIO() && vscp->scopep()->isTop()) {
                 // We may need to convert to/from sysc/reg sigs
                 vVtxp->setIsTop();

@@ -2788,6 +2788,7 @@ void AstNodeModule::dump(std::ostream& str) const {
     }
     if (parameterizedTemplate()) str << " [PAR-TEMPL]";
     if (subgraphBoundary()) str << " [SUBGRAPH-BOUNDARY]";
+    if (subgraphSharedInput()) str << " [SUBGRAPH-SHARED-INPUT]";
     if (verilatorLib()) str << " [VERILATOR-LIB]";
     if (unconnectedDrive().isTrue()) str << " [UCDRV]";
     if (!lifetime().isNone()) str << " [" << lifetime().ascii() << "] ";
@@ -2806,6 +2807,7 @@ void AstNodeModule::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, recursiveClone);
     dumpJsonBoolFuncIf(str, recursive);
     dumpJsonBoolFuncIf(str, subgraphBoundary);
+    dumpJsonBoolFuncIf(str, subgraphSharedInput);
     dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonStr(str, "unconnectedDrive", unconnectedDrive().ascii());
     dumpJsonStr(str, "lifetime", lifetime().ascii());
@@ -3278,6 +3280,9 @@ void AstScope::dump(std::ostream& str) const {
     str << " [cellp=" << nodeAddr(aboveCellp()) << "]";
     str << " [modp=" << nodeAddr(modp()) << "]";
     if (subgraphInstanceId()) str << " [SUBGRAPH-INSTANCE:" << subgraphInstanceId() << "]";
+    if (subgraphImplementationScopep()) {
+        str << " [SUBGRAPH-IMPLEMENTATION:" << subgraphImplementationScopep()->name() << "]";
+    }
 }
 void AstScope::dumpJson(std::ostream& str) const {
     if (subgraphInstanceId()) dumpJsonNumFunc(str, subgraphInstanceId);
@@ -3292,6 +3297,7 @@ string AstScope::nameDotless() const {
 bool AstScope::sameNode(const AstNode* samep) const {
     const AstScope* const asamep = VN_DBG_AS(samep, Scope);
     return name() == asamep->name() && subgraphInstanceId() == asamep->subgraphInstanceId()
+           && subgraphImplementationScopep() == asamep->subgraphImplementationScopep()
            && ((!aboveScopep() && !asamep->aboveScopep())
                || (aboveScopep() && asamep->aboveScopep()
                    && aboveScopep()->name() == asamep->aboveScopep()->name()));
@@ -3938,6 +3944,7 @@ void AstVar::dump(std::ostream& str) const {
     if (noReset()) str << " [!RST]";
     if (processQueue()) str << " [PROCQ]";
     if (subgraphPublished()) str << " [SUBGRAPH-PUBLISHED]";
+    if (subgraphSharedState()) str << " [SUBGRAPH-SHARED-STATE]";
     if (subgraphPortId()) str << " [SUBGRAPH-PORT:" << subgraphPortId() << "]";
     if (sampled()) str << " [SAMPLED]";
     if (attrFsmState()) str << " [aFSMSTATE]";
@@ -3978,6 +3985,7 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, noReset);
     dumpJsonBoolFuncIf(str, processQueue);
     dumpJsonBoolFuncIf(str, subgraphPublished);
+    dumpJsonBoolFuncIf(str, subgraphSharedState);
     if (subgraphPortId()) dumpJsonNumFunc(str, subgraphPortId);
     dumpJsonBoolFuncIf(str, sampled);
     dumpJsonBoolFuncIf(str, attrFsmState);

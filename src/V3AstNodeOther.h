@@ -324,6 +324,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
     bool m_recursive : 1;  // Recursive module
     bool m_recursiveClone : 1;  // If recursive, what module it clones, otherwise nullptr
     bool m_subgraphBoundary : 1;  // Module is an experimental scheduling boundary
+    bool m_subgraphSharedInput : 1;  // Its input is captured per instance for shared logic
     bool m_parameterizedTemplate : 1;  // True when at least one specialized clone exists;
                                        // set by V3Param::deepCloneModule. Suppresses
                                        // width/type errors on the unresolved template.
@@ -346,6 +347,7 @@ protected:
         , m_recursive{false}
         , m_recursiveClone{false}
         , m_subgraphBoundary{false}
+        , m_subgraphSharedInput{false}
         , m_parameterizedTemplate{false}
         , m_verilatorLib{false} {}
 
@@ -353,6 +355,11 @@ public:
     ASTGEN_MEMBERS_AstNodeModule;
     void dump(std::ostream& str) const override;
     void dumpJson(std::ostream& str) const override;
+    bool sameNode(const AstNode* samep) const override {
+        const AstNodeModule* const asamep = VN_DBG_AS(samep, NodeModule);
+        return name() == asamep->name() && subgraphBoundary() == asamep->subgraphBoundary()
+               && subgraphSharedInput() == asamep->subgraphSharedInput();
+    }
     bool maybePointedTo() const override VL_MT_SAFE { return true; }
     string name() const override VL_MT_STABLE { return m_name; }
     virtual bool timescaleMatters() const = 0;
@@ -393,6 +400,8 @@ public:
     bool recursiveClone() const { return m_recursiveClone; }
     bool subgraphBoundary() const { return m_subgraphBoundary; }
     void subgraphBoundary(bool flag) { m_subgraphBoundary = flag; }
+    bool subgraphSharedInput() const { return m_subgraphSharedInput; }
+    void subgraphSharedInput(bool flag) { m_subgraphSharedInput = flag; }
     bool parameterizedTemplate() const { return m_parameterizedTemplate; }
     void parameterizedTemplate(bool flag) { m_parameterizedTemplate = flag; }
     void verilatorLib(bool flag) { m_verilatorLib = flag; }
@@ -1856,6 +1865,7 @@ class AstScope final : public AstNode {
     // @astgen ptr := m_aboveScopep : Optional[AstScope]  // Scope above this one in the hierarchy
     // @astgen ptr := m_aboveCellp : Optional[AstCell]  // Cell above this in the hierarchy
     // @astgen ptr := m_modp : AstNodeModule  // Module scope corresponds to
+    // @astgen ptr := m_subgraphImplementationScopep : Optional[AstScope]  // Shared logic owner
 
     // An AstScope->name() is special: . indicates an uninlined scope, __DOT__ an inlined scope
     string m_name;  // Name
@@ -1887,6 +1897,10 @@ public:
     bool isTop() const VL_MT_SAFE { return aboveScopep() == nullptr; }  // At top of hierarchy
     uint32_t subgraphInstanceId() const { return m_subgraphInstanceId; }
     void subgraphInstanceId(uint32_t id) { m_subgraphInstanceId = id; }
+    AstScope* subgraphImplementationScopep() const { return m_subgraphImplementationScopep; }
+    void subgraphImplementationScopep(AstScope* scopep) {
+        m_subgraphImplementationScopep = scopep;
+    }
     // Create new MODULETEMP variable under this scope
     AstVarScope* createTemp(const string& name, unsigned width);
     AstVarScope* createTemp(const string& name, AstNodeDType* dtypep);
@@ -2319,6 +2333,7 @@ class AstVar final : public AstNode {
     bool m_noReset : 1;  // Do not do automated reset/randomization
     bool m_noSubst : 1;  // Do not substitute out references
     bool m_subgraphPublished : 1;  // Dedicated value visible outside a subgraph boundary
+    bool m_subgraphSharedState : 1;  // Used by logic shared with another instance
     bool m_sampled : 1;  // Sampled timing region
     bool m_substConstOnly : 1;  // Only substitute if constant
     bool m_overriddenParam : 1;  // Overridden parameter by #(...) or defparam
@@ -2385,6 +2400,7 @@ class AstVar final : public AstNode {
         m_noReset = false;
         m_noSubst = false;
         m_subgraphPublished = false;
+        m_subgraphSharedState = false;
         m_sampled = false;
         m_substConstOnly = false;
         m_overriddenParam = false;
@@ -2567,6 +2583,8 @@ public:
     bool noSubst() const { return m_noSubst; }
     void noSubst(bool flag) { m_noSubst = flag; }
     bool subgraphPublished() const { return m_subgraphPublished; }
+    bool subgraphSharedState() const { return m_subgraphSharedState; }
+    void subgraphSharedState(bool flag) { m_subgraphSharedState = flag; }
     uint32_t subgraphPortId() const { return m_subgraphPortId; }
     void subgraphPortId(uint32_t id) { m_subgraphPortId = id; }
     void subgraphPublished(bool flag) { m_subgraphPublished = flag; }

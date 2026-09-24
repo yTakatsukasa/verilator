@@ -25,6 +25,8 @@
 
 #include "V3Scope.h"
 
+#include "V3Stats.h"
+
 #include <unordered_map>
 #include <unordered_set>
 
@@ -61,6 +63,10 @@ class ScopeVisitor final : public VNVisitor {
     VarScopeMap m_varScopes;  // Varscopes created for each scope and var
     // Varrefs-in-scopes needing fixup when done
     std::vector<std::pair<AstVarRef*, AstScope*>> m_varRefScopes;
+    std::unordered_map<AstNodeModule*, AstScope*> m_subgraphImplementationScopes;
+    std::unordered_map<AstNodeModule*, uint64_t> m_totalInstantiations;
+    uint64_t m_sharedProcedures = 0;
+    uint64_t m_receiverVarScopes = 0;
 
     // METHODS
 
@@ -72,6 +78,40 @@ class ScopeVisitor final : public VNVisitor {
                 countInstantiations(cellp->modp());
             }
         }
+    }
+
+    static bool shareableSubgraphModule(AstNodeModule* modp) {
+        if (!modp->subgraphSharedInput()) return false;
+        unsigned clocked = 0;
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (VN_IS(stmtp, Cell) || VN_IS(stmtp, NodeFTask)) return false;
+            if (const AstAlways* const alwaysp = VN_CAST(stmtp, Always)) {
+                if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
+                    ++clocked;
+                } else {
+                    const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
+                    const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+                    if (!assp || assp->nextp() || !lhsp || !lhsp->varp()->isIO()
+                        || !lhsp->varp()->isWritable()) {
+                        return false;
+                    }
+                }
+            } else if (AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure)) {
+                if ((!VN_IS(procp, InitialStatic) && !VN_IS(procp, Initial))
+                    || procp->isSuspendable()) {
+                    return false;
+                }
+            }
+            bool instanceSpecific = false;
+            stmtp->foreach([&](AstNode* nodep) {
+                if (VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)
+                    || VN_IS(nodep, NodeFTaskRef)) {
+                    instanceSpecific = true;
+                }
+            });
+            if (instanceSpecific) return false;
+        }
+        return clocked == 1;
     }
 
     // Copy, or move (on the last instantiation), the given node under
@@ -149,6 +189,19 @@ class ScopeVisitor final : public VNVisitor {
             (m_aboveCellp ? static_cast<AstNode*>(m_aboveCellp) : static_cast<AstNode*>(nodep))
                 ->fileline(),
             nodep, scopename, m_aboveScopep, m_aboveCellp};
+        const uint64_t totalInstantiations
+            = m_totalInstantiations.emplace(nodep, nodep->user3()).first->second;
+        if (totalInstantiations == 2) {
+            if (nodep->user3() == 2 && shareableSubgraphModule(nodep)) {
+                m_subgraphImplementationScopes.emplace(nodep, m_scopep);
+            } else if (nodep->user3() == 1) {
+                const auto it = m_subgraphImplementationScopes.find(nodep);
+                if (it != m_subgraphImplementationScopes.end()
+                    && it->second->aboveScopep() == m_aboveScopep) {
+                    m_scopep->subgraphImplementationScopep(it->second);
+                }
+            }
+        }
         if (VN_IS(nodep, Package)) m_classOrPackageScopes.emplace(nodep, m_scopep);
 
         // Get list of cells before we edit, to avoid excess visits (issue #6059)
@@ -238,6 +291,18 @@ class ScopeVisitor final : public VNVisitor {
         nodep->v3fatalSrc("Actives now made after scoping");
     }
     void visit(AstNodeProcedure* nodep) override {
+        if (m_scopep->subgraphImplementationScopep()
+            && (VN_IS(nodep, InitialStatic)
+                || (VN_IS(nodep, Always)
+                    && VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_FF))) {
+            nodep->foreach([&](AstVarRef* refp) {
+                refp->varp()->subgraphSharedState(true);
+                refp->varp()->noSubst(true);
+            });
+            ++m_sharedProcedures;
+            pushDeletep(nodep->unlinkFrBack());
+            return;
+        }
         // Add to list of blocks under this scope
         // Check don't miss varref scope assignments
         UASSERT_OBJ(!m_procedurep, nodep, "prodedure in procedure");
@@ -301,6 +366,7 @@ class ScopeVisitor final : public VNVisitor {
             UASSERT_OBJ(m_scopep, nodep, "No scope for var");
             m_varScopes.emplace(std::make_pair(nodep, m_scopep), varscp);
             m_scopep->addVarsp(varscp);
+            if (m_scopep->subgraphImplementationScopep()) ++m_receiverVarScopes;
         }
         iterateChildren(nodep);
     }
@@ -334,7 +400,12 @@ class ScopeVisitor final : public VNVisitor {
 public:
     // CONSTRUCTORS
     explicit ScopeVisitor(AstNetlist* nodep) { iterate(nodep); }
-    ~ScopeVisitor() override = default;
+    ~ScopeVisitor() override {
+        V3Stats::addStat("Scope, Subgraph shared procedures", m_sharedProcedures);
+        V3Stats::addStat("Scope, Subgraph receiver VarScopes", m_receiverVarScopes);
+        V3Stats::addStat("Scope, Subgraph receiver VarScope bytes",
+                         m_receiverVarScopes * sizeof(AstVarScope));
+    }
 };
 
 //######################################################################

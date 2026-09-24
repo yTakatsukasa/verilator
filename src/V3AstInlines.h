@@ -164,6 +164,7 @@ bool AstVar::sameNode(const AstNode* samep) const {
     return m_name == asamep->m_name && varType() == asamep->varType()
            && covergroupRefMember() == asamep->covergroupRefMember()
            && subgraphPublished() == asamep->subgraphPublished()
+           && subgraphSharedState() == asamep->subgraphSharedState()
            && subgraphPortId() == asamep->subgraphPortId();
 }
 

@@ -81,6 +81,52 @@ bool isPublishActive(const AstActive* activep) {
     return lhsp && lhsp->varp()->subgraphPublished();
 }
 
+void materializeSharedReceiverLogic(AstNetlist* netlistp) {
+    std::vector<AstScope*> receivers;
+    netlistp->foreach([&](AstScope* scopep) {
+        if (scopep->subgraphImplementationScopep()) receivers.push_back(scopep);
+    });
+    uint64_t materialized = 0;
+    uint64_t lateVarScopes = 0;
+    for (AstScope* const receiverp : receivers) {
+        AstScope* const implementationp = receiverp->subgraphImplementationScopep();
+        UASSERT_OBJ(receiverp->modp() == implementationp->modp(), receiverp,
+                    "Subgraph receiver has a different specialization");
+        std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+        for (AstVarScope* vscp = receiverp->varsp(); vscp; vscp = VN_AS(vscp->nextp(), VarScope)) {
+            receiverVars.emplace(vscp->varp(), vscp);
+        }
+        for (AstVarScope* vscp = implementationp->varsp(); vscp;
+             vscp = VN_AS(vscp->nextp(), VarScope)) {
+            if (receiverVars.count(vscp->varp())) continue;
+            AstVarScope* const newp = new AstVarScope{vscp->fileline(), receiverp, vscp->varp()};
+            receiverp->addVarsp(newp);
+            receiverVars.emplace(vscp->varp(), newp);
+            ++lateVarScopes;
+        }
+        for (AstNode* blockp = implementationp->blocksp(); blockp; blockp = blockp->nextp()) {
+            AstActive* const activep = VN_CAST(blockp, Active);
+            if (!activep || activep->sentreep()->hasCombo() || isPublishActive(activep)) continue;
+            AstActive* const clonep = activep->cloneTree(false);
+            clonep->foreach([&](AstNodeVarRef* refp) {
+                AstVarScope* const vscp = refp->varScopep();
+                if (vscp->scopep() != implementationp) return;
+                const auto it = receiverVars.find(vscp->varp());
+                UASSERT_OBJ(it != receiverVars.end(), refp,
+                            "Shared subgraph state missing from receiver scope");
+                refp->varScopep(it->second);
+            });
+            receiverp->addBlocksp(clonep);
+            ++materialized;
+        }
+        receiverp->subgraphImplementationScopep(nullptr);
+    }
+    V3Stats::addStat("Scheduling, Subgraph receiver actives", materialized);
+    V3Stats::addStat("Scheduling, Subgraph receiver late VarScopes", lateVarScopes);
+    V3Stats::addStat("Scheduling, Subgraph receiver late VarScope bytes",
+                     lateVarScopes * sizeof(AstVarScope));
+}
+
 struct EarlyCandidate final {
     AstScope* m_scopep = nullptr;
     std::vector<std::pair<AstScope*, AstActive*>> m_clocked;
@@ -225,6 +271,7 @@ struct SubgraphPlan::Impl final {
 SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     : m_impl{new Impl} {
     if (!v3Global.opt.subgraphSchedule()) return;
+    materializeSharedReceiverLogic(netlistp);
 
     std::vector<EarlyCandidate> candidates;
     std::map<AstScope*, size_t> candidateIndex;

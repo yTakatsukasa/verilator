@@ -55,15 +55,26 @@ class InstVisitor final : public VNVisitor {
         AstVar* m_savedp = nullptr;
     };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
+    std::map<AstNodeModule*, uint64_t> m_instantiationsByModule;
     std::map<AstNodeModule*, SharedInput> m_sharedInputs;
     std::map<AstVar*, AstVar*> m_publishedByPort;
     std::map<AstNodeModule*, unsigned> m_nextPublishedIndex;
     uint64_t m_publishedConnections = 0;
     uint64_t m_sharedCaptures = 0;
 
+    void countInstantiations(AstNodeModule* modp) {
+        ++m_instantiationsByModule[modp];
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (const AstCell* const cellp = VN_CAST(stmtp, Cell)) {
+                countInstantiations(cellp->modp());
+            }
+        }
+    }
+
     void prepareSharedInput(AstNodeModule* modp) {
         if (!v3Global.opt.subgraphSchedule() || !modp->subgraphBoundary()
-            || m_cellsByModule[modp].size() < 2 || m_sharedInputs.count(modp)) {
+            || m_instantiationsByModule[modp] != 2 || m_cellsByModule[modp].size() != 2
+            || m_sharedInputs.count(modp)) {
             return;
         }
         AstAlways* seqp = nullptr;
@@ -89,18 +100,23 @@ class InstVisitor final : public VNVisitor {
             return;
         }
         // The body is rewritten once, so every instance needs both connections.
+        const AstVar* clockActualp = nullptr;
         for (const AstCell* const cellp : m_cellsByModule[modp]) {
-            bool clockConnected = false;
+            const AstVar* cellClockActualp = nullptr;
             bool dataConnected = false;
             for (const AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
                 if (pinp->modVarp() == clockp->varp()) {
-                    clockConnected = VN_IS(pinp->exprp(), VarRef);
+                    if (const AstVarRef* const refp = VN_CAST(pinp->exprp(), VarRef)) {
+                        cellClockActualp = refp->varp();
+                    }
                 }
                 if (pinp->modVarp() == datap->varp()) {
                     dataConnected = pinp->exprp() && pinp->exprp()->isPure();
                 }
             }
-            if (!clockConnected || !dataConnected) return;
+            if (!cellClockActualp || !dataConnected) return;
+            if (clockActualp && clockActualp != cellClockActualp) return;
+            clockActualp = cellClockActualp;
         }
         FileLine* const flp = datap->fileline();
         AstVar* const savedp = new AstVar{
@@ -109,6 +125,7 @@ class InstVisitor final : public VNVisitor {
         savedp->noSubst(true);
         modp->addStmtsp(savedp);
         m_sharedInputs.emplace(modp, SharedInput{clockp->varp(), datap->varp(), savedp});
+        modp->subgraphSharedInput(true);
         datap->varp(savedp);
     }
 
@@ -249,7 +266,11 @@ class InstVisitor final : public VNVisitor {
 public:
     // CONSTRUCTORS
     explicit InstVisitor(AstNetlist* nodep) {
-        nodep->foreach([&](AstCell* cellp) { m_cellsByModule[cellp->modp()].push_back(cellp); });
+        if (v3Global.opt.subgraphSchedule()) {
+            nodep->foreach(
+                [&](AstCell* cellp) { m_cellsByModule[cellp->modp()].push_back(cellp); });
+            if (AstNodeModule* const topModp = nodep->topModulep()) countInstantiations(topModp);
+        }
         iterate(nodep);
     }
     ~InstVisitor() override {

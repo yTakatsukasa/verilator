@@ -50,6 +50,8 @@
 #include "V3SenExprBuilder.h"
 #include "V3Stats.h"
 
+#include <unordered_set>
+
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 namespace V3Sched {
@@ -958,11 +960,16 @@ void schedule(AstNetlist* netlistp) {
     }
 
     const auto& preTreeps = getSenTreesUsedBy({&logicRegions.m_pre});
-    const auto& senTreeps = getSenTreesUsedBy({&logicRegions.m_act,  //
-                                               &logicRegions.m_nba,  //
-                                               &logicRegions.m_obs,  //
-                                               &logicRegions.m_react,  //
-                                               &timingKit.m_lbs});
+    std::vector<const AstSenTree*> senTreeps = getSenTreesUsedBy({&logicRegions.m_act,  //
+                                                                  &logicRegions.m_nba,  //
+                                                                  &logicRegions.m_obs,  //
+                                                                  &logicRegions.m_react,  //
+                                                                  &timingKit.m_lbs});
+    std::unordered_set<const AstSenTree*> seenSenTrees{senTreeps.begin(), senTreeps.end()};
+    subgraphPlan.foreachBoundary(
+        [&](AstScope*, AstSenTree* senTreep, const std::vector<SubgraphPlan::Use>&) {
+            if (seenSenTrees.emplace(senTreep).second) senTreeps.push_back(senTreep);
+        });
     const TriggerKit trigKit
         = TriggerKit::create(netlistp, staticp, senExprBuilder, preTreeps, senTreeps, "act",
                              extraTriggers, false, v3Global.usesTiming());
