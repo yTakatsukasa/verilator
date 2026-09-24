@@ -29,6 +29,8 @@
 #include "V3Stats.h"
 #include "V3Width.h"
 
+#include <set>
+
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 static void markContinuousLhs(AstNode* const nodep) {
@@ -51,8 +53,7 @@ class InstVisitor final : public VNVisitor {
     AstNodeExpr* m_clockExprp = nullptr;  // Unscoped connection to the current cell's clock
     struct SharedInput final {
         AstVar* m_clockp = nullptr;
-        AstVar* m_datap = nullptr;
-        AstVar* m_savedp = nullptr;
+        std::map<AstVar*, AstVar*> m_savedByPort;
     };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
     std::map<AstNodeModule*, uint64_t> m_instantiationsByModule;
@@ -95,39 +96,67 @@ class InstVisitor final : public VNVisitor {
         if (!clockp || itemp->edgeType() != VEdgeType::ET_POSEDGE || !assp || assp->nextp()) {
             return;
         }
-        AstVarRef* const datap = VN_CAST(assp->rhsp(), VarRef);
-        if (!datap || !clockp->varp()->subgraphPortId() || !datap->varp()->subgraphPortId()
-            || !clockp->varp()->isNonOutput() || !datap->varp()->isNonOutput()) {
+        const AstVarRef* const outputp = VN_CAST(assp->lhsp(), VarRef);
+        if (!outputp || !outputp->varp()->isWritable() || !outputp->varp()->subgraphPortId()
+            || !clockp->varp()->subgraphPortId() || !clockp->varp()->isNonOutput()
+            || !assp->rhsp()->isPure()) {
             return;
         }
-        // The body is rewritten once, so every instance needs both connections.
+        std::map<uint32_t, AstVar*> inputPorts;
+        bool supported = true;
+        assp->rhsp()->foreach([&](AstNode* nodep) {
+            if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+                const AstVarRef* const plainp = VN_CAST(refp, VarRef);
+                if (!plainp || !plainp->access().isReadOnly()
+                    || (!plainp->varp()->isNonOutput() && plainp->varp() != outputp->varp())
+                    || !plainp->varp()->subgraphPortId()) {
+                    supported = false;
+                } else if (plainp->varp()->isNonOutput()) {
+                    inputPorts.emplace(plainp->varp()->subgraphPortId(), plainp->varp());
+                }
+            } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, CExpr)
+                       || VN_IS(nodep, CStmt)) {
+                supported = false;
+            }
+        });
+        if (!supported || inputPorts.empty()) return;
+        // The body is rewritten once, so every instance needs all captured connections.
         const AstVar* clockActualp = nullptr;
         for (const AstCell* const cellp : m_cellsByModule[modp]) {
             const AstVar* cellClockActualp = nullptr;
-            bool dataConnected = false;
+            std::set<AstVar*> connectedInputs;
             for (const AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
                 if (pinp->modVarp() == clockp->varp()) {
                     if (const AstVarRef* const refp = VN_CAST(pinp->exprp(), VarRef)) {
                         cellClockActualp = refp->varp();
                     }
                 }
-                if (pinp->modVarp() == datap->varp()) {
-                    dataConnected = pinp->exprp() && pinp->exprp()->isPure();
+                if (inputPorts.count(pinp->modVarp()->subgraphPortId()) && pinp->exprp()
+                    && pinp->exprp()->isPure()) {
+                    connectedInputs.insert(pinp->modVarp());
                 }
             }
-            if (!cellClockActualp || !dataConnected) return;
+            if (!cellClockActualp || connectedInputs.size() != inputPorts.size()) return;
             if (clockActualp && clockActualp != cellClockActualp) return;
             clockActualp = cellClockActualp;
         }
-        FileLine* const flp = datap->fileline();
-        AstVar* const savedp = new AstVar{
-            flp, VVarType::BLOCKTEMP,
-            "__VsubgraphInput__" + cvtToStr(datap->varp()->subgraphPortId()), datap->dtypep()};
-        savedp->noSubst(true);
-        modp->addStmtsp(savedp);
-        m_sharedInputs.emplace(modp, SharedInput{clockp->varp(), datap->varp(), savedp});
+        SharedInput shared;
+        shared.m_clockp = clockp->varp();
+        for (const auto& entry : inputPorts) {
+            AstVar* const portp = entry.second;
+            AstVar* const savedp
+                = new AstVar{portp->fileline(), VVarType::BLOCKTEMP,
+                             "__VsubgraphInput__" + cvtToStr(entry.first), portp->dtypep()};
+            savedp->noSubst(true);
+            modp->addStmtsp(savedp);
+            shared.m_savedByPort.emplace(portp, savedp);
+        }
+        const auto inserted = m_sharedInputs.emplace(modp, std::move(shared));
         modp->subgraphSharedInput(true);
-        datap->varp(savedp);
+        assp->rhsp()->foreach([&](AstVarRef* refp) {
+            const auto it = inserted.first->second.m_savedByPort.find(refp->varp());
+            if (it != inserted.first->second.m_savedByPort.end()) refp->varp(it->second);
+        });
     }
 
     // VISITORS
@@ -209,14 +238,18 @@ class InstVisitor final : public VNVisitor {
                 m_cellp->addNextHere(new AstAlways{assp});
             } else if (nodep->modVarp()->isNonOutput()) {
                 const auto shared = m_sharedInputs.find(m_cellp->modp());
-                if (shared != m_sharedInputs.end() && m_clockExprp
-                    && nodep->modVarp() == shared->second.m_datap) {
+                AstVar* savedp = nullptr;
+                if (shared != m_sharedInputs.end()) {
+                    const auto it = shared->second.m_savedByPort.find(nodep->modVarp());
+                    if (it != shared->second.m_savedByPort.end()) savedp = it->second;
+                }
+                if (savedp && m_clockExprp) {
                     FileLine* const flp = exprp->fileline();
                     AstSenTree* const senp
                         = new AstSenTree{flp, new AstSenItem{flp, VEdgeType::ET_POSEDGE,
                                                              m_clockExprp->cloneTree(false)}};
-                    AstVarXRef* const lhsp = new AstVarXRef{flp, shared->second.m_savedp,
-                                                            m_cellp->name(), VAccess::WRITE};
+                    AstVarXRef* const lhsp
+                        = new AstVarXRef{flp, savedp, m_cellp->name(), VAccess::WRITE};
                     AstAlways* const capturep
                         = new AstAlways{flp, VAlwaysKwd::ALWAYS, senp,
                                         new AstAssign{flp, lhsp, exprp->cloneTree(false)}};

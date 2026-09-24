@@ -59,7 +59,8 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                                           const std::vector<LogicByScope*>& logic,
                                           const V3Order::TrigToSenMap& trigToSen,
                                           const CovergroupRefBindings& cgRefBindings, bool slow,
-                                          const V3Order::ExternalDomainsProvider& externalDomains);
+                                          const V3Order::ExternalDomainsProvider& externalDomains,
+                                          V3Order::BoundaryUses& boundaryUses);
 
 }  // namespace V3Sched
 

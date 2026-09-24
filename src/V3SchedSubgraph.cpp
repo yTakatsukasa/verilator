@@ -58,6 +58,7 @@ struct SubgraphGroup final {
     LogicByScope m_preLogic;
     LogicByScope m_postLogic;
     std::vector<Capture> m_captures;
+    std::unordered_set<const AstVar*> m_delayedVars;
 };
 
 struct CaptureVars final {
@@ -72,13 +73,72 @@ AstScope* findBoundaryScope(AstScope* scopep) {
     return nullptr;
 }
 
-bool isPublishActive(const AstActive* activep) {
-    const AstAlways* const alwaysp = VN_CAST(activep->stmtsp(), Always);
-    if (!alwaysp || alwaysp->nextp()) return false;
+bool isPublishStatement(const AstNode* stmtp) {
+    const AstAlways* const alwaysp = VN_CAST(stmtp, Always);
+    if (!alwaysp) return false;
     const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
     if (!assp || assp->nextp()) return false;
     const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
     return lhsp && lhsp->varp()->subgraphPublished();
+}
+
+bool isPublishActive(const AstActive* activep) {
+    return activep->sentreep()->hasCombo() && activep->stmtsp() && !activep->stmtsp()->nextp()
+           && isPublishStatement(activep->stmtsp());
+}
+
+// Port connections execute in the parent schedule even when Inst places them in the child
+// scope. Their writes establish the input values observed by the local scheduler.
+bool isBoundaryInputStatement(const AstScope* boundaryScopep, const AstNode* stmtp) {
+    const AstAlways* const alwaysp = VN_CAST(stmtp, Always);
+    if (!alwaysp) return false;
+    const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
+    if (!assp || assp->nextp()) return false;
+    const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+    if (!lhsp || lhsp->varScopep()->scopep() != boundaryScopep || !lhsp->varp()->isNonOutput()
+        || !lhsp->varp()->subgraphPortId()) {
+        return false;
+    }
+    bool externalInputs = true;
+    assp->rhsp()->foreach([&](const AstNodeVarRef* refp) {
+        if (isUnderScope(refp->varScopep()->scopep(), boundaryScopep)) externalInputs = false;
+    });
+    return externalInputs;
+}
+
+bool isBoundaryInputActive(const AstScope* boundaryScopep, const AstActive* activep) {
+    return activep->sentreep()->hasCombo() && activep->stmtsp() && !activep->stmtsp()->nextp()
+           && isBoundaryInputStatement(boundaryScopep, activep->stmtsp());
+}
+
+void splitBoundaryCombinationalLogic(AstNetlist* netlistp) {
+    std::vector<std::pair<AstScope*, AstActive*>> actives;
+    netlistp->foreach([&](AstScope* scopep) {
+        AstScope* const boundaryScopep = findBoundaryScope(scopep);
+        if (!boundaryScopep) return;
+        scopep->foreach([&](AstActive* activep) {
+            if (activep->sentreep()->hasCombo()) actives.emplace_back(scopep, activep);
+        });
+    });
+    for (const auto& pair : actives) {
+        AstScope* const scopep = pair.first;
+        AstActive* const activep = pair.second;
+        AstScope* const boundaryScopep = findBoundaryScope(scopep);
+        if (!activep->stmtsp() || !activep->stmtsp()->nextp()) continue;
+        std::vector<AstNode*> boundaryStatements;
+        for (AstNode* stmtp = activep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (isPublishStatement(stmtp) || isBoundaryInputStatement(boundaryScopep, stmtp)) {
+                boundaryStatements.push_back(stmtp);
+            }
+        }
+        for (AstNode* const stmtp : boundaryStatements) {
+            AstActive* const separatep
+                = new AstActive{stmtp->fileline(), "subgraph-boundary", activep->sentreep()};
+            separatep->addStmtsp(stmtp->unlinkFrBack());
+            scopep->addBlocksp(separatep);
+        }
+        if (!activep->stmtsp()) activep->unlinkFrBack()->deleteTree();
+    }
 }
 
 void materializeSharedReceiverLogic(AstNetlist* netlistp) {
@@ -187,6 +247,12 @@ void addSubgraphLogic(SubgraphGroup& group, AstScope* scopep, AstActive* activep
     for (AstNode *nodep = activep->stmtsp(), *nextp; nodep; nodep = nextp) {
         nextp = nodep->nextp();
         nodep->unlinkFrBack();
+        if (VN_IS(nodep, AlwaysPre)) {
+            nodep->foreach([&](AstNodeAssign* assp) {
+                AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+                if (lhsp && lhsp->varp()->isTemp()) group.m_delayedVars.insert(lhsp->varp());
+            });
+        }
         LogicByScope& phaseLogic = VN_IS(nodep, AlwaysPost) ? group.m_postLogic : group.m_preLogic;
         phaseLogic.add(scopep, senTreep, nodep);
     }
@@ -272,6 +338,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     : m_impl{new Impl} {
     if (!v3Global.opt.subgraphSchedule()) return;
     materializeSharedReceiverLogic(netlistp);
+    splitBoundaryCombinationalLogic(netlistp);
 
     std::vector<EarlyCandidate> candidates;
     std::map<AstScope*, size_t> candidateIndex;
@@ -286,7 +353,10 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             if (comb) allComb.emplace_back(scopep, activep);
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
             if (!boundaryScopep || (!clocked && !comb)) return;
-            if (comb && isPublishActive(activep)) return;
+            if (comb
+                && (isPublishActive(activep) || isBoundaryInputActive(boundaryScopep, activep))) {
+                return;
+            }
             const auto inserted = candidateIndex.emplace(boundaryScopep, candidates.size());
             if (inserted.second) {
                 candidates.emplace_back();
@@ -327,7 +397,10 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         }
         if (clockVscp) {
             if (isUnderScope(clockVscp->scopep(), candidate.m_scopep)) {
-                reject(candidate, "clock is inside boundary");
+                const bool boundaryClockInput = clockVscp->scopep() == candidate.m_scopep
+                                                && clockVscp->varp()->isNonOutput()
+                                                && clockVscp->varp()->subgraphPortId();
+                if (!boundaryClockInput) reject(candidate, "clock is inside boundary");
             }
             const auto checkClockWrite = [&](const auto& pairs) {
                 for (const auto& pair : pairs) {
@@ -418,7 +491,9 @@ SubgraphPlan::~SubgraphPlan() = default;
 
 bool SubgraphPlan::extract(AstScope* scopep, AstActive* activep) {
     if (isPublishActive(activep)) return false;
-    const auto it = m_impl->m_accepted.find(findBoundaryScope(scopep));
+    AstScope* const boundaryScopep = findBoundaryScope(scopep);
+    if (boundaryScopep && isBoundaryInputActive(boundaryScopep, activep)) return false;
+    const auto it = m_impl->m_accepted.find(boundaryScopep);
     if (it == m_impl->m_accepted.end()) return false;
     Impl::Group& group = m_impl->m_groups[it->second];
     AstSenTree* const senTreep = activep->sentreep();
@@ -563,11 +638,12 @@ static bool sameReceiverGroup(const SubgraphGroup& representative,
                                 representative.m_boundaryScopep, candidate.m_boundaryScopep);
 }
 
-V3Order::FreshReads
-lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& logic,
-                      const V3Order::TrigToSenMap& trigToSen,
-                      const CovergroupRefBindings& cgRefBindings, bool slow,
-                      const V3Order::ExternalDomainsProvider& externalDomains) {
+V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
+                                          const std::vector<LogicByScope*>& logic,
+                                          const V3Order::TrigToSenMap& trigToSen,
+                                          const CovergroupRefBindings& cgRefBindings, bool slow,
+                                          const V3Order::ExternalDomainsProvider& externalDomains,
+                                          V3Order::BoundaryUses& boundaryUses) {
     V3Order::FreshReads freshReads;
     if (!v3Global.opt.subgraphSchedule()) return freshReads;
 
@@ -660,6 +736,22 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
                 }
                 util::splitCheck(funcp);
                 orderedFunctions[groupIndex][post] = funcp;
+                std::vector<V3Order::BoundaryUse> uses;
+                std::unordered_set<const AstCFunc*> visited;
+                std::function<void(AstCFunc*)> collect = [&](AstCFunc* currentp) {
+                    if (!visited.insert(currentp).second) return;
+                    currentp->foreach([&](AstNodeVarRef* refp) {
+                        uses.push_back({refp->varScopep(), refp->access().isReadOrRW(),
+                                        refp->access().isWriteOrRW(),
+                                        group.m_delayedVars.count(refp->varp()) != 0});
+                    });
+                    currentp->foreach([&](AstCCall* callp) {
+                        if (!callp->funcp()->entryPoint()) collect(callp->funcp());
+                    });
+                };
+                collect(funcp);
+                UASSERT_OBJ(boundaryUses.emplace(funcp, std::move(uses)).second, funcp,
+                            "Duplicate subgraph boundary contract");
             }
             if (mayShare && representative[groupIndex] == groupIndex) {
                 for (AstNode* blockp = group.m_boundaryScopep->blocksp(); blockp;
@@ -708,6 +800,9 @@ lowerSubgraphNbaLogic(AstNetlist* netlistp, const std::vector<LogicByScope*>& lo
     V3Stats::addStat("Scheduling, Subgraph NBA internal actives", orderedLogic);
     V3Stats::addStat("Scheduling, Subgraph shareable CFuncs", shareableFunctions);
     V3Stats::addStat("Scheduling, Subgraph shared Order skips", sharedOrderSkips);
+    uint64_t contractUses = 0;
+    for (const auto& entry : boundaryUses) contractUses += entry.second.size();
+    V3Stats::addStat("Scheduling, Subgraph boundary contract uses", contractUses);
     uint64_t capturedInputs = 0;
     for (const auto& pair : freshReads) capturedInputs += pair.second.size();
     V3Stats::addStat("Scheduling, Subgraph captured inputs", capturedInputs);

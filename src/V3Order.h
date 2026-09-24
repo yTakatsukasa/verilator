@@ -47,6 +47,14 @@ using ExternalDomainsProvider = std::function<void(const AstVarScope*, std::vect
 using TrigToSenMap = std::unordered_map<const AstSenTree*, const AstSenTree*>;
 // Inputs captured on the current edge, in deterministic insertion order per boundary.
 using FreshReads = std::map<const AstScope*, std::vector<AstVarScope*>>;
+// Effects of a shared child function, before binding its state to a receiver instance.
+struct BoundaryUse final {
+    AstVarScope* m_vscp = nullptr;
+    bool m_read = false;
+    bool m_write = false;
+    bool m_delayedState = false;
+};
+using BoundaryUses = std::unordered_map<const AstCFunc*, std::vector<BoundaryUse>>;
 
 AstCFunc* order(AstNetlist* netlistp,  //
                 const std::vector<V3Sched::LogicByScope*>& logic,  //
@@ -56,8 +64,8 @@ AstCFunc* order(AstNetlist* netlistp,  //
                 bool parallel,  //
                 bool slow,  //
                 const ExternalDomainsProvider& externalDomains,  //
-                AstScope* resultScopep = nullptr,
-                const FreshReads* freshReadsp = nullptr) VL_MT_DISABLED;
+                AstScope* resultScopep = nullptr, const FreshReads* freshReadsp = nullptr,
+                const BoundaryUses* boundaryUsesp = nullptr) VL_MT_DISABLED;
 
 };  // namespace V3Order
 

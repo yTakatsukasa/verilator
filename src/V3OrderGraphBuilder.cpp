@@ -99,6 +99,7 @@ class OrderGraphBuilder final : public VNVisitor {
     std::vector<AstVarScope*> m_accessedVscps;  // Variables accessed by the current logic block
     std::unordered_set<const AstVarScope*> m_parentAccessedVscps;
     const V3Order::FreshReads* const m_freshReadsp;
+    const V3Order::BoundaryUses* const m_boundaryUsesp;
     std::unordered_set<const AstVarScope*> m_freshReadSet;
 
     // Map from Trigger reference AstSenItem to the original AstSenTree
@@ -186,6 +187,10 @@ class OrderGraphBuilder final : public VNVisitor {
     }
 
     void addSubgraphWrapperUsage(AstCCall* nodep) {
+        UASSERT_OBJ(m_boundaryUsesp, nodep, "Missing subgraph boundary contracts");
+        const auto contract = m_boundaryUsesp->find(nodep->funcp());
+        UASSERT_OBJ(contract != m_boundaryUsesp->end(), nodep,
+                    "Missing contract for shared subgraph function");
         AstScope* const implementationScopep = nodep->funcp()->scopep();
         AstScope* const boundaryScopep = nodep->subgraphReceiverScopep()
                                              ? nodep->subgraphReceiverScopep()
@@ -199,47 +204,33 @@ class OrderGraphBuilder final : public VNVisitor {
                 receiverVars.emplace(vscp->varp(), vscp);
             }
         }
-        std::unordered_set<const AstCFunc*> visited;
-        std::function<void(AstCFunc*)> scanFunc = [&](AstCFunc* funcp) {
-            if (!visited.insert(funcp).second) return;
-            funcp->foreach([&](AstNodeVarRef* refp) {
-                AstVarScope* vscp = refp->varScopep();
-                if (!receiverVars.empty() && vscp->scopep() == implementationScopep) {
-                    const auto it = receiverVars.find(vscp->varp());
-                    UASSERT_OBJ(it != receiverVars.end(), refp,
-                                "Shared subgraph state missing from receiver scope");
-                    vscp = it->second;
-                }
-                const bool internal = isUnderScope(vscp->scopep(), boundaryScopep);
-                const bool delayedState = internal && 0 == vscp->varp()->name().rfind("__Vdly", 0);
-                if (internal) {
-                    const bool boundaryPort
-                        = vscp->scopep() == boundaryScopep && vscp->varp()->isIO();
-                    const bool externallyAccessed = m_parentAccessedVscps.count(vscp);
-                    if (!boundaryPort && !delayedState && !externallyAccessed) return;
-                    // The helper locally orders reads after its own state commits. Publishing
-                    // those reads would create an artificial parent-level read-after-write
-                    // cycle; only the commit needs to precede external consumers.
-                    if (externallyAccessed && !boundaryPort && !delayedState
-                        && !refp->access().isWriteOrRW()) {
-                        return;
-                    }
-                }
-                VL_RESTORER(m_softSubgraphRead);
-                m_softSubgraphRead = m_inPost && refp->access().isReadOrRW() && !delayedState;
-                if (vscp == refp->varScopep()) {
-                    visit(refp);
-                } else {
-                    accountVarAccess(vscp, refp->access(), refp);
-                }
-            });
-            funcp->foreach([&](AstCCall* callp) {
-                if (!callp->funcp()->entryPoint()) scanFunc(callp->funcp());
-            });
-        };
-        scanFunc(nodep->funcp());
-        // Child Order may place the input read in an entry-point helper that is deliberately
-        // opaque to this scan. Its capture dependency is nevertheless part of the boundary.
+        for (const V3Order::BoundaryUse& use : contract->second) {
+            AstVarScope* vscp = use.m_vscp;
+            if (!receiverVars.empty() && vscp->scopep() == implementationScopep) {
+                const auto it = receiverVars.find(vscp->varp());
+                UASSERT_OBJ(it != receiverVars.end(), nodep,
+                            "Shared subgraph state missing from receiver scope");
+                vscp = it->second;
+            }
+            const bool internal = isUnderScope(vscp->scopep(), boundaryScopep);
+            const bool delayedState = internal && use.m_delayedState;
+            if (internal) {
+                const bool boundaryPort = vscp->scopep() == boundaryScopep && vscp->varp()->isIO();
+                const bool externallyAccessed = m_parentAccessedVscps.count(vscp);
+                if (!boundaryPort && !delayedState && !externallyAccessed) continue;
+                // The helper locally orders reads after its own state commits. Publishing
+                // those reads would create an artificial parent-level read-after-write cycle.
+                if (externallyAccessed && !boundaryPort && !delayedState && !use.m_write) continue;
+            }
+            VL_RESTORER(m_softSubgraphRead);
+            m_softSubgraphRead = m_inPost && use.m_read && !delayedState;
+            const VAccess access = use.m_read && use.m_write ? VAccess::READWRITE
+                                   : use.m_write             ? VAccess::WRITE
+                                                             : VAccess::READ;
+            accountVarAccess(vscp, access, nodep);
+        }
+        // The saved input is a boundary dependency even when the shared function's own
+        // contract contains only the captured value's later uses.
         if (!m_inPost && m_freshReadsp) {
             const auto it = m_freshReadsp->find(boundaryScopep);
             if (it != m_freshReadsp->end()) {
@@ -550,8 +541,10 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderGraphBuilder(AstNetlist* /*nodep*/, const std::vector<V3Sched::LogicByScope*>& coll,
                       const V3Order::TrigToSenMap& trigToSen,
                       const V3Sched::CovergroupRefBindings& cgRefBindings, bool parallel,
-                      const V3Order::FreshReads* freshReadsp)
+                      const V3Order::FreshReads* freshReadsp,
+                      const V3Order::BoundaryUses* boundaryUsesp)
         : m_freshReadsp{freshReadsp}
+        , m_boundaryUsesp{boundaryUsesp}
         , m_trigToSen{trigToSen}
         , m_parallel{parallel}
         , m_cgRefBindings{cgRefBindings} {
@@ -596,11 +589,11 @@ public:
                                              const std::vector<V3Sched::LogicByScope*>& coll,
                                              const V3Order::TrigToSenMap& trigToSen,
                                              const V3Sched::CovergroupRefBindings& cgRefBindings,
-                                             bool parallel,
-                                             const V3Order::FreshReads* freshReadsp) {
-        return std::unique_ptr<OrderGraph>{
-            OrderGraphBuilder{nodep, coll, trigToSen, cgRefBindings, parallel, freshReadsp}
-                .m_graphp};
+                                             bool parallel, const V3Order::FreshReads* freshReadsp,
+                                             const V3Order::BoundaryUses* boundaryUsesp) {
+        return std::unique_ptr<OrderGraph>{OrderGraphBuilder{nodep, coll, trigToSen, cgRefBindings,
+                                                             parallel, freshReadsp, boundaryUsesp}
+                                               .m_graphp};
     }
 };
 
@@ -609,7 +602,8 @@ V3Order::buildOrderGraph(AstNetlist* netlistp,  //
                          const std::vector<V3Sched::LogicByScope*>& coll,  //
                          const V3Order::TrigToSenMap& trigToSen,  //
                          const V3Sched::CovergroupRefBindings& cgRefBindings,  //
-                         bool parallel, const V3Order::FreshReads* freshReadsp) {
+                         bool parallel, const V3Order::FreshReads* freshReadsp,
+                         const V3Order::BoundaryUses* boundaryUsesp) {
     return OrderGraphBuilder::apply(netlistp, coll, trigToSen, cgRefBindings, parallel,
-                                    freshReadsp);
+                                    freshReadsp, boundaryUsesp);
 }

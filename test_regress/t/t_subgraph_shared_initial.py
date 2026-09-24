@@ -24,7 +24,9 @@ test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 2
 implementation = test.obj_dir + "/" + test.vm_prefix + "_sg_shared_initial__0.cpp"
 test.file_grep_count(implementation,
                      r'vlSelfRef\.__Vdly__q = vlSelfRef\.__VsubgraphInput__2;', 1)
-test.file_grep_count(implementation, r'_eval_body__nba_subgraph_pre_0\(vlSelf\);', 2)
+root_implementation = test.obj_dir + "/" + test.vm_prefix + "___024root__0.cpp"
+test.file_grep_count(root_implementation,
+                     r'_eval_body__nba_subgraph_pre_0\(\(&vlSymsp->TOP__t__DOT__i_[ab]\)\);', 2)
 test.file_grep_not(implementation, r'vlSymsp->TOP__t__DOT__i_[ab]')
 
 test.passes()
