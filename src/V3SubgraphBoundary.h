@@ -23,12 +23,16 @@
 #include <memory>
 
 class AstNetlist;
+class AstNodeModule;
 
 class V3SubgraphBoundary final {
     struct Impl;
     const std::unique_ptr<Impl> m_impl;
 
 public:
+    // Stable structural precondition for sharing a module's internal procedures.
+    static bool shareableModuleShape(const AstNodeModule* modp);
+
     explicit V3SubgraphBoundary(AstNetlist* netlistp);
     ~V3SubgraphBoundary();
     VL_UNCOPYABLE(V3SubgraphBoundary);

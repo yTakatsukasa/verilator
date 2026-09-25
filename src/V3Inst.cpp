@@ -27,6 +27,7 @@
 
 #include "V3Const.h"
 #include "V3Stats.h"
+#include "V3SubgraphBoundary.h"
 #include "V3Width.h"
 
 #include <set>
@@ -55,9 +56,94 @@ class InstVisitor final : public VNVisitor {
         AstVar* m_clockp = nullptr;
         std::map<AstVar*, AstVar*> m_savedByPort;
     };
+    struct SharedInputAnalysis final {
+        AstVar* m_clockp = nullptr;
+        std::vector<AstAlways*> m_procedures;
+        std::map<uint32_t, AstVar*> m_inputPorts;
+        std::map<AstVar*, AstAlways*> m_stateWriters;
+        std::set<const AstVar*> m_ownedVars;
+        bool m_valid = true;
+
+        explicit SharedInputAnalysis(AstNodeModule* modp) {
+            for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                if (const AstVar* const varp = VN_CAST(stmtp, Var)) m_ownedVars.insert(varp);
+            }
+        }
+
+        void readExpression(AstNodeExpr* exprp) {
+            if (!exprp->isPure()) m_valid = false;
+            exprp->foreach([&](AstNode* nodep) {
+                if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+                    const AstVarRef* const plainp = VN_CAST(refp, VarRef);
+                    if (!plainp || !plainp->access().isReadOnly()
+                        || !m_ownedVars.count(plainp->varp())) {
+                        m_valid = false;
+                    } else if (plainp->varp()->isInoutOrRef()) {
+                        m_valid = false;
+                    } else if (plainp->varp()->isInput()) {
+                        if (!plainp->varp()->subgraphPortId()) {
+                            m_valid = false;
+                        } else {
+                            m_inputPorts.emplace(plainp->varp()->subgraphPortId(), plainp->varp());
+                        }
+                    }
+                } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName)
+                           || VN_IS(nodep, CExpr) || VN_IS(nodep, CStmt)) {
+                    m_valid = false;
+                }
+            });
+        }
+
+        void statements(AstNode* stmtsp, AstAlways* ownerp) {
+            for (AstNode* stmtp = stmtsp; stmtp; stmtp = stmtp->nextp()) {
+                if (AstAssignDly* const assp = VN_CAST(stmtp, AssignDly)) {
+                    const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+                    if (!lhsp || !lhsp->access().isWriteOrRW() || !m_ownedVars.count(lhsp->varp())
+                        || (lhsp->varp()->isIO() && !lhsp->varp()->isWritable())
+                        || lhsp->varp()->isInoutOrRef() || assp->timingControlp()) {
+                        m_valid = false;
+                        continue;
+                    }
+                    const auto inserted = m_stateWriters.emplace(lhsp->varp(), ownerp);
+                    if (!inserted.second && inserted.first->second != ownerp) m_valid = false;
+                    readExpression(assp->rhsp());
+                } else if (AstIf* const ifp = VN_CAST(stmtp, If)) {
+                    readExpression(ifp->condp());
+                    statements(ifp->thensp(), ownerp);
+                    statements(ifp->elsesp(), ownerp);
+                } else if (AstBegin* const beginp = VN_CAST(stmtp, Begin)) {
+                    statements(beginp->stmtsp(), ownerp);
+                } else {
+                    // Unknown statements may change externally visible state or timing.
+                    m_valid = false;
+                }
+            }
+        }
+
+        void procedure(AstAlways* alwaysp) {
+            if (alwaysp->keyword() != VAlwaysKwd::ALWAYS_FF || !alwaysp->sentreep()) {
+                m_valid = false;
+                return;
+            }
+            const AstSenItem* const itemp = alwaysp->sentreep()->sensesp();
+            const AstNodeVarRef* const clockp = itemp ? itemp->varrefp() : nullptr;
+            const AstVarRef* const plainp = VN_CAST(clockp, VarRef);
+            if (!plainp || !plainp->access().isReadOnly() || !m_ownedVars.count(plainp->varp())
+                || itemp->nextp() || itemp->condp() || itemp->edgeType() != VEdgeType::ET_POSEDGE
+                || !plainp->varp()->isInput() || !plainp->varp()->subgraphPortId()
+                || (m_clockp && m_clockp != plainp->varp())) {
+                m_valid = false;
+                return;
+            }
+            m_clockp = plainp->varp();
+            m_procedures.push_back(alwaysp);
+            statements(alwaysp->stmtsp(), alwaysp);
+        }
+    };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
     std::map<AstNodeModule*, uint64_t> m_instantiationsByModule;
     std::map<AstNodeModule*, SharedInput> m_sharedInputs;
+    std::set<AstNodeModule*> m_sharedInputChecked;
     std::map<AstVar*, AstVar*> m_publishedByPort;
     std::map<AstNodeModule*, unsigned> m_nextPublishedIndex;
     uint64_t m_publishedConnections = 0;
@@ -75,75 +161,48 @@ class InstVisitor final : public VNVisitor {
     void prepareSharedInput(AstNodeModule* modp) {
         // The pre-scope shared-procedure path currently requires serial Order.
         if (!v3Global.opt.subgraphSchedule() || v3Global.opt.threads() > 1
-            || !modp->subgraphBoundary() || m_instantiationsByModule[modp] < 2
+            || !m_sharedInputChecked.insert(modp).second) {
+            return;
+        }
+        // The elaborated specialization and all its cell connections are available here.
+        // Analyze it once even if no receiver can use the shared procedure.
+        if (!modp->subgraphBoundary() || m_instantiationsByModule[modp] < 2
             || m_instantiationsByModule[modp] != m_cellsByModule[modp].size()
-            || m_sharedInputs.count(modp)) {
+            || !V3SubgraphBoundary::shareableModuleShape(modp)) {
             return;
         }
-        AstAlways* seqp = nullptr;
+        SharedInputAnalysis analysis{modp};
         for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            const AstAlways* const alwaysp = VN_CAST(stmtp, Always);
-            if (!alwaysp || alwaysp->keyword() != VAlwaysKwd::ALWAYS_FF) continue;
-            if (seqp) return;
-            seqp = VN_AS(stmtp, Always);
-        }
-        if (!seqp || !seqp->sentreep() || !seqp->sentreep()->sensesp()
-            || seqp->sentreep()->sensesp()->nextp()) {
-            return;
-        }
-        const AstSenItem* const itemp = seqp->sentreep()->sensesp();
-        const AstNodeVarRef* const clockp = itemp->varrefp();
-        AstAssignDly* const assp = VN_CAST(seqp->stmtsp(), AssignDly);
-        if (!clockp || itemp->edgeType() != VEdgeType::ET_POSEDGE || !assp || assp->nextp()) {
-            return;
-        }
-        const AstVarRef* const outputp = VN_CAST(assp->lhsp(), VarRef);
-        if (!outputp || !outputp->varp()->isWritable() || !outputp->varp()->subgraphPortId()
-            || !clockp->varp()->subgraphPortId() || !clockp->varp()->isNonOutput()
-            || !assp->rhsp()->isPure()) {
-            return;
-        }
-        std::map<uint32_t, AstVar*> inputPorts;
-        bool supported = true;
-        assp->rhsp()->foreach([&](AstNode* nodep) {
-            if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
-                const AstVarRef* const plainp = VN_CAST(refp, VarRef);
-                if (!plainp || !plainp->access().isReadOnly()
-                    || (!plainp->varp()->isNonOutput() && plainp->varp() != outputp->varp())
-                    || !plainp->varp()->subgraphPortId()) {
-                    supported = false;
-                } else if (plainp->varp()->isNonOutput()) {
-                    inputPorts.emplace(plainp->varp()->subgraphPortId(), plainp->varp());
-                }
-            } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, CExpr)
-                       || VN_IS(nodep, CStmt)) {
-                supported = false;
+            AstAlways* const alwaysp = VN_CAST(stmtp, Always);
+            if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
+                analysis.procedure(alwaysp);
             }
-        });
-        if (!supported || inputPorts.empty()) return;
+        }
+        if (!analysis.m_valid || analysis.m_stateWriters.empty()) return;
         // The body is rewritten once, so every instance needs all captured connections.
         const AstVar* clockActualp = nullptr;
         for (const AstCell* const cellp : m_cellsByModule[modp]) {
             const AstVar* cellClockActualp = nullptr;
             std::set<AstVar*> connectedInputs;
             for (const AstPin* pinp = cellp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
-                if (pinp->modVarp() == clockp->varp()) {
+                if (pinp->modVarp() == analysis.m_clockp) {
                     if (const AstVarRef* const refp = VN_CAST(pinp->exprp(), VarRef)) {
                         cellClockActualp = refp->varp();
                     }
                 }
-                if (inputPorts.count(pinp->modVarp()->subgraphPortId()) && pinp->exprp()
+                if (analysis.m_inputPorts.count(pinp->modVarp()->subgraphPortId()) && pinp->exprp()
                     && pinp->exprp()->isPure()) {
                     connectedInputs.insert(pinp->modVarp());
                 }
             }
-            if (!cellClockActualp || connectedInputs.size() != inputPorts.size()) return;
+            if (!cellClockActualp || connectedInputs.size() != analysis.m_inputPorts.size())
+                return;
             if (clockActualp && clockActualp != cellClockActualp) return;
             clockActualp = cellClockActualp;
         }
         SharedInput shared;
-        shared.m_clockp = clockp->varp();
-        for (const auto& entry : inputPorts) {
+        shared.m_clockp = analysis.m_clockp;
+        for (const auto& entry : analysis.m_inputPorts) {
             AstVar* const portp = entry.second;
             AstVar* const savedp
                 = new AstVar{portp->fileline(), VVarType::BLOCKTEMP,
@@ -154,10 +213,13 @@ class InstVisitor final : public VNVisitor {
         }
         const auto inserted = m_sharedInputs.emplace(modp, std::move(shared));
         modp->subgraphSharedInput(true);
-        assp->rhsp()->foreach([&](AstVarRef* refp) {
-            const auto it = inserted.first->second.m_savedByPort.find(refp->varp());
-            if (it != inserted.first->second.m_savedByPort.end()) refp->varp(it->second);
-        });
+        for (AstAlways* const alwaysp : analysis.m_procedures) {
+            alwaysp->stmtsp()->foreachAndNext([&](AstVarRef* refp) {
+                if (!refp->access().isReadOnly()) return;
+                const auto it = inserted.first->second.m_savedByPort.find(refp->varp());
+                if (it != inserted.first->second.m_savedByPort.end()) refp->varp(it->second);
+            });
+        }
     }
 
     // VISITORS

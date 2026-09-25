@@ -33,6 +33,41 @@
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
+bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
+    unsigned clocked = 0;
+    for (const AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        if (const AstVar* const varp = VN_CAST(stmtp, Var)) {
+            if (varp->isInoutOrRef()) return false;
+        }
+        if (VN_IS(stmtp, Cell) || VN_IS(stmtp, NodeFTask)) return false;
+        if (const AstAlways* const alwaysp = VN_CAST(stmtp, Always)) {
+            if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
+                ++clocked;
+            } else {
+                const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
+                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+                if (!assp || assp->nextp() || !lhsp || !lhsp->varp()->isIO()
+                    || !lhsp->varp()->isWritable()) {
+                    return false;
+                }
+            }
+        } else if (const AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure)) {
+            if ((!VN_IS(procp, InitialStatic) && !VN_IS(procp, Initial))
+                || procp->isSuspendable()) {
+                return false;
+            }
+        }
+        bool instanceSpecific = false;
+        stmtp->foreach([&](const AstNode* nodep) {
+            if (VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef) || VN_IS(nodep, NodeFTaskRef)) {
+                instanceSpecific = true;
+            }
+        });
+        if (instanceSpecific) return false;
+    }
+    return clocked >= 1;
+}
+
 struct V3SubgraphBoundary::Impl final {
     struct Port final {
         string m_specialization;

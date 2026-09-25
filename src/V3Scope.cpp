@@ -26,6 +26,7 @@
 #include "V3Scope.h"
 
 #include "V3Stats.h"
+#include "V3SubgraphBoundary.h"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -78,40 +79,6 @@ class ScopeVisitor final : public VNVisitor {
                 countInstantiations(cellp->modp());
             }
         }
-    }
-
-    static bool shareableSubgraphModule(AstNodeModule* modp) {
-        if (!modp->subgraphSharedInput()) return false;
-        unsigned clocked = 0;
-        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            if (VN_IS(stmtp, Cell) || VN_IS(stmtp, NodeFTask)) return false;
-            if (const AstAlways* const alwaysp = VN_CAST(stmtp, Always)) {
-                if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
-                    ++clocked;
-                } else {
-                    const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
-                    const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-                    if (!assp || assp->nextp() || !lhsp || !lhsp->varp()->isIO()
-                        || !lhsp->varp()->isWritable()) {
-                        return false;
-                    }
-                }
-            } else if (AstNodeProcedure* const procp = VN_CAST(stmtp, NodeProcedure)) {
-                if ((!VN_IS(procp, InitialStatic) && !VN_IS(procp, Initial))
-                    || procp->isSuspendable()) {
-                    return false;
-                }
-            }
-            bool instanceSpecific = false;
-            stmtp->foreach([&](AstNode* nodep) {
-                if (VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)
-                    || VN_IS(nodep, NodeFTaskRef)) {
-                    instanceSpecific = true;
-                }
-            });
-            if (instanceSpecific) return false;
-        }
-        return clocked == 1;
     }
 
     // Copy, or move (on the last instantiation), the given node under
@@ -192,7 +159,8 @@ class ScopeVisitor final : public VNVisitor {
         const uint64_t totalInstantiations
             = m_totalInstantiations.emplace(nodep, nodep->user3()).first->second;
         if (totalInstantiations >= 2) {
-            if (nodep->user3() == totalInstantiations && shareableSubgraphModule(nodep)) {
+            if (nodep->user3() == totalInstantiations && nodep->subgraphSharedInput()
+                && V3SubgraphBoundary::shareableModuleShape(nodep)) {
                 m_subgraphImplementationScopes.emplace(nodep, m_scopep);
             } else {
                 const auto it = m_subgraphImplementationScopes.find(nodep);

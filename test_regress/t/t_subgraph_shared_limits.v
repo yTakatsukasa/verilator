@@ -16,7 +16,11 @@ module t (
   output logic [6:0] q5,
   output logic [6:0] q6,
   output logic [6:0] q7,
-  output logic [6:0] q8
+  output logic [6:0] q8,
+  output logic [6:0] q9,
+  output logic [6:0] q10,
+  output logic [6:0] tap9,
+  output logic [6:0] tap10
 );
   sg_shared_limit_count i0 (.clk(clk_a), .d(d), .q(q0));
   sg_shared_limit_count i1 (.clk(clk_a), .d(d), .q(q1));
@@ -25,6 +29,19 @@ module t (
   sg_shared_limit_clock i4 (.clk(clk_b), .d(d), .q(q4));
   sg_shared_limit_wrapper i5 (.clk(clk_a), .d(d), .q0(q5), .q1(q6));
   sg_shared_limit_wrapper i6 (.clk(clk_a), .d(d), .q0(q7), .q1(q8));
+  sg_shared_limit_comb i7 (.clk(clk_a), .d(d), .q(q9), .tap(tap9));
+  sg_shared_limit_comb i8 (.clk(clk_a), .d(d), .q(q10), .tap(tap10));
+endmodule
+
+module sg_shared_limit_comb (
+  input logic clk,
+  input logic [6:0] d,
+  output logic [6:0] q,
+  output logic [6:0] tap
+);
+  /*verilator subgraph_boundary*/
+  always_ff @(posedge clk) q <= d;
+  always_comb tap = q + d;
 endmodule
 
 module sg_shared_limit_count (
