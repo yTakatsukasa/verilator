@@ -41,14 +41,20 @@ nodes = dict(re.findall(r'^\s*n(\d+)\s+\[.*label="(.*?)", color=', contents, re.
 edges = set(re.findall(r'^\s*n(\d+) -> n(\d+)', contents, re.MULTILINE))
 acyclic_edges = set(re.findall(r'^\s*n(\d+) -> n(\d+)', acyclic_contents, re.MULTILINE))
 captures = [node for node, label in nodes.items()
-            if 'i_a->__VsubgraphInput__2' in label and 'PORD' in label]
+            if 'i_a->__VsubgraphInput__2' in label
+            and 'PORD' not in label and 'PRE' not in label and 'POST' not in label]
 old_b = [node for node, label in nodes.items()
          if 'i_b->__VsubgraphPublished__0' in label and 'POST' in label]
 if len(captures) != 1 or len(old_b) != 1:
     test.error("Missing capture or old published output in parent Order graph")
 else:
-    writers = [target for source, target in edges if source == captures[0]]
-    if not any((writer, old_b[0]) in edges & acyclic_edges for writer in writers):
+    writers = [source for source, target in edges
+               if target == captures[0] and 'ALWAYS' in nodes.get(source, '')]
+    consumers = [target for source, target in edges
+                 if source == captures[0] and 'ACTIVE' in nodes.get(target, '')]
+    if len(writers) != 1 or len(consumers) != 1 \
+            or (writers[0], old_b[0]) not in edges & acyclic_edges \
+            or (captures[0], consumers[0]) not in edges & acyclic_edges:
         test.error("Old child output was not consumed before the next capture")
 
 test.passes()

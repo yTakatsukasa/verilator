@@ -163,6 +163,7 @@ bool AstVar::sameNode(const AstNode* samep) const {
     const AstVar* const asamep = VN_DBG_AS(samep, Var);
     return m_name == asamep->m_name && varType() == asamep->varType()
            && covergroupRefMember() == asamep->covergroupRefMember()
+           && subgraphCaptured() == asamep->subgraphCaptured()
            && subgraphPublished() == asamep->subgraphPublished()
            && subgraphSharedState() == asamep->subgraphSharedState()
            && subgraphPortId() == asamep->subgraphPortId();

@@ -3943,6 +3943,7 @@ void AstVar::dump(std::ostream& str) const {
     if (noCReset()) str << " [!CRST]";
     if (noReset()) str << " [!RST]";
     if (processQueue()) str << " [PROCQ]";
+    if (subgraphCaptured()) str << " [SUBGRAPH-CAPTURED]";
     if (subgraphPublished()) str << " [SUBGRAPH-PUBLISHED]";
     if (subgraphSharedState()) str << " [SUBGRAPH-SHARED-STATE]";
     if (subgraphPortId()) str << " [SUBGRAPH-PORT:" << subgraphPortId() << "]";
@@ -3984,6 +3985,7 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, noCReset);
     dumpJsonBoolFuncIf(str, noReset);
     dumpJsonBoolFuncIf(str, processQueue);
+    dumpJsonBoolFuncIf(str, subgraphCaptured);
     dumpJsonBoolFuncIf(str, subgraphPublished);
     dumpJsonBoolFuncIf(str, subgraphSharedState);
     if (subgraphPortId()) dumpJsonNumFunc(str, subgraphPortId);

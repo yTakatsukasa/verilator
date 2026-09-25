@@ -46,7 +46,13 @@ public:
     VL_UNCOPYABLE(SubgraphPlan);
 
     bool extract(AstScope* scopep, AstActive* activep);
+    bool isAccepted(const AstScope* scopep) const;
+    AstVarScope* clockPort(const AstScope* scopep) const;
+    void foreachPublished(const AstScope* scopep,
+                          const std::function<void(AstVarScope*)>& callback) const;
+    void appendPublications(const AstScope* scopep, AstCFunc* funcp) const;
     void breakCycles(AstNetlist* netlistp);
+    void movePublications(LogicByScope& comb, LogicByScope& hybrid);
     void partitionAndReplicate();
     void materializeNba(const std::unordered_map<const AstSenTree*, AstSenTree*>& senTreeMap,
                         const std::vector<LogicByScope*>& parentLogic);
@@ -60,6 +66,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                                           const V3Order::TrigToSenMap& trigToSen,
                                           const CovergroupRefBindings& cgRefBindings, bool slow,
                                           const V3Order::ExternalDomainsProvider& externalDomains,
+                                          const SubgraphPlan& plan,
                                           V3Order::BoundaryUses& boundaryUses);
 
 }  // namespace V3Sched

@@ -98,6 +98,8 @@ class OrderGraphBuilder final : public VNVisitor {
     OrderLogicVertex* m_logicVxp = nullptr;  // Current logic block being analyzed
     std::vector<AstVarScope*> m_accessedVscps;  // Variables accessed by the current logic block
     std::unordered_set<const AstVarScope*> m_parentAccessedVscps;
+    std::unordered_map<const AstScope*, std::array<OrderLogicVertex*, 2>> m_wrapperPhases;
+    std::unordered_map<const AstScope*, AstVarScope*> m_wrapperPhasePorts;
     const V3Order::FreshReads* const m_freshReadsp;
     const V3Order::BoundaryUses* const m_boundaryUsesp;
     std::unordered_set<const AstVarScope*> m_freshReadSet;
@@ -195,6 +197,27 @@ class OrderGraphBuilder final : public VNVisitor {
         AstScope* const boundaryScopep = nodep->subgraphReceiverScopep()
                                              ? nodep->subgraphReceiverScopep()
                                              : implementationScopep;
+        if (contract->second.m_portOnly) {
+            std::array<OrderLogicVertex*, 2>& phases = m_wrapperPhases[boundaryScopep];
+            UASSERT_OBJ(!phases[contract->second.m_post], nodep,
+                        "Duplicate subgraph operation phase for receiver");
+            phases[contract->second.m_post] = m_logicVxp;
+            AstVarScope* phasePortp = contract->second.m_phasePortp;
+            if (boundaryScopep != implementationScopep
+                && phasePortp->scopep() == implementationScopep) {
+                for (AstVarScope* vscp = boundaryScopep->varsp(); vscp;
+                     vscp = VN_AS(vscp->nextp(), VarScope)) {
+                    if (vscp->varp() == phasePortp->varp()) {
+                        phasePortp = vscp;
+                        break;
+                    }
+                }
+            }
+            UASSERT_OBJ(phasePortp->scopep() == boundaryScopep
+                            || !isUnderScope(phasePortp->scopep(), implementationScopep),
+                        nodep, "Subgraph phase port missing from receiver");
+            m_wrapperPhasePorts[boundaryScopep] = phasePortp;
+        }
         std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
         if (boundaryScopep != implementationScopep) {
             UASSERT_OBJ(boundaryScopep->modp() == implementationScopep->modp(), nodep,
@@ -204,7 +227,7 @@ class OrderGraphBuilder final : public VNVisitor {
                 receiverVars.emplace(vscp->varp(), vscp);
             }
         }
-        for (const V3Order::BoundaryUse& use : contract->second) {
+        for (const V3Order::BoundaryUse& use : contract->second.m_uses) {
             AstVarScope* vscp = use.m_vscp;
             if (!receiverVars.empty() && vscp->scopep() == implementationScopep) {
                 const auto it = receiverVars.find(vscp->varp());
@@ -578,6 +601,17 @@ class OrderGraphBuilder final : public VNVisitor {
                 iterate(pair.second);
                 m_scopep = nullptr;
             }
+        }
+        // Internal NBA temporaries are deliberately absent from a port-only contract.
+        // Preserve the local transaction's pre-before-post order explicitly.
+        for (const auto& entry : m_wrapperPhases) {
+            const std::array<OrderLogicVertex*, 2>& phases = entry.second;
+            UASSERT_OBJ(phases[0] && phases[1], entry.first,
+                        "Incomplete subgraph operation phases");
+            OrderVarPhaseVertex* const phaseVxp
+                = new OrderVarPhaseVertex{m_graphp, m_wrapperPhasePorts.at(entry.first)};
+            m_graphp->addHardEdge(phases[0], phaseVxp, WEIGHT_NORMAL);
+            m_graphp->addHardEdge(phaseVxp, phases[1], WEIGHT_NORMAL);
         }
     }
     ~OrderGraphBuilder() override = default;

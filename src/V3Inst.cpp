@@ -208,6 +208,7 @@ class InstVisitor final : public VNVisitor {
                 = new AstVar{portp->fileline(), VVarType::BLOCKTEMP,
                              "__VsubgraphInput__" + cvtToStr(entry.first), portp->dtypep()};
             savedp->noSubst(true);
+            savedp->subgraphCaptured(true);
             modp->addStmtsp(savedp);
             shared.m_savedByPort.emplace(portp, savedp);
         }

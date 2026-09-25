@@ -54,7 +54,16 @@ struct BoundaryUse final {
     bool m_write = false;
     bool m_delayedState = false;
 };
-using BoundaryUses = std::unordered_map<const AstCFunc*, std::vector<BoundaryUse>>;
+struct BoundaryContract final {
+    std::vector<BoundaryUse> m_uses;
+    AstVarScope* m_phasePortp = nullptr;
+    // An eligible FF boundary exposes acquired inputs and published outputs.
+    // Its pre and post calls form a local transaction whose order must survive
+    // hiding internal NBA temporaries.
+    bool m_portOnly = false;
+    bool m_post = false;
+};
+using BoundaryUses = std::unordered_map<const AstCFunc*, BoundaryContract>;
 
 AstCFunc* order(AstNetlist* netlistp,  //
                 const std::vector<V3Sched::LogicByScope*>& logic,  //

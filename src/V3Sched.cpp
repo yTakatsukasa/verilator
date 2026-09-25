@@ -909,6 +909,7 @@ void schedule(AstNetlist* netlistp) {
 
     // Step 6: Create 'settle' region that restores the combinational invariant
     createSettle(netlistp, staticp, senExprBuilder, logicClasses, cgRefBindings);
+    subgraphPlan.movePublications(logicClasses.m_comb, logicClasses.m_hybrid);
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-settle");
 
     // Step 7: Partition the clocked and combinational (including hybrid) logic into pre/act/nba.
@@ -1069,7 +1070,7 @@ void schedule(AstNetlist* netlistp) {
         if (name == "nba") {
             subgraphPlan.materializeNba(trigMap, logic);
             freshReads = lowerSubgraphNbaLogic(netlistp, logic, trigToSen, cgRefBindings, false,
-                                               externalDomains, boundaryUses);
+                                               externalDomains, subgraphPlan, boundaryUses);
         }
 
         AstCFunc* const funcp

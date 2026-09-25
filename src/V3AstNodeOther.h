@@ -2332,6 +2332,7 @@ class AstVar final : public AstNode {
     bool m_noCReset : 1;  // Do not do automated CReset creation
     bool m_noReset : 1;  // Do not do automated reset/randomization
     bool m_noSubst : 1;  // Do not substitute out references
+    bool m_subgraphCaptured : 1;  // Per-receiver value acquired from an input port on an edge
     bool m_subgraphPublished : 1;  // Dedicated value visible outside a subgraph boundary
     bool m_subgraphSharedState : 1;  // Used by logic shared with another instance
     bool m_sampled : 1;  // Sampled timing region
@@ -2399,6 +2400,7 @@ class AstVar final : public AstNode {
         m_noCReset = false;
         m_noReset = false;
         m_noSubst = false;
+        m_subgraphCaptured = false;
         m_subgraphPublished = false;
         m_subgraphSharedState = false;
         m_sampled = false;
@@ -2583,6 +2585,8 @@ public:
     bool noSubst() const { return m_noSubst; }
     void noSubst(bool flag) { m_noSubst = flag; }
     bool subgraphPublished() const { return m_subgraphPublished; }
+    bool subgraphCaptured() const { return m_subgraphCaptured; }
+    void subgraphCaptured(bool flag) { m_subgraphCaptured = flag; }
     bool subgraphSharedState() const { return m_subgraphSharedState; }
     void subgraphSharedState(bool flag) { m_subgraphSharedState = flag; }
     uint32_t subgraphPortId() const { return m_subgraphPortId; }

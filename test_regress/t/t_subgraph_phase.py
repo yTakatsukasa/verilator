@@ -58,13 +58,7 @@ if len(sched_graphs) != 6:
     test.error("Expected five child scheduler graphs and one parent graph, got "
                + str(len(sched_graphs)))
 
-boundary_cases = {
-    'i_direct': ('__Vdly__q', 'q'),
-    'i_serial0': ('__Vdly__state', '__PVT__state'),
-    'i_serial1': ('__Vdly__state', '__PVT__state'),
-    'i_ring_a': ('__Vdly__state', '__PVT__state'),
-    'i_ring_b': ('__Vdly__state', '__PVT__state'),
-}
+boundary_cases = ('i_direct', 'i_serial0', 'i_serial1', 'i_ring_a', 'i_ring_b')
 published_targets = {
     'i_direct': 'direct',
     'i_serial0': 'serial0',
@@ -88,40 +82,35 @@ else:
     clocks = [node for node, label in partition_nodes.items() if label == 'posedge clk']
     if len(clocks) != 1:
         test.error("Expected one parent clock event")
-    for instance, variables in boundary_cases.items():
+    for instance in boundary_cases:
         boundary = [node for node, label in partition_nodes.items()
                     if label.startswith(r'SUBGRAPH\n') and label.endswith(instance)]
         if len(boundary) != 1:
             test.error("Expected one parent partition boundary for " + instance)
             continue
-        for variable in variables:
-            value = [node for node, label in partition_nodes.items()
-                     if label.endswith(instance + '->' + variable)]
-            if len(value) != 1 or (boundary[0], value[0]) not in partition_edges:
-                test.error("Missing parent boundary write for " + instance + " " + variable)
-            if variable.startswith('__Vdly__') and len(value) == 1:
-                writers = [source for source, target in partition_edges if target == value[0]]
-                if writers != boundary:
-                    test.error("Eligible child procedure leaked into parent scheduler: " + instance)
+        if any(label.endswith(instance + '->__Vdly__state')
+               or label.endswith(instance + '->__Vdly__q')
+               for label in partition_nodes.values()):
+            test.error("Child NBA temporary leaked into parent scheduler: " + instance)
         if len(clocks) == 1 and (clocks[0], boundary[0]) not in partition_edges:
             test.error("Missing parent boundary clock for " + instance)
-        source = [node for node, label in partition_nodes.items()
-                  if label.endswith(instance + '->' + variables[1])]
         published = [node for node, label in partition_nodes.items()
                      if label.endswith(instance + '->__VsubgraphPublished__0')]
         target = [node for node, label in partition_nodes.items()
                   if label == 'TOP->' + published_targets[instance]]
-        if len(source) != 1 or len(published) != 1 or len(target) != 1:
-            test.error("Missing distinct source, published value, or output for " + instance)
+        if len(published) != 1 or len(target) != 1:
+            test.error("Missing published value or output for " + instance)
             continue
-        publish_logic = [node for node in partition_nodes
-                         if (source[0], node) in partition_edges
-                         and (node, published[0]) in partition_edges]
+        if (boundary[0], published[0]) not in partition_edges:
+            test.error("Missing port-level boundary write for " + instance)
+        writers = [source for source, sink in partition_edges if sink == published[0]]
+        if writers != boundary:
+            test.error("Parent scheduler has another published-value writer: " + instance)
         output_logic = [node for node in partition_nodes
                         if (published[0], node) in partition_edges
                         and (node, target[0]) in partition_edges]
-        if len(publish_logic) != 1 or len(output_logic) != 1:
-            test.error("Missing source to published output path for " + instance)
+        if len(output_logic) != 1:
+            test.error("Missing published output connection for " + instance)
     if "i_fallback->__Vdly__state" not in parent_sched:
         test.error("Ineligible child procedure did not remain on the fallback path")
 
@@ -154,7 +143,7 @@ def find_node(instance, variable, marker):
             continue
         prefix = label.split(r'\n', 1)[0]
         if marker is None:
-            if all(word not in prefix for word in ('PRE', 'POST', 'PORD')):
+            if all(word not in prefix for word in ('PRE', 'POST', 'PORD', 'PHASE')):
                 matches.append(node)
         elif marker in prefix:
             matches.append(node)
@@ -163,28 +152,13 @@ def find_node(instance, variable, marker):
     return matches[0]
 
 
-for instance, (delayed_name, state_name) in boundary_cases.items():
-    delayed_pord = find_node(instance, delayed_name, 'PORD')
-    delayed_value = find_node(instance, delayed_name, None)
-    state_post = find_node(instance, state_name, 'POST')
-    state_value = find_node(instance, state_name, None)
-
-    evaluate = [target for source, target in edges
-                if source == delayed_pord and 'ACTIVE' in nodes.get(target, '')]
-    publish = [target for source, target in edges
-               if source == state_post and 'ALWAYSPOST' in nodes.get(target, '')]
-    if len(evaluate) != 1 or len(publish) != 1:
-        test.error("Missing coarse evaluate/publish nodes for " + instance)
-    required_edges = {
-        (evaluate[0], delayed_value),
-        (delayed_value, publish[0]),
-        (publish[0], state_value),
-    }
-    missing = required_edges - edges
-    if missing:
-        test.error("Missing capture/evaluate/publish dependency for {}: {}".format(
-            instance, sorted(missing)))
-
+for instance in boundary_cases:
+    published_post = find_node(instance, '__VsubgraphPublished__0', 'POST')
+    published_value = find_node(instance, '__VsubgraphPublished__0', None)
+    commits = [target for source, target in edges
+               if source == published_post and 'ALWAYSPOST' in nodes.get(target, '')]
+    if len(commits) != 1 or (commits[0], published_value) not in edges:
+        test.error("Missing output commit for " + instance)
     captured = [node for node, label in nodes.items()
                 if instance + '->__VsubgraphCapture__' in label]
     if not captured:
@@ -196,9 +170,12 @@ for instance, (delayed_name, state_name) in boundary_cases.items():
         writers = [source for source, target in edges
                    if target == saved and 'ALWAYS' in nodes.get(source, '')]
         capture_writers.extend(writers)
-        required = {(saved, evaluate[0])}
-        required.update((writer, saved) for writer in writers)
-        if len(writers) != 1 or not required.issubset(edges & acyclic_edges):
+        consumers = [target for source, target in edges
+                     if source == saved and 'ACTIVE' in nodes.get(target, '')]
+        required = {(writer, saved) for writer in writers}
+        required.update((saved, consumer) for consumer in consumers)
+        if len(writers) != 1 or len(consumers) != 1 \
+                or not required.issubset(edges & acyclic_edges):
             test.error("Missing uncut capture/evaluate dependency for {} {}".format(
                 instance, nodes[saved]))
     if instance == 'i_ring_a':
@@ -210,5 +187,23 @@ for instance, (delayed_name, state_name) in boundary_cases.items():
                        for writer in capture_writers):
                 test.error("Missing old-value capture before publish for {} {}".format(
                     source_instance, source_var))
+
+phase_nodes = [node for node, label in nodes.items() if 'PHASE' in label.split(r'\n', 1)[0]]
+if len(phase_nodes) != len(boundary_cases):
+    test.error("Expected one operation-stage token per eligible boundary")
+for phase in phase_nodes:
+    evaluators = [source for source, target in edges
+                  if target == phase and 'ACTIVE' in nodes.get(source, '')]
+    commits = [target for source, target in edges
+               if source == phase and 'ALWAYSPOST' in nodes.get(target, '')]
+    if len(evaluators) != 1 or len(commits) != 1 \
+            or (evaluators[0], phase) not in acyclic_edges \
+            or (phase, commits[0]) not in acyclic_edges:
+        test.error("Missing uncut evaluate-before-commit dependency")
+
+for instance in boundary_cases:
+    if any(instance + '->__Vdly__' in label or instance + '->__PVT__state' in label
+           for label in nodes.values()):
+        test.error("Child implementation state leaked into parent Order: " + instance)
 
 test.passes()
