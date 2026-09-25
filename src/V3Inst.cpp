@@ -61,6 +61,7 @@ class InstVisitor final : public VNVisitor {
         std::vector<AstAlways*> m_procedures;
         std::map<uint32_t, AstVar*> m_inputPorts;
         std::map<AstVar*, AstAlways*> m_stateWriters;
+        std::set<AstVar*> m_combWriters;
         std::set<const AstVar*> m_ownedVars;
         bool m_valid = true;
 
@@ -70,7 +71,7 @@ class InstVisitor final : public VNVisitor {
             }
         }
 
-        void readExpression(AstNodeExpr* exprp) {
+        void readExpression(AstNodeExpr* exprp, bool captureInputs = true) {
             if (!exprp->isPure()) m_valid = false;
             exprp->foreach([&](AstNode* nodep) {
                 if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
@@ -83,7 +84,7 @@ class InstVisitor final : public VNVisitor {
                     } else if (plainp->varp()->isInput()) {
                         if (!plainp->varp()->subgraphPortId()) {
                             m_valid = false;
-                        } else {
+                        } else if (captureInputs) {
                             m_inputPorts.emplace(plainp->varp()->subgraphPortId(), plainp->varp());
                         }
                     }
@@ -139,6 +140,18 @@ class InstVisitor final : public VNVisitor {
             m_procedures.push_back(alwaysp);
             statements(alwaysp->stmtsp(), alwaysp);
         }
+
+        void combProcedure(AstAlways* alwaysp) {
+            const AstAssign* const assp = VN_CAST(alwaysp->stmtsp(), Assign);
+            const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+            if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
+                || !m_ownedVars.count(lhsp->varp()) || lhsp->varp()->isIO()
+                || assp->isTimingControl() || !m_combWriters.insert(lhsp->varp()).second) {
+                m_valid = false;
+                return;
+            }
+            readExpression(assp->rhsp(), false);
+        }
     };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
     std::map<AstNodeModule*, uint64_t> m_instantiationsByModule;
@@ -176,7 +189,12 @@ class InstVisitor final : public VNVisitor {
             AstAlways* const alwaysp = VN_CAST(stmtp, Always);
             if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 analysis.procedure(alwaysp);
+            } else if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB) {
+                analysis.combProcedure(alwaysp);
             }
+        }
+        for (AstVar* const varp : analysis.m_combWriters) {
+            if (analysis.m_stateWriters.count(varp)) analysis.m_valid = false;
         }
         if (!analysis.m_valid || analysis.m_stateWriters.empty()) return;
         // The body is rewritten once, so every instance needs all captured connections.

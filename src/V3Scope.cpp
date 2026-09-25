@@ -262,7 +262,8 @@ class ScopeVisitor final : public VNVisitor {
         if (m_scopep->subgraphImplementationScopep()
             && (VN_IS(nodep, InitialStatic)
                 || (VN_IS(nodep, Always)
-                    && VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_FF))) {
+                    && (VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_FF
+                        || VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_COMB)))) {
             nodep->foreach([&](AstVarRef* refp) {
                 refp->varp()->subgraphSharedState(true);
                 refp->varp()->noSubst(true);

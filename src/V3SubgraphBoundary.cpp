@@ -43,6 +43,10 @@ bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
         if (const AstAlways* const alwaysp = VN_CAST(stmtp, Always)) {
             if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 ++clocked;
+            } else if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB) {
+                const AstAssign* const assp = VN_CAST(alwaysp->stmtsp(), Assign);
+                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+                if (!assp || assp->nextp() || !lhsp || lhsp->varp()->isIO()) return false;
             } else {
                 const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
                 const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
