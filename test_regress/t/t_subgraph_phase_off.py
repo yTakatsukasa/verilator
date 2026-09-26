@@ -13,10 +13,9 @@ test.scenarios('vlt')
 test.top_filename = "t/t_subgraph_phase.v"
 test.pli_filename = "t/t_subgraph_phase.cpp"
 
-test.compile(
-    make_top_shell=False,
-    make_main=False,
-    verilator_flags2=["--cc", "--exe", test.pli_filename])
+test.compile(make_top_shell=False,
+             make_main=False,
+             verilator_flags2=["--cc", "--exe", test.pli_filename])
 test.execute()
 
 test.passes()

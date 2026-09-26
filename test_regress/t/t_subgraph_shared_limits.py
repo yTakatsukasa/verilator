@@ -10,9 +10,9 @@
 import vltest_bootstrap
 
 test.scenarios('vlt')
-test.compile(make_main=False, verilator_flags2=[
-    "--subgraph-schedule", "--stats", "-Wno-fatal", "--exe", test.pli_filename
-])
+test.compile(
+    make_main=False,
+    verilator_flags2=["--subgraph-schedule", "--stats", "-Wno-fatal", "--exe", test.pli_filename])
 test.execute()
 
 test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 7)
