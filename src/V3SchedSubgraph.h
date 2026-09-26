@@ -47,10 +47,12 @@ public:
 
     bool extract(AstScope* scopep, AstActive* activep);
     bool isAccepted(const AstScope* scopep) const;
+    bool isOutputCombinational(const AstScope* scopep, const AstVar* varp) const;
     AstVarScope* clockPort(const AstScope* scopep) const;
     void foreachPublished(const AstScope* scopep,
                           const std::function<void(AstVarScope*)>& callback) const;
     void appendPublications(const AstScope* scopep, AstCFunc* funcp) const;
+    void appendSettleLogic(LogicByScope& comb, std::vector<AstActive*>& receiverClones) const;
     void breakCycles(AstNetlist* netlistp);
     void movePublications(LogicByScope& comb, LogicByScope& hybrid);
     void partitionAndReplicate();

@@ -127,8 +127,8 @@ bool isLocalCombinationalStatement(const AstScope* boundaryScopep, const AstNode
     if (!assp || assp->nextp()) return false;
     const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
     return lhsp && isUnderScope(lhsp->varScopep()->scopep(), boundaryScopep)
-           && !lhsp->varp()->isIO() && !lhsp->varp()->subgraphCaptured()
-           && !lhsp->varp()->subgraphPublished();
+           && (!lhsp->varp()->isIO() || !lhsp->varp()->isNonOutput())
+           && !lhsp->varp()->subgraphCaptured() && !lhsp->varp()->subgraphPublished();
 }
 
 void splitBoundaryCombinationalLogic(AstNetlist* netlistp) {
@@ -241,9 +241,14 @@ uint64_t materializeSharedReceiverLogic(const SharedReceivers& receivers,
 }
 
 struct EarlyCandidate final {
+    struct ExprDeleter final {
+        void operator()(AstNodeExpr* const exprp) const {
+            if (exprp) exprp->deleteTree();
+        }
+    };
     struct OutputBinding final {
         uint32_t m_portId = 0;
-        AstVarScope* m_statep = nullptr;
+        std::unique_ptr<AstNodeExpr, ExprDeleter> m_exprp;
         AstVar* m_publishedVarp = nullptr;
         AstVarScope* m_publishedp = nullptr;
     };
@@ -252,6 +257,7 @@ struct EarlyCandidate final {
     std::vector<std::pair<AstScope*, AstActive*>> m_clocked;
     std::vector<std::pair<AstScope*, AstActive*>> m_comb;
     std::vector<OutputBinding> m_outputs;
+    std::unordered_set<const AstVar*> m_outputCombVars;
     std::string m_rejection;
 };
 
@@ -298,6 +304,61 @@ std::vector<size_t> orderNextState(const Logic& logic,
         }
     }
     return ordered;
+}
+
+bool collectFfOutputCone(AstNodeExpr* exprp, const EarlyCandidate& candidate,
+                         const std::map<AstVarScope*, size_t>& combWriters,
+                         const std::unordered_set<AstVarScope*>& clockedWrites,
+                         std::unordered_map<AstVarScope*, bool>& combHasFf,
+                         std::unordered_set<AstVarScope*>& visiting,
+                         std::unordered_set<AstVarScope*>& outputComb, bool& hasFf) {
+    bool valid = exprp->isPure();
+    exprp->foreach([&](AstNode* nodep) {
+        if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            AstVarScope* const vscp = refp->varScopep();
+            if (!refp->access().isReadOnly()
+                || !isUnderScope(vscp->scopep(), candidate.m_scopep)) {
+                valid = false;
+                return;
+            }
+            const auto writer = combWriters.find(vscp);
+            if (writer != combWriters.end()) {
+                const auto cached = combHasFf.find(vscp);
+                if (cached != combHasFf.end()) {
+                    hasFf |= cached->second;
+                    return;
+                }
+                if (!visiting.insert(vscp).second) {
+                    valid = false;
+                    return;
+                }
+                AstNodeAssign* const assp = VN_AS(
+                    VN_AS(candidate.m_comb[writer->second].second->stmtsp(), Always)->stmtsp(),
+                    NodeAssign);
+                bool writerHasFf = false;
+                const bool writerValid
+                    = collectFfOutputCone(assp->rhsp(), candidate, combWriters, clockedWrites,
+                                          combHasFf, visiting, outputComb, writerHasFf);
+                visiting.erase(vscp);
+                if (!writerValid) {
+                    valid = false;
+                    return;
+                }
+                outputComb.insert(vscp);
+                combHasFf.emplace(vscp, writerHasFf);
+                hasFf |= writerHasFf;
+            } else if (clockedWrites.count(vscp) && !vscp->varp()->isTemp()
+                       && !vscp->varp()->subgraphCaptured()) {
+                hasFf = true;
+            } else {
+                valid = false;
+            }
+        } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, CExpr)
+                   || VN_IS(nodep, CExprUser) || VN_IS(nodep, CStmt) || VN_IS(nodep, CStmtUser)) {
+            valid = false;
+        }
+    });
+    return valid;
 }
 
 AstVarScope* posedgeClock(AstActive* activep) {
@@ -417,6 +478,7 @@ struct SubgraphPlan::Impl final {
         AstScope* m_scopep = nullptr;
         AstVarScope* m_clockp = nullptr;
         std::vector<EarlyCandidate::OutputBinding> m_outputs;
+        std::unordered_set<const AstVar*> m_outputCombVars;
         AstSenTree* m_senTreep = nullptr;
         LogicByScope m_clocked;
         LogicByScope m_comb;
@@ -474,8 +536,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         });
     });
 
-    // A published output can name an FF directly or an alias optimized to its
-    // backing FF. The binding is the port contract, independent of child names.
+    // Keep the publication expression in the representative scope. It can be an FF
+    // reference or a pure expression of FF-derived local combinational values.
     for (const auto& pair : allComb) {
         AstScope* const boundaryScopep = findBoundaryScope(pair.first);
         if (!boundaryScopep || !isPublishActive(pair.second)) continue;
@@ -488,25 +550,36 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         const AstAssignW* const assp
             = VN_AS(VN_AS(pair.second->stmtsp(), Always)->stmtsp(), AssignW);
         const AstVarRef* const lhsp = VN_AS(assp->lhsp(), VarRef);
-        const AstVarRef* const rhsp = VN_CAST(assp->rhsp(), VarRef);
-        if (!rhsp || !isUnderScope(rhsp->varScopep()->scopep(), boundaryScopep)) {
-            reject(candidate, "output is not FF state");
-            continue;
-        }
-        AstVarScope* const statep = findVarScope(implementationp, rhsp->varp());
-        if (!statep) {
-            reject(candidate, "output state missing from representative");
-            continue;
-        }
+        AstNodeExpr* const exprp = assp->rhsp()->cloneTree(false);
+        EarlyCandidate::ExprDeleter deleteExpr;
+        std::unique_ptr<AstNodeExpr, EarlyCandidate::ExprDeleter> expression{exprp, deleteExpr};
+        bool mapped = true;
+        exprp->foreach([&](AstNodeVarRef* refp) {
+            if (!isUnderScope(refp->varScopep()->scopep(), boundaryScopep)) {
+                mapped = false;
+                return;
+            }
+            AstVarScope* const representativep = findVarScope(implementationp, refp->varp());
+            if (!representativep) {
+                mapped = false;
+                return;
+            }
+            refp->varScopep(representativep);
+        });
+        if (!mapped) reject(candidate, "output is not FF state");
         const uint32_t portId = lhsp->varp()->subgraphPortId();
         bool found = false;
         for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
             if (output.m_portId != portId) continue;
-            UASSERT_OBJ(output.m_statep == statep && output.m_publishedVarp == lhsp->varp(),
-                        pair.second, "Inconsistent publication source across receivers");
+            if (output.m_publishedVarp != lhsp->varp()
+                || !output.m_exprp->sameTree(expression.get())) {
+                reject(candidate, "output expression differs across receivers");
+            }
             found = true;
         }
-        if (!found) candidate.m_outputs.push_back({portId, statep, lhsp->varp(), nullptr});
+        if (!found) {
+            candidate.m_outputs.push_back({portId, std::move(expression), lhsp->varp(), nullptr});
+        }
     }
 
     // Index accesses that bypass a boundary's ports once for the entire design.
@@ -549,9 +622,10 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
             if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
                 || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
-                || lhsp->varp()->isIO() || lhsp->varp()->subgraphPublished()
-                || lhsp->varp()->subgraphCaptured() || assp->isTimingControl()
-                || !assp->rhsp()->isPure() || hasCallOrSuspendable(activep)
+                || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
+                || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
+                || assp->isTimingControl() || !assp->rhsp()->isPure()
+                || hasCallOrSuspendable(activep)
                 || !combWriters.emplace(lhsp->varScopep(), i).second) {
                 reject(candidate, "unsupported child combinational logic");
             }
@@ -580,7 +654,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             for (const auto& pair : candidate.m_comb) local.insert(pair.second);
             for (const auto& writer : combWriters) {
                 for (AstActive* const activep : activeReaders[writer.first]) {
-                    if (!local.count(activep)) {
+                    if (!local.count(activep) && !isPublishActive(activep)) {
                         reject(candidate, "child combinational value used outside FF evaluation");
                     }
                 }
@@ -624,9 +698,20 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 if (refp->access().isWriteOrRW()) clockedWrites.insert(refp->varScopep());
             });
         }
-        for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
-            if (!clockedWrites.count(output.m_statep)) {
-                reject(candidate, "output is not FF state");
+        if (candidate.m_rejection.empty()) {
+            std::unordered_map<AstVarScope*, bool> combHasFf;
+            std::unordered_set<AstVarScope*> visiting;
+            std::unordered_set<AstVarScope*> outputComb;
+            for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
+                bool hasFf = false;
+                if (!collectFfOutputCone(output.m_exprp.get(), candidate, combWriters,
+                                         clockedWrites, combHasFf, visiting, outputComb, hasFf)
+                    || !hasFf) {
+                    reject(candidate, "output is not FF state");
+                }
+            }
+            for (AstVarScope* const vscp : outputComb) {
+                candidate.m_outputCombVars.insert(vscp->varp());
             }
         }
         if (externallyAccessed.count(candidate.m_scopep)) {
@@ -738,7 +823,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         Impl::Group& group = m_impl->m_groups[groupIndex];
         group.m_scopep = candidate.m_scopep;
         group.m_clockp = candidate.m_clockp;
-        group.m_outputs = candidate.m_outputs;
+        group.m_outputs = std::move(candidate.m_outputs);
+        group.m_outputCombVars = std::move(candidate.m_outputCombVars);
         m_impl->m_accepted.emplace(candidate.m_scopep, groupIndex);
         acceptedScopes.insert(candidate.m_scopep);
         const auto receivers = sharedReceivers.find(candidate.m_scopep);
@@ -780,6 +866,12 @@ bool SubgraphPlan::isAccepted(const AstScope* scopep) const {
     return m_impl->m_accepted.count(const_cast<AstScope*>(scopep));
 }
 
+bool SubgraphPlan::isOutputCombinational(const AstScope* scopep, const AstVar* varp) const {
+    const auto it = m_impl->m_accepted.find(const_cast<AstScope*>(scopep));
+    UASSERT_OBJ(it != m_impl->m_accepted.end(), scopep, "Missing early subgraph output cone");
+    return m_impl->m_groups[it->second].m_outputCombVars.count(varp);
+}
+
 AstVarScope* SubgraphPlan::clockPort(const AstScope* scopep) const {
     const auto it = m_impl->m_accepted.find(const_cast<AstScope*>(scopep));
     UASSERT_OBJ(it != m_impl->m_accepted.end(), scopep, "Missing early subgraph clock");
@@ -802,7 +894,42 @@ void SubgraphPlan::appendPublications(const AstScope* scopep, AstCFunc* funcp) c
         FileLine* const flp = output.m_publishedp->fileline();
         funcp->addStmtsp(new AstAssign{flp,
                                        new AstVarRef{flp, output.m_publishedp, VAccess::WRITE},
-                                       new AstVarRef{flp, output.m_statep, VAccess::READ}});
+                                       output.m_exprp->cloneTree(false)});
+    }
+}
+
+void SubgraphPlan::appendSettleLogic(LogicByScope& comb,
+                                     std::vector<AstActive*>& receiverClones) const {
+    for (const Impl::Group& group : m_impl->m_groups) {
+        const auto isOutputCone = [&](AstActive* const activep) {
+            const AstNodeAssign* const assp
+                = VN_AS(VN_AS(activep->stmtsp(), Always)->stmtsp(), NodeAssign);
+            return group.m_outputCombVars.count(VN_AS(assp->lhsp(), VarRef)->varp());
+        };
+        for (const auto& pair : group.m_comb) {
+            if (isOutputCone(pair.second)) comb.emplace_back(pair);
+        }
+        for (AstScope* const receiverp : group.m_receivers) {
+            std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
+            for (AstVarScope* vscp = receiverp->varsp(); vscp;
+                 vscp = VN_AS(vscp->nextp(), VarScope)) {
+                receiverVars.emplace(vscp->varp(), vscp);
+            }
+            for (const auto& pair : group.m_comb) {
+                if (!isOutputCone(pair.second)) continue;
+                AstActive* const clonep = pair.second->cloneTree(false);
+                clonep->foreach([&](AstNodeVarRef* refp) {
+                    AstVarScope* const vscp = refp->varScopep();
+                    if (vscp->scopep() != group.m_scopep) return;
+                    const auto it = receiverVars.find(vscp->varp());
+                    UASSERT_OBJ(it != receiverVars.end(), refp,
+                                "Shared subgraph state missing from receiver scope");
+                    refp->varScopep(it->second);
+                });
+                comb.emplace_back(receiverp, clonep);
+                receiverClones.push_back(clonep);
+            }
+        }
     }
 }
 
@@ -975,10 +1102,10 @@ static bool sameReceiverGroup(const SubgraphGroup& representative,
                                 representative.m_boundaryScopep, candidate.m_boundaryScopep);
 }
 
-// These pure blocking assignments are evaluated only when the child FF pre phase runs.
-// Their dependency graph was checked during admission; order it again here after the
-// parent partition has moved the actives into this group's local ownership.
-static void appendOrderedNextState(SubgraphGroup& group, AstCFunc* funcp) {
+// Local combinational assignments run before FF evaluation. The FF-derived output cone
+// also runs after NBA commits, before the output values are published to the parent.
+static void appendOrderedCombinational(SubgraphGroup& group, AstCFunc* funcp,
+                                       const SubgraphPlan& plan, bool post) {
     const LogicByScope& logic = group.m_combLogic;
     std::map<AstVarScope*, size_t> writers;
     for (size_t i = 0; i < logic.size(); ++i) {
@@ -994,8 +1121,17 @@ static void appendOrderedNextState(SubgraphGroup& group, AstCFunc* funcp) {
     for (const size_t index : ordered) {
         AstNodeAssign* const assp
             = VN_AS(VN_AS(logic[index].second->stmtsp(), Always)->stmtsp(), NodeAssign);
+        if (post
+            && !plan.isOutputCombinational(group.m_boundaryScopep,
+                                           VN_AS(assp->lhsp(), VarRef)->varp())) {
+            continue;
+        }
         funcp->addStmtsp(assp->cloneTree(false));
     }
+}
+
+static void deleteCombinationalLogic(SubgraphGroup& group) {
+    LogicByScope& logic = group.m_combLogic;
     for (const auto& pair : logic) {
         if (pair.second->backp()) pair.second->unlinkFrBack();
         pair.second->deleteTree();
@@ -1022,10 +1158,11 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
             AstScope* const scopep = pair.first;
             AstActive* const activep = pair.second;
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
+            // Region partitioning remaps sensitivities, so recognize port logic by its
+            // statement instead of the original combinational sensitivity.
             if (!boundaryScopep || !plan.isAccepted(boundaryScopep)
-                || (activep->sentreep()->hasCombo()
-                    && (isBoundaryInputActive(boundaryScopep, activep)
-                        || isPublishActive(activep)))) {
+                || isBoundaryInputStatement(boundaryScopep, activep->stmtsp())
+                || isPublishStatement(activep->stmtsp())) {
                 parentLogic.emplace_back(pair);
                 continue;
             }
@@ -1183,12 +1320,15 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                     funcp->isConst(false);
                     funcp->declPrivate(true);
                     group.m_boundaryScopep->addBlocksp(funcp);
-                    appendOrderedNextState(group, funcp);
+                    appendOrderedCombinational(group, funcp, plan, false);
                     AstCCall* const callp = new AstCCall{group.m_filelinep, orderedp};
                     callp->dtypeSetVoid();
                     funcp->addStmtsp(callp->makeStmt());
                 }
                 if (post && contract.m_portOnly) {
+                    if (!group.m_combLogic.empty()) {
+                        appendOrderedCombinational(group, funcp, plan, true);
+                    }
                     plan.appendPublications(group.m_boundaryScopep, funcp);
                 }
                 funcp->subgraphWrapper(true);
@@ -1257,6 +1397,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
 
         orderPhase(group.m_preLogic, "pre", false);
         orderPhase(group.m_postLogic, "post", true);
+        deleteCombinationalLogic(group);
         ++groupIndex;
     }
 

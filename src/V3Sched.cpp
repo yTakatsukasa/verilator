@@ -908,7 +908,12 @@ void schedule(AstNetlist* netlistp) {
     SenExprBuilder senExprBuilder{scopeTopp};
 
     // Step 6: Create 'settle' region that restores the combinational invariant
+    const size_t parentCombSize = logicClasses.m_comb.size();
+    std::vector<AstActive*> receiverSettleClones;
+    subgraphPlan.appendSettleLogic(logicClasses.m_comb, receiverSettleClones);
     createSettle(netlistp, staticp, senExprBuilder, logicClasses, cgRefBindings);
+    logicClasses.m_comb.resize(parentCombSize);
+    for (AstActive* const clonep : receiverSettleClones) clonep->deleteTree();
     subgraphPlan.movePublications(logicClasses.m_comb, logicClasses.m_hybrid);
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-settle");
 
