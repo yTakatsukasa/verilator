@@ -638,6 +638,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     // which this NBA-only experiment cannot schedule. Follow combinational assignments so an
     // output alias or a short combinational chain cannot hide that dependency.
     for (EarlyCandidate& candidate : candidates) {
+        if (!candidate.m_rejection.empty()) continue;
         std::unordered_set<AstVarScope*> tainted;
         const auto seedInternal = [&](const auto& pairs) {
             for (const auto& pair : pairs) {
@@ -699,6 +700,16 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     for (EarlyCandidate& candidate : candidates) {
         if (!candidate.m_rejection.empty()) {
             ++rejected;
+            const auto warnFallback = [&](AstScope* const scopep) {
+                scopep->v3warn(SUBGRAPHFALLBACK, "Subgraph " << scopep->prettyNameQ()
+                                                             << " fell back to parent scheduling: "
+                                                             << candidate.m_rejection);
+            };
+            warnFallback(candidate.m_scopep);
+            const auto receivers = sharedReceivers.find(candidate.m_scopep);
+            if (receivers != sharedReceivers.end()) {
+                for (AstScope* const receiverp : receivers->second) warnFallback(receiverp);
+            }
             UINFO(4, "Subgraph early scheduling fallback for " << candidate.m_scopep->name()
                                                                << ": " << candidate.m_rejection);
             continue;
@@ -1011,10 +1022,9 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
             AstScope* const scopep = pair.first;
             AstActive* const activep = pair.second;
             AstScope* const boundaryScopep = findBoundaryScope(scopep);
-            if (!boundaryScopep
+            if (!boundaryScopep || !plan.isAccepted(boundaryScopep)
                 || (activep->sentreep()->hasCombo()
-                    && (!plan.isAccepted(boundaryScopep)
-                        || isBoundaryInputActive(boundaryScopep, activep)
+                    && (isBoundaryInputActive(boundaryScopep, activep)
                         || isPublishActive(activep)))) {
                 parentLogic.emplace_back(pair);
                 continue;

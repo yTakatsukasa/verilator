@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Shared child output used as a parent clock falls back
+# DESCRIPTION: Verilator: Independent subgraph clocks without local scheduling
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -10,11 +10,7 @@
 import vltest_bootstrap
 
 test.scenarios('vlt')
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "-Wno-fatal"])
+test.compile(top_filename="t/t_subgraph_fallback_multiclock.v", verilator_flags2=["--binary"])
 test.execute()
-
-test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 2)
-test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
-test.file_grep(test.stats, r'Scheduling, Subgraph receiver actives\s+(\d+)', 3)
 
 test.passes()

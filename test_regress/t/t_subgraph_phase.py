@@ -22,6 +22,7 @@ test.compile(
         "--exe",
         test.pli_filename,
         "--subgraph-schedule",
+        "-Wno-fatal",
         "--stats",
         "--dumpi-graph 6",
     ])
@@ -37,15 +38,15 @@ test.file_grep(test.stats, r'Subgraph boundary, scoped publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, delayed publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, NBA publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, NBA shadow pairs\s+(\d+)', 6)
-test.file_grep(test.stats, r'Subgraph boundary, connected wrappers\s+(\d+)', 12)
+test.file_grep(test.stats, r'Subgraph boundary, connected wrappers\s+(\d+)', 10)
 
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 6)
-test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 12)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 5)
+test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 10)
 test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 6)
 test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
 test.file_grep(test.stats, r'Scheduling, Subgraph early clocked actives\s+(\d+)', 10)
-test.file_grep(test.stats, r'Scheduling, Subgraph captured inputs\s+(\d+)', 15)
+test.file_grep(test.stats, r'Scheduling, Subgraph captured inputs\s+(\d+)', 13)
 test.file_grep(test.stats, r'Inst, Subgraph published outputs\s+(\d+)', 6)
 published_headers = test.glob_some(test.obj_dir + "/*sg_phase_direct_ff.h")
 if len(published_headers) != 1:
@@ -117,15 +118,15 @@ else:
 child_graphs = test.glob_some(test.obj_dir + "/*nba_subgraph_pre_*_orderg_pre.dot")
 parent_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_pre.dot")
 parent_acyc_graphs = test.glob_some(test.obj_dir + "/*nba_orderg_acyc.dot")
-if len(child_graphs) != 6:
-    test.error("Expected six child Order graphs, got " + str(len(child_graphs)))
+if len(child_graphs) != 5:
+    test.error("Expected five child Order graphs, got " + str(len(child_graphs)))
 if len(parent_graphs) != 1:
     test.error("Expected one parent NBA Order graph, got " + str(len(parent_graphs)))
 if len(parent_acyc_graphs) != 1:
     test.error("Expected one acyclic parent NBA Order graph, got " + str(len(parent_acyc_graphs)))
 test.file_grep_any(child_graphs, r'__Vdly__state')
 test.file_grep_any(child_graphs, r'__Vdly__q')
-test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 6)
+test.file_grep_count(parent_graphs[0], r'shape=doubleoctagon', 5)
 
 with open(parent_graphs[0], 'r', encoding='utf8') as fh:
     graph = fh.read()

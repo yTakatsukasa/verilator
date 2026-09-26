@@ -11,12 +11,12 @@ import vltest_bootstrap
 
 test.scenarios('vlt')
 test.compile(make_main=False, verilator_flags2=[
-    "--subgraph-schedule", "--stats", "--exe", test.pli_filename
+    "--subgraph-schedule", "--stats", "-Wno-fatal", "--exe", test.pli_filename
 ])
 test.execute()
 
 test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 7)
 test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 5)
-test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 12)
+test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 10)
 
 test.passes()

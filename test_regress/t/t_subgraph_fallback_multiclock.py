@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: Hierarchical child-state access falls back from port-only scheduling
+# DESCRIPTION: Verilator: Fallback of a subgraph with independent clocks preserves both events
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -10,9 +10,10 @@
 import vltest_bootstrap
 
 test.scenarios('vlt')
-test.compile(verilator_flags2=["--subgraph-schedule", "--stats", "-Wno-fatal"])
+test.compile(verilator_flags2=["--binary", "--subgraph-schedule", "--stats", "-Wno-fatal"])
 test.execute()
+
 test.file_grep(test.stats, r'Scheduling, Subgraph early candidates\s+(\d+)', 1)
-test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 0)
 test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 1)
+
 test.passes()
