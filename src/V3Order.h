@@ -55,13 +55,14 @@ struct BoundaryUse final {
     bool m_delayedState = false;
 };
 struct BoundaryContract final {
+    enum class Operation : uint8_t { GENERIC, CLOCK_EVAL, PUBLISH };
+    Operation m_operation = Operation::GENERIC;
+    // For an eligible boundary, the operation determines the access direction.
+    // Input acquisition remains ordinary parent logic; CLOCK_EVAL reads its ports.
+    std::vector<AstVarScope*> m_ports;
+    AstVarScope* m_clockp = nullptr;
+    // Fallback helpers retain arbitrary variable effects.
     std::vector<BoundaryUse> m_uses;
-    AstVarScope* m_phasePortp = nullptr;
-    // An eligible FF boundary exposes acquired inputs and published outputs.
-    // Its pre and post calls form a local transaction whose order must survive
-    // hiding internal NBA temporaries.
-    bool m_portOnly = false;
-    bool m_post = false;
 };
 using BoundaryUses = std::unordered_map<const AstCFunc*, BoundaryContract>;
 

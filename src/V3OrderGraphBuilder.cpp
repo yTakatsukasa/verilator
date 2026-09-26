@@ -197,12 +197,18 @@ class OrderGraphBuilder final : public VNVisitor {
         AstScope* const boundaryScopep = nodep->subgraphReceiverScopep()
                                              ? nodep->subgraphReceiverScopep()
                                              : implementationScopep;
-        if (contract->second.m_portOnly) {
+        const V3Order::BoundaryContract::Operation operation = contract->second.m_operation;
+        const bool portOperation = operation != V3Order::BoundaryContract::Operation::GENERIC;
+        const bool publish = operation == V3Order::BoundaryContract::Operation::PUBLISH;
+        UASSERT_OBJ(portOperation ? contract->second.m_uses.empty()
+                                  : contract->second.m_ports.empty(),
+                    nodep, "Mixed subgraph boundary operation and variable effects");
+        if (portOperation) {
             std::array<OrderLogicVertex*, 2>& phases = m_wrapperPhases[boundaryScopep];
-            UASSERT_OBJ(!phases[contract->second.m_post], nodep,
+            UASSERT_OBJ(!phases[publish], nodep,
                         "Duplicate subgraph operation phase for receiver");
-            phases[contract->second.m_post] = m_logicVxp;
-            AstVarScope* phasePortp = contract->second.m_phasePortp;
+            phases[publish] = m_logicVxp;
+            AstVarScope* phasePortp = contract->second.m_clockp;
             if (boundaryScopep != implementationScopep
                 && phasePortp->scopep() == implementationScopep) {
                 for (AstVarScope* vscp = boundaryScopep->varsp(); vscp;
@@ -227,14 +233,28 @@ class OrderGraphBuilder final : public VNVisitor {
                 receiverVars.emplace(vscp->varp(), vscp);
             }
         }
-        for (const V3Order::BoundaryUse& use : contract->second.m_uses) {
-            AstVarScope* vscp = use.m_vscp;
+        const auto receiverVar = [&](AstVarScope* vscp) {
             if (!receiverVars.empty() && vscp->scopep() == implementationScopep) {
                 const auto it = receiverVars.find(vscp->varp());
                 UASSERT_OBJ(it != receiverVars.end(), nodep,
-                            "Shared subgraph state missing from receiver scope");
-                vscp = it->second;
+                            "Shared subgraph port missing from receiver scope");
+                return it->second;
             }
+            return vscp;
+        };
+        if (portOperation) {
+            for (AstVarScope* const portp : contract->second.m_ports) {
+                AstVarScope* const vscp = receiverVar(portp);
+                const bool boundaryPort = vscp->scopep() == boundaryScopep && vscp->varp()->isIO();
+                if (isUnderScope(vscp->scopep(), boundaryScopep) && !boundaryPort
+                    && !m_parentAccessedVscps.count(vscp)) {
+                    continue;
+                }
+                accountVarAccess(vscp, publish ? VAccess::WRITE : VAccess::READ, nodep);
+            }
+        }
+        for (const V3Order::BoundaryUse& use : contract->second.m_uses) {
+            AstVarScope* const vscp = receiverVar(use.m_vscp);
             const bool internal = isUnderScope(vscp->scopep(), boundaryScopep);
             const bool delayedState = internal && use.m_delayedState;
             if (internal) {

@@ -1241,26 +1241,16 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
         const auto orderPhase = [&](LogicByScope& phaseLogic, const string& phase, bool post) {
             if (phaseLogic.empty()) return;
             V3Order::BoundaryContract contract;
-            contract.m_portOnly = plan.isAccepted(group.m_boundaryScopep);
-            contract.m_post = post;
-            if (contract.m_portOnly) {
-                contract.m_phasePortp = plan.clockPort(group.m_boundaryScopep);
-                if (post) {
-                    plan.foreachPublished(group.m_boundaryScopep, [&](AstVarScope* vscp) {
-                        contract.m_uses.push_back({vscp, false, true, false});
-                    });
-                }
-                // Derive the parent effect from the port and phase, before local Order
-                // replaces these statements with a callable function.
-                phaseLogic.foreachLogic([&](AstNode* nodep) {
-                    nodep->foreach([&](AstNodeVarRef* refp) {
-                        AstVarScope* const vscp = refp->varScopep();
-                        if (vscp->varp()->subgraphCaptured()) {
-                            contract.m_uses.push_back({vscp, refp->access().isReadOrRW(),
-                                                       refp->access().isWriteOrRW(), false});
-                        }
-                    });
-                });
+            const bool portOnly = plan.isAccepted(group.m_boundaryScopep);
+            if (portOnly) {
+                std::unordered_set<AstVarScope*> seenPorts;
+                const auto addPort = [&](AstVarScope* vscp) {
+                    if (seenPorts.insert(vscp).second) contract.m_ports.push_back(vscp);
+                };
+                contract.m_operation = post ? V3Order::BoundaryContract::Operation::PUBLISH
+                                            : V3Order::BoundaryContract::Operation::CLOCK_EVAL;
+                contract.m_clockp = plan.clockPort(group.m_boundaryScopep);
+                if (post) { plan.foreachPublished(group.m_boundaryScopep, addPort); }
                 if (!post) {
                     for (const auto& pair : group.m_combLogic) {
                         pair.second->foreach([&](AstNodeVarRef* refp) {
@@ -1268,7 +1258,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                             if (refp->access().isReadOrRW()
                                 && vscp->scopep() == group.m_boundaryScopep
                                 && vscp->varp()->isInput()) {
-                                contract.m_uses.push_back({vscp, true, false, false});
+                                addPort(vscp);
                             }
                         });
                     }
@@ -1325,7 +1315,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                     callp->dtypeSetVoid();
                     funcp->addStmtsp(callp->makeStmt());
                 }
-                if (post && contract.m_portOnly) {
+                if (post && portOnly) {
                     if (!group.m_combLogic.empty()) {
                         appendOrderedCombinational(group, funcp, plan, true);
                     }
@@ -1338,7 +1328,7 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                 }
                 util::splitCheck(funcp);
                 orderedFunctions[groupIndex][post] = funcp;
-                if (!contract.m_portOnly) {
+                if (!portOnly) {
                     std::unordered_set<const AstCFunc*> visited;
                     std::function<void(AstCFunc*)> collect = [&](AstCFunc* currentp) {
                         if (!visited.insert(currentp).second) return;
@@ -1436,7 +1426,9 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
     V3Stats::addStat("Scheduling, Subgraph shareable CFuncs", shareableFunctions);
     V3Stats::addStat("Scheduling, Subgraph shared Order skips", sharedOrderSkips);
     uint64_t contractUses = 0;
-    for (const auto& entry : boundaryUses) contractUses += entry.second.m_uses.size();
+    for (const auto& entry : boundaryUses) {
+        contractUses += entry.second.m_uses.size() + entry.second.m_ports.size();
+    }
     V3Stats::addStat("Scheduling, Subgraph boundary contract uses", contractUses);
     uint64_t capturedInputs = 0;
     for (const auto& pair : freshReads) capturedInputs += pair.second.size();
