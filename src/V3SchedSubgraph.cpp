@@ -259,24 +259,30 @@ struct EarlyCandidate final {
     std::vector<OutputBinding> m_outputs;
     std::unordered_set<const AstVar*> m_outputCombVars;
     std::string m_rejection;
+    FileLine* m_rejectionFilelinep = nullptr;
 };
 
-void reject(EarlyCandidate& candidate, const char* reason) {
-    if (candidate.m_rejection.empty()) candidate.m_rejection = reason;
+void reject(EarlyCandidate& candidate, const char* reason, FileLine* filelinep) {
+    if (!candidate.m_rejection.empty()) return;
+    candidate.m_rejection = reason;
+    candidate.m_rejectionFilelinep = filelinep;
 }
 
-bool hasCallOrSuspendable(AstActive* activep) {
-    bool unsupported = false;
-    activep->foreach([&](AstCCall*) { unsupported = true; });
-    activep->foreach([&](AstNodeProcedure* procp) {
-        if (procp->isSuspendable()) unsupported = true;
+AstNode* findCallOrSuspendable(AstActive* activep) {
+    AstNode* unsupportedp = nullptr;
+    activep->foreach([&](AstCCall* callp) {
+        if (!unsupportedp) unsupportedp = callp;
     });
-    return unsupported;
+    activep->foreach([&](AstNodeProcedure* procp) {
+        if (!unsupportedp && procp->isSuspendable()) unsupportedp = procp;
+    });
+    return unsupportedp;
 }
 
 template <typename Logic>
 std::vector<size_t> orderNextState(const Logic& logic,
-                                   const std::map<AstVarScope*, size_t>& writers) {
+                                   const std::map<AstVarScope*, size_t>& writers,
+                                   size_t* cycleIndexp = nullptr) {
     std::vector<std::vector<size_t>> successors(logic.size());
     std::vector<size_t> indegree(logic.size(), 0);
     for (size_t i = 0; i < logic.size(); ++i) {
@@ -302,6 +308,24 @@ std::vector<size_t> orderNextState(const Logic& logic,
         for (const size_t next : successors[index]) {
             if (!--indegree[next]) ready.insert(next);
         }
+    }
+    if (cycleIndexp && ordered.size() != logic.size()) {
+        size_t index = 0;
+        while (!indegree[index]) ++index;
+        std::unordered_set<size_t> visited;
+        while (visited.insert(index).second) {
+            AstNodeAssign* const assp
+                = VN_AS(VN_AS(logic[index].second->stmtsp(), Always)->stmtsp(), NodeAssign);
+            size_t predecessor = index;
+            assp->rhsp()->foreach([&](AstNodeVarRef* refp) {
+                const auto writer = writers.find(refp->varScopep());
+                if (writer != writers.end() && indegree[writer->second]) {
+                    predecessor = writer->second;
+                }
+            });
+            index = predecessor;
+        }
+        *cycleIndexp = index;
     }
     return ordered;
 }
@@ -370,15 +394,15 @@ AstVarScope* posedgeClock(AstActive* activep) {
     return refp ? refp->varScopep() : nullptr;
 }
 
-bool writesExternalValue(AstActive* activep, AstScope* boundaryScopep) {
-    bool writesExternal = false;
+AstNodeVarRef* writesExternalValue(AstActive* activep, AstScope* boundaryScopep) {
+    AstNodeVarRef* externalp = nullptr;
     activep->foreach([&](AstNodeVarRef* refp) {
-        if (refp->access().isWriteOrRW()
+        if (!externalp && refp->access().isWriteOrRW()
             && !isUnderScope(refp->varScopep()->scopep(), boundaryScopep)) {
-            writesExternal = true;
+            externalp = refp;
         }
     });
-    return writesExternal;
+    return externalp;
 }
 
 SubgraphGroup& findOrCreateGroup(std::vector<SubgraphGroup>& groups,
@@ -531,7 +555,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             } else if (comb && !VN_IS(activep->stmtsp(), AlwaysPostponed)) {
                 candidate.m_comb.emplace_back(scopep, activep);
             } else {
-                reject(candidate, "unsupported region");
+                reject(candidate, "unsupported region",
+                       activep->stmtsp() ? activep->stmtsp()->fileline() : activep->fileline());
             }
         });
     });
@@ -566,14 +591,15 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             }
             refp->varScopep(representativep);
         });
-        if (!mapped) reject(candidate, "output is not FF state");
+        if (!mapped) reject(candidate, "output is not FF state", assp->rhsp()->fileline());
         const uint32_t portId = lhsp->varp()->subgraphPortId();
         bool found = false;
         for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
             if (output.m_portId != portId) continue;
             if (output.m_publishedVarp != lhsp->varp()
                 || !output.m_exprp->sameTree(expression.get())) {
-                reject(candidate, "output expression differs across receivers");
+                reject(candidate, "output expression differs across receivers",
+                       assp->rhsp()->fileline());
             }
             found = true;
         }
@@ -584,12 +610,13 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
 
     // Index accesses that bypass a boundary's ports once for the entire design.
     // Shared receivers are mapped to their representative candidate.
-    std::unordered_set<AstScope*> externallyAccessed;
-    std::unordered_map<AstVarScope*, std::vector<AstActive*>> activeReaders;
+    std::unordered_map<AstScope*, FileLine*> externallyAccessed;
+    using Reader = std::pair<AstActive*, AstNodeVarRef*>;
+    std::unordered_map<AstVarScope*, std::vector<Reader>> activeReaders;
     for (const auto& pair : allActives) {
         pair.second->foreach([&](AstNodeVarRef* refp) {
             if (refp->access().isReadOrRW()) {
-                activeReaders[refp->varScopep()].push_back(pair.second);
+                activeReaders[refp->varScopep()].emplace_back(pair.second, refp);
             }
             AstScope* const boundaryScopep = findBoundaryScope(refp->varScopep()->scopep());
             if (!boundaryScopep || isUnderScope(pair.first, boundaryScopep)) return;
@@ -601,14 +628,21 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             AstScope* const implementationp = boundaryScopep->subgraphImplementationScopep()
                                                   ? boundaryScopep->subgraphImplementationScopep()
                                                   : boundaryScopep;
-            externallyAccessed.insert(implementationp);
+            externallyAccessed.emplace(implementationp, refp->fileline());
         });
     }
 
     for (EarlyCandidate& candidate : candidates) {
-        if (v3Global.usesZeroDelay()) reject(candidate, "zero-delay design");
+        if (v3Global.usesZeroDelay()) {
+            reject(candidate, "zero-delay design", v3Global.zeroDelayFilelinep());
+        }
         if (candidate.m_clocked.empty()) {
-            reject(candidate, "no clocked logic");
+            AstActive* const activep
+                = candidate.m_comb.empty() ? nullptr : candidate.m_comb.front().second;
+            reject(candidate, "no clocked logic",
+                   activep
+                       ? (activep->stmtsp() ? activep->stmtsp()->fileline() : activep->fileline())
+                       : candidate.m_scopep->modp()->fileline());
             continue;
         }
         // An internal combinational value used only for FF next state can be
@@ -620,42 +654,55 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             AstAlways* const alwaysp = VN_CAST(activep->stmtsp(), Always);
             AstNodeAssign* const assp = alwaysp ? VN_CAST(alwaysp->stmtsp(), NodeAssign) : nullptr;
             AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+            AstNode* const callp = findCallOrSuspendable(activep);
             if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
                 || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
                 || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
                 || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
-                || assp->isTimingControl() || !assp->rhsp()->isPure()
-                || hasCallOrSuspendable(activep)
+                || assp->isTimingControl() || !assp->rhsp()->isPure() || callp
                 || !combWriters.emplace(lhsp->varScopep(), i).second) {
-                reject(candidate, "unsupported child combinational logic");
+                AstNode* const problemp = callp                   ? callp
+                                          : assp && assp->nextp() ? assp->nextp()
+                                          : assp                  ? static_cast<AstNode*>(assp)
+                                                                  : activep->stmtsp();
+                reject(candidate, "unsupported child combinational logic", problemp->fileline());
             }
             if (assp) {
                 assp->rhsp()->foreach([&](AstNode* nodep) {
                     if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
                         if (!refp->access().isReadOnly()
                             || !isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
-                            reject(candidate, "child combinational read outside boundary");
+                            reject(candidate, "child combinational read outside boundary",
+                                   refp->fileline());
                         }
                     } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName)
                                || VN_IS(nodep, CExpr) || VN_IS(nodep, CExprUser)
                                || VN_IS(nodep, CStmt) || VN_IS(nodep, CStmtUser)) {
-                        reject(candidate, "unsupported child combinational expression");
+                        reject(candidate, "unsupported child combinational expression",
+                               nodep->fileline());
                     }
                 });
             }
         }
-        if (!combWriters.empty() && candidate.m_rejection.empty()
-            && orderNextState(candidate.m_comb, combWriters).size() != candidate.m_comb.size()) {
-            reject(candidate, "child combinational cycle");
+        if (!combWriters.empty() && candidate.m_rejection.empty()) {
+            size_t cycleIndex = 0;
+            if (orderNextState(candidate.m_comb, combWriters, &cycleIndex).size()
+                != candidate.m_comb.size()) {
+                AstNodeAssign* const assp
+                    = VN_AS(VN_AS(candidate.m_comb[cycleIndex].second->stmtsp(), Always)->stmtsp(),
+                            NodeAssign);
+                reject(candidate, "child combinational cycle", assp->rhsp()->fileline());
+            }
         }
         if (!combWriters.empty()) {
             std::unordered_set<AstActive*> local;
             for (const auto& pair : candidate.m_clocked) local.insert(pair.second);
             for (const auto& pair : candidate.m_comb) local.insert(pair.second);
             for (const auto& writer : combWriters) {
-                for (AstActive* const activep : activeReaders[writer.first]) {
-                    if (!local.count(activep) && !isPublishActive(activep)) {
-                        reject(candidate, "child combinational value used outside FF evaluation");
+                for (const Reader& reader : activeReaders[writer.first]) {
+                    if (!local.count(reader.first) && !isPublishActive(reader.first)) {
+                        reject(candidate, "child combinational value used outside FF evaluation",
+                               reader.second->fileline());
                     }
                 }
             }
@@ -664,12 +711,20 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         for (const auto& pair : candidate.m_clocked) {
             AstActive* const activep = pair.second;
             AstVarScope* const activeClockVscp = posedgeClock(activep);
-            if (!activeClockVscp) reject(candidate, "not a single posedge clock");
+            FileLine* const sensitivityFlp = activep->sentreep()->sensesp()->fileline();
+            if (!activeClockVscp) {
+                reject(candidate, "not a single posedge clock", sensitivityFlp);
+            }
             if (!clockVscp) clockVscp = activeClockVscp;
-            if (activeClockVscp != clockVscp) reject(candidate, "multiple clocks");
-            if (hasCallOrSuspendable(activep)) reject(candidate, "call or timing control");
-            if (writesExternalValue(activep, candidate.m_scopep)) {
-                reject(candidate, "clocked write outside boundary");
+            if (activeClockVscp != clockVscp) {
+                reject(candidate, "multiple clocks", sensitivityFlp);
+            }
+            if (AstNode* const callp = findCallOrSuspendable(activep)) {
+                reject(candidate, "call or timing control", callp->fileline());
+            }
+            if (AstNodeVarRef* const externalp
+                = writesExternalValue(activep, candidate.m_scopep)) {
+                reject(candidate, "clocked write outside boundary", externalp->fileline());
             }
         }
         if (clockVscp) {
@@ -678,13 +733,16 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 const bool boundaryClockInput = clockVscp->scopep() == candidate.m_scopep
                                                 && clockVscp->varp()->isNonOutput()
                                                 && clockVscp->varp()->subgraphPortId();
-                if (!boundaryClockInput) reject(candidate, "clock is inside boundary");
+                if (!boundaryClockInput) {
+                    reject(candidate, "clock is inside boundary",
+                           candidate.m_clocked.front().second->sentreep()->sensesp()->fileline());
+                }
             }
             const auto checkClockWrite = [&](const auto& pairs) {
                 for (const auto& pair : pairs) {
                     pair.second->foreach([&](AstNodeVarRef* refp) {
                         if (refp->varScopep() == clockVscp && refp->access().isWriteOrRW()) {
-                            reject(candidate, "internally driven clock");
+                            reject(candidate, "internally driven clock", refp->fileline());
                         }
                     });
                 }
@@ -707,15 +765,16 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 if (!collectFfOutputCone(output.m_exprp.get(), candidate, combWriters,
                                          clockedWrites, combHasFf, visiting, outputComb, hasFf)
                     || !hasFf) {
-                    reject(candidate, "output is not FF state");
+                    reject(candidate, "output is not FF state", output.m_exprp->fileline());
                 }
             }
             for (AstVarScope* const vscp : outputComb) {
                 candidate.m_outputCombVars.insert(vscp->varp());
             }
         }
-        if (externallyAccessed.count(candidate.m_scopep)) {
-            reject(candidate, "external access to child state");
+        if (const auto it = externallyAccessed.find(candidate.m_scopep);
+            it != externallyAccessed.end()) {
+            reject(candidate, "external access to child state", it->second);
         }
     }
 
@@ -771,7 +830,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             if (findBoundaryScope(pair.first) == candidate.m_scopep) continue;
             pair.second->sentreep()->foreach([&](AstNodeVarRef* refp) {
                 if (tainted.count(refp->varScopep())) {
-                    reject(candidate, "boundary value used as clock");
+                    reject(candidate, "boundary value used as clock", refp->fileline());
                 }
             });
         }
@@ -785,10 +844,13 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     for (EarlyCandidate& candidate : candidates) {
         if (!candidate.m_rejection.empty()) {
             ++rejected;
+            FileLine* const flp = candidate.m_rejectionFilelinep
+                                      ? candidate.m_rejectionFilelinep
+                                      : candidate.m_scopep->modp()->fileline();
             const auto warnFallback = [&](AstScope* const scopep) {
-                scopep->v3warn(SUBGRAPHFALLBACK, "Subgraph " << scopep->prettyNameQ()
-                                                             << " fell back to parent scheduling: "
-                                                             << candidate.m_rejection);
+                flp->v3warn(SUBGRAPHFALLBACK, "Subgraph " << scopep->prettyNameQ()
+                                                          << " fell back to parent scheduling: "
+                                                          << candidate.m_rejection);
             };
             warnFallback(candidate.m_scopep);
             const auto receivers = sharedReceivers.find(candidate.m_scopep);
