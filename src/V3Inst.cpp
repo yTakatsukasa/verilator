@@ -63,11 +63,17 @@ class InstVisitor final : public VNVisitor {
         std::map<AstVar*, AstAlways*> m_stateWriters;
         std::set<AstVar*> m_combWriters;
         std::set<const AstVar*> m_ownedVars;
+        std::set<const AstNodeFTask*> m_shareableFunctions;
         bool m_valid = true;
 
         explicit SharedInputAnalysis(AstNodeModule* modp) {
             for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
                 if (const AstVar* const varp = VN_CAST(stmtp, Var)) m_ownedVars.insert(varp);
+                if (const AstNodeFTask* const ftaskp = VN_CAST(stmtp, NodeFTask)) {
+                    if (V3SubgraphBoundary::shareableLocalFunction(ftaskp)) {
+                        m_shareableFunctions.insert(ftaskp);
+                    }
+                }
             }
         }
 
@@ -88,8 +94,9 @@ class InstVisitor final : public VNVisitor {
                             m_inputPorts.emplace(plainp->varp()->subgraphPortId(), plainp->varp());
                         }
                     }
-                } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName)
-                           || VN_IS(nodep, CExpr) || VN_IS(nodep, CStmt)) {
+                } else if (const AstNodeFTaskRef* const refp = VN_CAST(nodep, NodeFTaskRef)) {
+                    if (!m_shareableFunctions.count(refp->taskp())) m_valid = false;
+                } else if (VN_IS(nodep, ScopeName) || VN_IS(nodep, CExpr) || VN_IS(nodep, CStmt)) {
                     m_valid = false;
                 }
             });

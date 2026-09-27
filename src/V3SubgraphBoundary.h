@@ -24,6 +24,7 @@
 
 class AstNetlist;
 class AstNodeModule;
+class AstNodeFTask;
 
 class V3SubgraphBoundary final {
     struct Impl;
@@ -32,6 +33,7 @@ class V3SubgraphBoundary final {
 public:
     // Stable structural precondition for sharing a module's internal procedures.
     static bool shareableModuleShape(const AstNodeModule* modp);
+    static bool shareableLocalFunction(const AstNodeFTask* ftaskp);
 
     explicit V3SubgraphBoundary(AstNetlist* netlistp);
     ~V3SubgraphBoundary();

@@ -120,11 +120,40 @@ bool isBoundaryInputActive(const AstScope* boundaryScopep, const AstActive* acti
            && isBoundaryInputStatement(boundaryScopep, activep->stmtsp());
 }
 
-bool isLocalCombinationalStatement(const AstScope* boundaryScopep, const AstNode* stmtp) {
-    const AstAlways* const alwaysp = VN_CAST(stmtp, Always);
-    if (!alwaysp) return false;
-    const AstNodeAssign* const assp = VN_CAST(alwaysp->stmtsp(), NodeAssign);
-    if (!assp || assp->nextp()) return false;
+// Task lowering places a non-inlined function call before the assignment that
+// consumes its result. Keep this sequence together in the local schedule.
+AstNodeAssign* localCombinationalAssignment(AstNode* stmtp, AstNode** problemp = nullptr) {
+    AstAlways* const alwaysp = VN_CAST(stmtp, Always);
+    if (!alwaysp) {
+        if (problemp) *problemp = stmtp;
+        return nullptr;
+    }
+    AstNodeAssign* assp = nullptr;
+    for (AstNode* nodep = alwaysp->stmtsp(); nodep; nodep = nodep->nextp()) {
+        if (VN_IS(nodep, Comment)) continue;
+        if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
+            if (assp || !VN_IS(exprp->exprp(), CCall)) {
+                if (problemp) *problemp = nodep;
+                return nullptr;
+            }
+        } else if (AstNodeAssign* const assignmentp = VN_CAST(nodep, NodeAssign)) {
+            if (assp || nodep->nextp()) {
+                if (problemp) *problemp = nodep->nextp() ? nodep->nextp() : nodep;
+                return nullptr;
+            }
+            assp = assignmentp;
+        } else {
+            if (problemp) *problemp = nodep;
+            return nullptr;
+        }
+    }
+    if (!assp && problemp) *problemp = alwaysp;
+    return assp;
+}
+
+bool isLocalCombinationalStatement(const AstScope* boundaryScopep, AstNode* stmtp) {
+    const AstNodeAssign* const assp = localCombinationalAssignment(stmtp);
+    if (!assp) return false;
     const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
     return lhsp && isUnderScope(lhsp->varScopep()->scopep(), boundaryScopep)
            && (!lhsp->varp()->isIO() || !lhsp->varp()->isNonOutput())
@@ -268,15 +297,73 @@ void reject(EarlyCandidate& candidate, const char* reason, FileLine* filelinep) 
     candidate.m_rejectionFilelinep = filelinep;
 }
 
-AstNode* findCallOrSuspendable(AstActive* activep) {
+// A call can remain in the shared body if it depends only on its arguments and
+// automatic function locals. Receiver-specific state must be explicit in the
+// caller so input capture and the boundary contract can account for it.
+bool isStatelessCallee(AstCFunc* funcp, std::unordered_map<const AstCFunc*, bool>& calleeSafety) {
+    const auto inserted = calleeSafety.emplace(funcp, false);
+    if (!inserted.second) return inserted.first->second;
+    if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiExportImpl()
+        || funcp->recursive() || funcp->needProcess() || funcp->isCoroutine()) {
+        return false;
+    }
+    bool valid = true;
+    funcp->foreach([&](AstNode* nodep) {
+        if (!nodep->isPure() || nodep->isTimingControl() || VN_IS(nodep, NodeCCall)
+            || VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)
+            || VN_IS(nodep, CExpr) || VN_IS(nodep, CExprUser) || VN_IS(nodep, CStmt)
+            || VN_IS(nodep, CStmtUser)) {
+            valid = false;
+        }
+        if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            if (!refp->varp()->isFuncLocal() || !refp->varp()->lifetime().isAutomatic()) {
+                valid = false;
+            }
+        }
+    });
+    inserted.first->second = valid;
+    return valid;
+}
+
+bool isLocalPureCall(AstCCall* callp, AstScope* boundaryScopep,
+                     std::unordered_map<const AstCFunc*, bool>& calleeSafety) {
+    if (!isStatelessCallee(callp->funcp(), calleeSafety)) return false;
+    bool valid = true;
+    if (callp->argsp()) {
+        callp->argsp()->foreachAndNext([&](AstNode* nodep) {
+            if (!nodep->isPure()) valid = false;
+            if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+                if (!refp->access().isReadOnly()
+                    && !(refp->access().isWriteOnly() && refp->varp()->isTemp()
+                         && isUnderScope(refp->varScopep()->scopep(), boundaryScopep))) {
+                    valid = false;
+                }
+            }
+        });
+    }
+    return valid;
+}
+
+AstNode*
+findUnsupportedCallOrSuspendable(AstActive* activep, AstScope* boundaryScopep,
+                                 std::unordered_map<const AstCFunc*, bool>& calleeSafety) {
     AstNode* unsupportedp = nullptr;
     activep->foreach([&](AstCCall* callp) {
-        if (!unsupportedp) unsupportedp = callp;
+        if (!unsupportedp && !isLocalPureCall(callp, boundaryScopep, calleeSafety)) {
+            unsupportedp = callp;
+        }
     });
     activep->foreach([&](AstNodeProcedure* procp) {
         if (!unsupportedp && procp->isSuspendable()) unsupportedp = procp;
     });
     return unsupportedp;
+}
+
+template <typename Func>
+void foreachCombinationalRead(AstActive* activep, Func&& func) {
+    VN_AS(activep->stmtsp(), Always)->stmtsp()->foreachAndNext([&](AstNodeVarRef* refp) {
+        if (refp->access().isReadOrRW()) func(refp);
+    });
 }
 
 template <typename Logic>
@@ -286,9 +373,7 @@ std::vector<size_t> orderNextState(const Logic& logic,
     std::vector<std::vector<size_t>> successors(logic.size());
     std::vector<size_t> indegree(logic.size(), 0);
     for (size_t i = 0; i < logic.size(); ++i) {
-        AstNodeAssign* const assp
-            = VN_AS(VN_AS(logic[i].second->stmtsp(), Always)->stmtsp(), NodeAssign);
-        assp->rhsp()->foreach([&](AstNodeVarRef* refp) {
+        foreachCombinationalRead(logic[i].second, [&](AstNodeVarRef* refp) {
             const auto writer = writers.find(refp->varScopep());
             if (writer == writers.end()) return;
             successors[writer->second].push_back(i);
@@ -314,10 +399,8 @@ std::vector<size_t> orderNextState(const Logic& logic,
         while (!indegree[index]) ++index;
         std::unordered_set<size_t> visited;
         while (visited.insert(index).second) {
-            AstNodeAssign* const assp
-                = VN_AS(VN_AS(logic[index].second->stmtsp(), Always)->stmtsp(), NodeAssign);
             size_t predecessor = index;
-            assp->rhsp()->foreach([&](AstNodeVarRef* refp) {
+            foreachCombinationalRead(logic[index].second, [&](AstNodeVarRef* refp) {
                 const auto writer = writers.find(refp->varScopep());
                 if (writer != writers.end() && indegree[writer->second]) {
                     predecessor = writer->second;
@@ -330,16 +413,27 @@ std::vector<size_t> orderNextState(const Logic& logic,
     return ordered;
 }
 
-bool collectFfOutputCone(AstNodeExpr* exprp, const EarlyCandidate& candidate,
+bool collectFfOutputCone(AstNode* rootp, AstNodeAssign* localAssignp,
+                         const EarlyCandidate& candidate,
                          const std::map<AstVarScope*, size_t>& combWriters,
                          const std::unordered_set<AstVarScope*>& clockedWrites,
                          std::unordered_map<AstVarScope*, bool>& combHasFf,
                          std::unordered_set<AstVarScope*>& visiting,
                          std::unordered_set<AstVarScope*>& outputComb, bool& hasFf) {
-    bool valid = exprp->isPure();
-    exprp->foreach([&](AstNode* nodep) {
+    bool valid = localAssignp ? localAssignp->rhsp()->isPure() : rootp->isPure();
+    std::unordered_set<AstVarScope*> localTemps;
+    if (localAssignp) {
+        rootp->foreachAndNext([&](AstNodeVarRef* refp) {
+            if (refp->access().isWriteOnly() && refp->varp()->isTemp()) {
+                localTemps.insert(refp->varScopep());
+            }
+        });
+    }
+    rootp->foreachAndNext([&](AstNode* nodep) {
         if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            if (localAssignp && refp == localAssignp->lhsp()) return;
             AstVarScope* const vscp = refp->varScopep();
+            if (localTemps.count(vscp) && refp->varp()->isTemp()) return;
             if (!refp->access().isReadOnly()
                 || !isUnderScope(vscp->scopep(), candidate.m_scopep)) {
                 valid = false;
@@ -356,13 +450,13 @@ bool collectFfOutputCone(AstNodeExpr* exprp, const EarlyCandidate& candidate,
                     valid = false;
                     return;
                 }
-                AstNodeAssign* const assp = VN_AS(
-                    VN_AS(candidate.m_comb[writer->second].second->stmtsp(), Always)->stmtsp(),
-                    NodeAssign);
+                AstAlways* const alwaysp
+                    = VN_AS(candidate.m_comb[writer->second].second->stmtsp(), Always);
+                AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
                 bool writerHasFf = false;
-                const bool writerValid
-                    = collectFfOutputCone(assp->rhsp(), candidate, combWriters, clockedWrites,
-                                          combHasFf, visiting, outputComb, writerHasFf);
+                const bool writerValid = collectFfOutputCone(alwaysp->stmtsp(), assp, candidate,
+                                                             combWriters, clockedWrites, combHasFf,
+                                                             visiting, outputComb, writerHasFf);
                 visiting.erase(vscp);
                 if (!writerValid) {
                     valid = false;
@@ -632,6 +726,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         });
     }
 
+    std::unordered_map<const AstCFunc*, bool> calleeSafety;
     for (EarlyCandidate& candidate : candidates) {
         if (v3Global.usesZeroDelay()) {
             reject(candidate, "zero-delay design", v3Global.zeroDelayFilelinep());
@@ -651,26 +746,30 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         std::map<AstVarScope*, size_t> combWriters;
         for (size_t i = 0; i < candidate.m_comb.size(); ++i) {
             AstActive* const activep = candidate.m_comb[i].second;
-            AstAlways* const alwaysp = VN_CAST(activep->stmtsp(), Always);
-            AstNodeAssign* const assp = alwaysp ? VN_CAST(alwaysp->stmtsp(), NodeAssign) : nullptr;
+            AstNode* shapeProblemp = nullptr;
+            AstNodeAssign* const assp
+                = localCombinationalAssignment(activep->stmtsp(), &shapeProblemp);
             AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-            AstNode* const callp = findCallOrSuspendable(activep);
+            AstNode* const callp
+                = findUnsupportedCallOrSuspendable(activep, candidate.m_scopep, calleeSafety);
             if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
                 || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
                 || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
                 || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
                 || assp->isTimingControl() || !assp->rhsp()->isPure() || callp
                 || !combWriters.emplace(lhsp->varScopep(), i).second) {
-                AstNode* const problemp = callp                   ? callp
-                                          : assp && assp->nextp() ? assp->nextp()
-                                          : assp                  ? static_cast<AstNode*>(assp)
-                                                                  : activep->stmtsp();
+                AstNode* const problemp = callp           ? callp
+                                          : shapeProblemp ? shapeProblemp
+                                          : assp          ? static_cast<AstNode*>(assp)
+                                                          : activep->stmtsp();
                 reject(candidate, "unsupported child combinational logic", problemp->fileline());
             }
             if (assp) {
-                assp->rhsp()->foreach([&](AstNode* nodep) {
+                VN_AS(activep->stmtsp(), Always)->stmtsp()->foreachAndNext([&](AstNode* nodep) {
                     if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
-                        if (!refp->access().isReadOnly()
+                        if (refp == lhsp) return;
+                        if ((!refp->access().isReadOnly()
+                             && !(refp->access().isWriteOnly() && refp->varp()->isTemp()))
                             || !isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
                             reject(candidate, "child combinational read outside boundary",
                                    refp->fileline());
@@ -689,8 +788,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             if (orderNextState(candidate.m_comb, combWriters, &cycleIndex).size()
                 != candidate.m_comb.size()) {
                 AstNodeAssign* const assp
-                    = VN_AS(VN_AS(candidate.m_comb[cycleIndex].second->stmtsp(), Always)->stmtsp(),
-                            NodeAssign);
+                    = localCombinationalAssignment(candidate.m_comb[cycleIndex].second->stmtsp());
                 reject(candidate, "child combinational cycle", assp->rhsp()->fileline());
             }
         }
@@ -719,7 +817,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             if (activeClockVscp != clockVscp) {
                 reject(candidate, "multiple clocks", sensitivityFlp);
             }
-            if (AstNode* const callp = findCallOrSuspendable(activep)) {
+            if (AstNode* const callp
+                = findUnsupportedCallOrSuspendable(activep, candidate.m_scopep, calleeSafety)) {
                 reject(candidate, "call or timing control", callp->fileline());
             }
             if (AstNodeVarRef* const externalp
@@ -762,7 +861,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             std::unordered_set<AstVarScope*> outputComb;
             for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
                 bool hasFf = false;
-                if (!collectFfOutputCone(output.m_exprp.get(), candidate, combWriters,
+                if (!collectFfOutputCone(output.m_exprp.get(), nullptr, candidate, combWriters,
                                          clockedWrites, combHasFf, visiting, outputComb, hasFf)
                     || !hasFf) {
                     reject(candidate, "output is not FF state", output.m_exprp->fileline());
@@ -964,8 +1063,7 @@ void SubgraphPlan::appendSettleLogic(LogicByScope& comb,
                                      std::vector<AstActive*>& receiverClones) const {
     for (const Impl::Group& group : m_impl->m_groups) {
         const auto isOutputCone = [&](AstActive* const activep) {
-            const AstNodeAssign* const assp
-                = VN_AS(VN_AS(activep->stmtsp(), Always)->stmtsp(), NodeAssign);
+            const AstNodeAssign* const assp = localCombinationalAssignment(activep->stmtsp());
             return group.m_outputCombVars.count(VN_AS(assp->lhsp(), VarRef)->varp());
         };
         for (const auto& pair : group.m_comb) {
@@ -1172,7 +1270,7 @@ static void appendOrderedCombinational(SubgraphGroup& group, AstCFunc* funcp,
     std::map<AstVarScope*, size_t> writers;
     for (size_t i = 0; i < logic.size(); ++i) {
         AstAlways* const alwaysp = VN_AS(logic[i].second->stmtsp(), Always);
-        AstNodeAssign* const assp = VN_AS(alwaysp->stmtsp(), NodeAssign);
+        AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
         AstVarRef* const lhsp = VN_AS(assp->lhsp(), VarRef);
         UASSERT_OBJ(writers.emplace(lhsp->varScopep(), i).second, assp,
                     "Duplicate local next-state writer");
@@ -1181,14 +1279,14 @@ static void appendOrderedCombinational(SubgraphGroup& group, AstCFunc* funcp,
     UASSERT_OBJ(ordered.size() == logic.size(), group.m_boundaryScopep,
                 "Admitted subgraph next-state logic became cyclic");
     for (const size_t index : ordered) {
-        AstNodeAssign* const assp
-            = VN_AS(VN_AS(logic[index].second->stmtsp(), Always)->stmtsp(), NodeAssign);
+        AstAlways* const alwaysp = VN_AS(logic[index].second->stmtsp(), Always);
+        AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
         if (post
             && !plan.isOutputCombinational(group.m_boundaryScopep,
                                            VN_AS(assp->lhsp(), VarRef)->varp())) {
             continue;
         }
-        funcp->addStmtsp(assp->cloneTree(false));
+        funcp->addStmtsp(alwaysp->stmtsp()->cloneTree(true));
     }
 }
 

@@ -33,13 +33,41 @@
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
+bool V3SubgraphBoundary::shareableLocalFunction(const AstNodeFTask* ftaskp) {
+    if (!ftaskp || !ftaskp->isFunction() || ftaskp->dpiImport() || ftaskp->dpiExport()
+        || ftaskp->recursive() || ftaskp->needProcess()
+        || !const_cast<AstNodeFTask*>(ftaskp)->isPure()) {
+        return false;
+    }
+    bool local = true;
+    ftaskp->foreach([&](const AstNode* nodep) {
+        if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            if (!refp->varp()->isFuncLocal() || !refp->varp()->lifetime().isAutomatic()) {
+                local = false;
+            }
+        } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName)
+                   || VN_IS(nodep, VarXRef)) {
+            local = false;
+        }
+    });
+    return local;
+}
+
 bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
     unsigned clocked = 0;
+    std::set<const AstNodeFTask*> localFunctions;
+    for (const AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        if (const AstNodeFTask* const ftaskp = VN_CAST(stmtp, NodeFTask)) {
+            if (!shareableLocalFunction(ftaskp)) return false;
+            localFunctions.insert(ftaskp);
+        }
+    }
     for (const AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
         if (const AstVar* const varp = VN_CAST(stmtp, Var)) {
             if (varp->isInoutOrRef()) return false;
         }
-        if (VN_IS(stmtp, Cell) || VN_IS(stmtp, NodeFTask)) return false;
+        if (VN_IS(stmtp, Cell)) return false;
+        if (VN_IS(stmtp, NodeFTask)) continue;
         if (const AstAlways* const alwaysp = VN_CAST(stmtp, Always)) {
             if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 ++clocked;
@@ -63,8 +91,10 @@ bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
         }
         bool instanceSpecific = false;
         stmtp->foreach([&](const AstNode* nodep) {
-            if (VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef) || VN_IS(nodep, NodeFTaskRef)) {
+            if (VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)) {
                 instanceSpecific = true;
+            } else if (const AstNodeFTaskRef* const refp = VN_CAST(nodep, NodeFTaskRef)) {
+                if (!localFunctions.count(refp->taskp())) instanceSpecific = true;
             }
         });
         if (instanceSpecific) return false;
