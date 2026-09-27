@@ -149,7 +149,7 @@ class InstVisitor final : public VNVisitor {
         }
 
         void combProcedure(AstAlways* alwaysp) {
-            const AstAssign* const assp = VN_CAST(alwaysp->stmtsp(), Assign);
+            const AstNodeAssign* const assp = VN_CAST(alwaysp->stmtsp(), NodeAssign);
             const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
             if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
                 || !m_ownedVars.count(lhsp->varp()) || lhsp->varp()->isIO()
@@ -196,8 +196,10 @@ class InstVisitor final : public VNVisitor {
             AstAlways* const alwaysp = VN_CAST(stmtp, Always);
             if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 analysis.procedure(alwaysp);
-            } else if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB) {
-                analysis.combProcedure(alwaysp);
+            } else if (alwaysp) {
+                const AstNodeAssign* const assp = VN_CAST(alwaysp->stmtsp(), NodeAssign);
+                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+                if (lhsp && !lhsp->varp()->isIO()) analysis.combProcedure(alwaysp);
             }
         }
         for (AstVar* const varp : analysis.m_combWriters) {

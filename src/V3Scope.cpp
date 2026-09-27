@@ -259,11 +259,17 @@ class ScopeVisitor final : public VNVisitor {
         nodep->v3fatalSrc("Actives now made after scoping");
     }
     void visit(AstNodeProcedure* nodep) override {
+        const AstAlways* const alwaysp = VN_CAST(nodep, Always);
+        const AstNodeAssign* const assp
+            = alwaysp ? VN_CAST(alwaysp->stmtsp(), NodeAssign) : nullptr;
+        const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+        const bool localContinuous
+            = alwaysp && VN_IS(assp, AssignW) && !assp->nextp() && lhsp && !lhsp->varp()->isIO();
         if (m_scopep->subgraphImplementationScopep()
             && (VN_IS(nodep, InitialStatic)
                 || (VN_IS(nodep, Always)
-                    && (VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_FF
-                        || VN_AS(nodep, Always)->keyword() == VAlwaysKwd::ALWAYS_COMB)))) {
+                    && (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF
+                        || alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB || localContinuous)))) {
             nodep->foreach([&](AstVarRef* refp) {
                 refp->varp()->subgraphSharedState(true);
                 refp->varp()->noSubst(true);

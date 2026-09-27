@@ -768,9 +768,12 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 VN_AS(activep->stmtsp(), Always)->stmtsp()->foreachAndNext([&](AstNode* nodep) {
                     if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
                         if (refp == lhsp) return;
-                        if ((!refp->access().isReadOnly()
-                             && !(refp->access().isWriteOnly() && refp->varp()->isTemp()))
-                            || !isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
+                        // External reads are captured before local FF evaluation. Output
+                        // cones still require boundary-local FF state below.
+                        if (!refp->access().isReadOnly()
+                            && !(refp->access().isWriteOnly() && refp->varp()->isTemp()
+                                 && isUnderScope(refp->varScopep()->scopep(),
+                                                 candidate.m_scopep))) {
                             reject(candidate, "child combinational read outside boundary",
                                    refp->fileline());
                         }

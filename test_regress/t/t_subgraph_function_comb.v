@@ -32,8 +32,10 @@ module t (
       $write("*-* All Finished *-*\n");
       $finish;
     end
-    expected0 <= expected0 + expected1 + 7'd1;
-    expected1 <= expected1 + expected0 + 7'd4;
+    expected0 <= ({1'b0, expected0[5:0]} + expected1 + 7'd1)
+                 ^ ({1'b0, expected0[5:0]} ^ expected1);
+    expected1 <= ({1'b0, expected1[5:0]} + expected0 + 7'd4)
+                 ^ ({1'b0, expected1[5:0]} ^ (expected0 + 7'd3));
     cycles <= cycles + 1;
   end
 endmodule
@@ -46,6 +48,7 @@ module sg_function_comb (
 );
   /*verilator subgraph_boundary*/
   logic [6:0] next_q;
+  logic [6:0] tmp_sig;
   logic [6:0] view_q;
 
   function automatic logic [6:0] advance(input logic [6:0] old_q, input logic [6:0] value);
@@ -53,8 +56,13 @@ module sg_function_comb (
     return old_q + value + 7'd1;
   endfunction
 
-  always_comb next_q = advance(q, d);
+  function automatic logic [6:0] func(input logic [6:0] sig_a, input logic [6:0] sig_b);
+    return sig_a ^ sig_b;
+  endfunction
+
+  assign next_q = advance({1'b0, q[5:0]}, d);
+  assign tmp_sig = func({1'b0, q[5:0]}, d);
   always_comb view_q = advance(q, 7'd0);
-  always_ff @(posedge clk) q <= next_q;
+  always_ff @(posedge clk) q <= next_q ^ tmp_sig;
   assign y = view_q;
 endmodule
