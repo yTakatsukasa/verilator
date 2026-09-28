@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: FF-derived combinational outputs of shared subgraphs
+# DESCRIPTION: Verilator: Conditional output without subgraph scheduling
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
@@ -10,9 +10,7 @@
 import vltest_bootstrap
 
 test.scenarios('vlt')
-test.compile(verilator_flags2=["--binary", "--subgraph-schedule", "--stats"])
+test.top_filename = "t/t_subgraph_comb_branch_out.v"
+test.compile(verilator_flags2=["--binary"])
 test.execute()
-test.file_grep(test.stats, r'Scheduling, Subgraph early groups\s+(\d+)', 2)
-test.file_grep(test.stats, r'Scheduling, Subgraph early fallbacks\s+(\d+)', 0)
-test.file_grep(test.stats, r'Scheduling, Subgraph settle wrappers\s+(\d+)', 2)
 test.passes()

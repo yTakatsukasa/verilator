@@ -52,7 +52,10 @@ public:
     void foreachPublished(const AstScope* scopep,
                           const std::function<void(AstVarScope*)>& callback) const;
     void appendPublications(const AstScope* scopep, AstCFunc* funcp) const;
-    void appendSettleLogic(LogicByScope& comb, std::vector<AstActive*>& receiverClones) const;
+    void appendSettleLogic(AstNetlist* netlistp, LogicByScope& comb,
+                           const CovergroupRefBindings& cgRefBindings,
+                           V3Order::BoundaryUses& boundaryUses,
+                           std::vector<AstActive*>& temporaryActives) const;
     void breakCycles(AstNetlist* netlistp);
     void movePublications(LogicByScope& comb, LogicByScope& hybrid);
     void partitionAndReplicate();

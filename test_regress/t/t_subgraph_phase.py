@@ -38,7 +38,7 @@ test.file_grep(test.stats, r'Subgraph boundary, scoped publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, delayed publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, NBA publications\s+(\d+)', 6)
 test.file_grep(test.stats, r'Subgraph boundary, NBA shadow pairs\s+(\d+)', 6)
-test.file_grep(test.stats, r'Subgraph boundary, connected wrappers\s+(\d+)', 10)
+test.file_grep(test.stats, r'Subgraph boundary, connected wrappers\s+(\d+)', 15)
 
 test.file_grep(test.stats, r'Scheduling, Subgraph NBA groups\s+(\d+)', 5)
 test.file_grep(test.stats, r'Scheduling, Subgraph NBA internal actives\s+(\d+)', 10)

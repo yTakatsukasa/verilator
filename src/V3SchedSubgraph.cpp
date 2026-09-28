@@ -1153,8 +1153,27 @@ void SubgraphPlan::appendPublications(const AstScope* scopep, AstCFunc* funcp) c
     }
 }
 
-void SubgraphPlan::appendSettleLogic(LogicByScope& comb,
-                                     std::vector<AstActive*>& receiverClones) const {
+void SubgraphPlan::appendSettleLogic(AstNetlist* netlistp, LogicByScope& comb,
+                                     const CovergroupRefBindings& cgRefBindings,
+                                     V3Order::BoundaryUses& boundaryUses,
+                                     std::vector<AstActive*>& temporaryActives) const {
+    if (m_impl->m_groups.empty()) return;
+    AstSenTree* comboSenTreep = nullptr;
+    for (AstSenTree* sentreep = netlistp->topScopep()->senTreesp(); sentreep;
+         sentreep = VN_AS(sentreep->nextp(), SenTree)) {
+        if (sentreep->hasCombo()) {
+            comboSenTreep = sentreep;
+            break;
+        }
+    }
+    UASSERT_OBJ(comboSenTreep, netlistp, "Missing combinational sensitivity");
+    FileLine* const triggerFlp = netlistp->fileline();
+    AstSenTree* const localTriggerp = new AstSenTree{
+        triggerFlp,
+        new AstSenItem{triggerFlp, VEdgeType::ET_TRUE,
+                       new AstVarRef{triggerFlp, netlistp->stlFirstIterationp(), VAccess::READ}}};
+    netlistp->topScopep()->addSenTreesp(localTriggerp);
+    uint64_t wrappers = 0;
     for (const Impl::Group& group : m_impl->m_groups) {
         const auto isOutputCone = [&](AstActive* const activep) {
             std::vector<AstNodeAssign*> assignments;
@@ -1165,31 +1184,61 @@ void SubgraphPlan::appendSettleLogic(LogicByScope& comb,
             }
             return false;
         };
+        LogicByScope outputComb;
         for (const auto& pair : group.m_comb) {
-            if (isOutputCone(pair.second)) comb.emplace_back(pair);
-        }
-        for (AstScope* const receiverp : group.m_receivers) {
-            std::unordered_map<const AstVar*, AstVarScope*> receiverVars;
-            for (AstVarScope* vscp = receiverp->varsp(); vscp;
-                 vscp = VN_AS(vscp->nextp(), VarScope)) {
-                receiverVars.emplace(vscp->varp(), vscp);
-            }
-            for (const auto& pair : group.m_comb) {
-                if (!isOutputCone(pair.second)) continue;
-                AstActive* const clonep = pair.second->cloneTree(false);
-                clonep->foreach([&](AstNodeVarRef* refp) {
-                    AstVarScope* const vscp = refp->varScopep();
-                    if (vscp->scopep() != group.m_scopep) return;
-                    const auto it = receiverVars.find(vscp->varp());
-                    UASSERT_OBJ(it != receiverVars.end(), refp,
-                                "Shared subgraph state missing from receiver scope");
-                    refp->varScopep(it->second);
-                });
-                comb.emplace_back(receiverp, clonep);
-                receiverClones.push_back(clonep);
+            if (isOutputCone(pair.second)) {
+                outputComb.emplace_back(pair.first, pair.second->cloneTree(false));
             }
         }
+        AstCFunc* const orderedp
+            = outputComb.empty()
+                  ? nullptr
+                  : V3Order::order(
+                        netlistp, {&outputComb}, {}, cgRefBindings,
+                        "subgraph_settle_" + cvtToStr(wrappers), false, true,
+                        [localTriggerp](const AstVarScope*, std::vector<AstSenTree*>& out) {
+                            out.push_back(localTriggerp);
+                        },
+                        group.m_scopep);
+        FileLine* const flp = group.m_scopep->fileline();
+        AstCFunc* const funcp
+            = new AstCFunc{flp, "_eval_subgraph_settle_" + cvtToStr(wrappers), group.m_scopep};
+        funcp->isLoose(true);
+        funcp->isConst(false);
+        funcp->declPrivate(true);
+        funcp->slow(true);
+        funcp->subgraphWrapper(true);
+        funcp->subgraphShareable(true);
+        group.m_scopep->addBlocksp(funcp);
+        util::newArgument(funcp, netlistp->findBitDType(), "__VfirstIteration", VDirection::INPUT);
+        if (orderedp) {
+            orderedp->subgraphShareable(true);
+            AstCCall* const callp = new AstCCall{flp, orderedp};
+            callp->dtypeSetVoid();
+            funcp->addStmtsp(callp->makeStmt());
+        }
+        appendPublications(group.m_scopep, funcp);
+        V3Order::BoundaryContract contract;
+        for (const EarlyCandidate::OutputBinding& output : group.m_outputs) {
+            contract.m_uses.push_back({output.m_publishedp, false, true, false});
+        }
+        UASSERT_OBJ(boundaryUses.emplace(funcp, std::move(contract)).second, funcp,
+                    "Duplicate settle boundary contract");
+        const auto appendCall = [&](AstScope* scopep) {
+            AstActive* const activep = new AstActive{flp, "subgraph-settle", comboSenTreep};
+            AstCCall* const callp = new AstCCall{flp, funcp};
+            callp->dtypeSetVoid();
+            callp->addArgsp(new AstVarRef{flp, netlistp->stlFirstIterationp(), VAccess::READ});
+            if (scopep != group.m_scopep) callp->subgraphReceiverScopep(scopep);
+            activep->addStmtsp(new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr, callp->makeStmt()});
+            comb.emplace_back(scopep, activep);
+            temporaryActives.push_back(activep);
+            ++wrappers;
+        };
+        appendCall(group.m_scopep);
+        for (AstScope* const receiverp : group.m_receivers) { appendCall(receiverp); }
     }
+    V3Stats::addStat("Scheduling, Subgraph settle wrappers", wrappers);
 }
 
 void SubgraphPlan::movePublications(LogicByScope& comb, LogicByScope& hybrid) {

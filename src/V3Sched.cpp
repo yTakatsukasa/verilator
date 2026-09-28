@@ -395,7 +395,8 @@ void addVirtIfaceTriggerAssignments(AstNetlist* netlistp, AstCFunc* initFuncp,
 
 // Order the combinational logic to create the 'stl' region
 void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilder& senExprBulider,
-                  LogicClasses& logicClasses, const CovergroupRefBindings& cgRefBindings) {
+                  LogicClasses& logicClasses, const CovergroupRefBindings& cgRefBindings,
+                  const V3Order::BoundaryUses& boundaryUses) {
     // Clone, because ordering is destructive, but we still need them for the other regions
     LogicByScope comb = logicClasses.m_comb.clone();
     LogicByScope hybrid = logicClasses.m_hybrid.clone();
@@ -423,7 +424,8 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
     // Create and the body function
     AstCFunc* const stlFuncp = V3Order::order(
         netlistp, {&comb, &hybrid}, trigToSen, cgRefBindings, "stl", false, true,
-        [=](const AstVarScope*, std::vector<AstSenTree*>& out) { out.push_back(inputChanged); });
+        [=](const AstVarScope*, std::vector<AstSenTree*>& out) { out.push_back(inputChanged); },
+        nullptr, nullptr, &boundaryUses);
     util::splitCheck(stlFuncp);
 
     // Create the region evaluation function
@@ -908,13 +910,16 @@ void schedule(AstNetlist* netlistp) {
     SenExprBuilder senExprBuilder{scopeTopp};
 
     // Step 6: Create 'settle' region that restores the combinational invariant
-    const size_t parentCombSize = logicClasses.m_comb.size();
-    std::vector<AstActive*> receiverSettleClones;
-    subgraphPlan.appendSettleLogic(logicClasses.m_comb, receiverSettleClones);
-    createSettle(netlistp, staticp, senExprBuilder, logicClasses, cgRefBindings);
-    logicClasses.m_comb.resize(parentCombSize);
-    for (AstActive* const clonep : receiverSettleClones) clonep->deleteTree();
     subgraphPlan.movePublications(logicClasses.m_comb, logicClasses.m_hybrid);
+    const size_t parentCombSize = logicClasses.m_comb.size();
+    V3Order::BoundaryUses settleBoundaryUses;
+    std::vector<AstActive*> temporarySettleActives;
+    subgraphPlan.appendSettleLogic(netlistp, logicClasses.m_comb, cgRefBindings,
+                                   settleBoundaryUses, temporarySettleActives);
+    createSettle(netlistp, staticp, senExprBuilder, logicClasses, cgRefBindings,
+                 settleBoundaryUses);
+    logicClasses.m_comb.resize(parentCombSize);
+    for (AstActive* const activep : temporarySettleActives) activep->deleteTree();
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-settle");
 
     // Step 7: Partition the clocked and combinational (including hybrid) logic into pre/act/nba.

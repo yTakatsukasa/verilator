@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# DESCRIPTION: Verilator: FF-derived combinational outputs of shared subgraphs
+# DESCRIPTION: Verilator: Shared subgraph publishes an FF-derived conditional output
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of either the GNU Lesser General Public License Version 3
