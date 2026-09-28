@@ -159,8 +159,8 @@ bool localCombinationalAssignments(AstNode* stmtp, std::vector<AstNodeAssign*>& 
     return !problem && !assignments.empty();
 }
 
-// A value moved into the edge-triggered child evaluation must have the same value
-// as if its combinational procedure had settled after the latest input change.
+// Reject a read-before-write within a child procedure when it forms a
+// combinational cycle that the local scheduler cannot order.
 AstNode* checkDefiniteLocalWrites(AstNode* stmtsp,
                                   const std::unordered_set<AstVarScope*>& localWriters,
                                   std::unordered_set<AstVarScope*>& assigned) {
@@ -842,15 +842,11 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 lhsRefs.insert(lhsp);
                 localWriters.insert(lhsp->varScopep());
             }
-            std::unordered_set<AstVarScope*> assigned;
             if (localShape) {
+                std::unordered_set<AstVarScope*> assigned;
                 if (AstNode* const problemp = checkDefiniteLocalWrites(
                         VN_AS(activep->stmtsp(), Always)->stmtsp(), localWriters, assigned)) {
                     reject(candidate, "child combinational cycle", problemp->fileline());
-                }
-                if (assigned.size() != localWriters.size()) {
-                    reject(candidate, "unsupported child combinational logic",
-                           activep->stmtsp()->fileline());
                 }
             }
             if (localShape) {
@@ -1241,6 +1237,60 @@ void SubgraphPlan::appendSettleLogic(AstNetlist* netlistp, LogicByScope& comb,
     V3Stats::addStat("Scheduling, Subgraph settle wrappers", wrappers);
 }
 
+bool SubgraphPlan::hasAccepted() const { return !m_impl->m_groups.empty(); }
+
+AstCFunc* SubgraphPlan::appendIcoLogic(AstNetlist* netlistp, AstCFunc* icoFuncp,
+                                       AstSenTree* triggerp,
+                                       const CovergroupRefBindings& cgRefBindings) const {
+    if (m_impl->m_groups.empty()) return icoFuncp;
+    if (!icoFuncp) {
+        AstScope* const scopep = netlistp->topScopep()->scopep();
+        icoFuncp = new AstCFunc{scopep->fileline(), "_eval_ico_subgraphs", scopep};
+        icoFuncp->isLoose(true);
+        icoFuncp->isConst(false);
+        icoFuncp->declPrivate(true);
+        scopep->addBlocksp(icoFuncp);
+    }
+    unsigned index = 0;
+    for (const Impl::Group& group : m_impl->m_groups) {
+        LogicByScope childComb;
+        for (const auto& pair : group.m_comb) {
+            childComb.emplace_back(pair.first, pair.second->cloneTree(false));
+        }
+        if (childComb.empty()) continue;
+        AstCFunc* const orderedp = V3Order::order(
+            netlistp, {&childComb}, {}, cgRefBindings, "subgraph_ico_" + cvtToStr(index), false,
+            false,
+            [triggerp](const AstVarScope*, std::vector<AstSenTree*>& out) {
+                out.push_back(triggerp);
+            },
+            group.m_scopep);
+        UASSERT_OBJ(orderedp, group.m_scopep, "Missing child combinational schedule");
+        FileLine* const flp = group.m_scopep->fileline();
+        AstCFunc* const wrapperp
+            = new AstCFunc{flp, "_eval_subgraph_ico_" + cvtToStr(index++), group.m_scopep};
+        wrapperp->isLoose(true);
+        wrapperp->isConst(false);
+        wrapperp->declPrivate(true);
+        wrapperp->subgraphWrapper(true);
+        wrapperp->subgraphShareable(true);
+        orderedp->subgraphShareable(true);
+        group.m_scopep->addBlocksp(wrapperp);
+        AstCCall* const localCallp = new AstCCall{flp, orderedp};
+        localCallp->dtypeSetVoid();
+        wrapperp->addStmtsp(localCallp->makeStmt());
+        const auto appendCall = [&](AstScope* receiverp) {
+            AstCCall* const callp = new AstCCall{flp, wrapperp};
+            callp->dtypeSetVoid();
+            if (receiverp != group.m_scopep) callp->subgraphReceiverScopep(receiverp);
+            icoFuncp->addStmtsp(callp->makeStmt());
+        };
+        appendCall(group.m_scopep);
+        for (AstScope* const receiverp : group.m_receivers) appendCall(receiverp);
+    }
+    return icoFuncp;
+}
+
 void SubgraphPlan::movePublications(LogicByScope& comb, LogicByScope& hybrid) {
     const auto remove = [&](LogicByScope& lbs) {
         const auto newEnd = std::remove_if(lbs.begin(), lbs.end(), [&](const auto& pair) {
@@ -1534,19 +1584,6 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                       externalDomains(vscp, out);
                       if (combinationalReads.count(vscp)) out.push_back(phaseSenTreep);
                   };
-            V3Order::FreshReads localFreshReads;
-            if (!post) {
-                for (const auto& pair : group.m_combLogic) {
-                    std::vector<AstNodeAssign*> assignments;
-                    UASSERT_OBJ(localCombinationalAssignments(pair.second->stmtsp(), assignments),
-                                pair.second, "Accepted child combinational procedure changed");
-                    for (const AstNodeAssign* const assp : assignments) {
-                        localFreshReads[group.m_boundaryScopep].push_back(
-                            VN_AS(assp->lhsp(), VarRef)->varScopep());
-                    }
-                    phaseLogic.emplace_back(pair.first, pair.second->cloneTree(false));
-                }
-            }
             V3Order::BoundaryContract contract;
             const bool portOnly = plan.isAccepted(group.m_boundaryScopep);
             if (portOnly) {
@@ -1602,9 +1639,8 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                 ++sharedOrderSkips;
             } else {
                 const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
-                funcp
-                    = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag, false,
-                                     slow, localDomains, group.m_boundaryScopep, &localFreshReads);
+                funcp = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag,
+                                       false, slow, localDomains, group.m_boundaryScopep);
                 if (!funcp) return;
                 if (post && portOnly) {
                     LogicByScope postComb;

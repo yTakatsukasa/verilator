@@ -47,6 +47,7 @@ public:
 
     bool extract(AstScope* scopep, AstActive* activep);
     bool isAccepted(const AstScope* scopep) const;
+    bool hasAccepted() const;
     bool isOutputCombinational(const AstScope* scopep, const AstVar* varp) const;
     AstVarScope* clockPort(const AstScope* scopep) const;
     void foreachPublished(const AstScope* scopep,
@@ -56,6 +57,8 @@ public:
                            const CovergroupRefBindings& cgRefBindings,
                            V3Order::BoundaryUses& boundaryUses,
                            std::vector<AstActive*>& temporaryActives) const;
+    AstCFunc* appendIcoLogic(AstNetlist* netlistp, AstCFunc* icoFuncp, AstSenTree* triggerp,
+                             const CovergroupRefBindings& cgRefBindings) const;
     void breakCycles(AstNetlist* netlistp);
     void movePublications(LogicByScope& comb, LogicByScope& hybrid);
     void partitionAndReplicate();

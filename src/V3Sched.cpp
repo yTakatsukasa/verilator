@@ -450,7 +450,8 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
 void createIcoRegion(AstNetlist* netlistp, AstCFunc* const initFuncp,
                      SenExprBuilder& senExprBuilder, LogicByScope& logic,
                      const VirtIfaceTriggers& virtIfaceTriggers,
-                     const CovergroupRefBindings& cgRefBindings) {
+                     const CovergroupRefBindings& cgRefBindings,
+                     const SubgraphPlan& subgraphPlan) {
     // SystemC only: Any top level inputs feeding a combinational logic must be marked,
     // so we can make them sc_sensitive
     if (v3Global.opt.systemC()) {
@@ -550,7 +551,7 @@ void createIcoRegion(AstNetlist* netlistp, AstCFunc* const initFuncp,
         = virtIfaceTriggers.makeVscpToSensMap(trigKit, firstVifTriggerIndex, trigKit.vscp());
 
     // Create and Order the body function
-    AstCFunc* const icoFuncp = V3Order::order(
+    AstCFunc* icoFuncp = V3Order::order(
         netlistp, {&logic}, trigToSen, cgRefBindings, "ico", false, false,
         [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
             AstVar* const varp = vscp->varp();
@@ -570,6 +571,13 @@ void createIcoRegion(AstNetlist* netlistp, AstCFunc* const initFuncp,
                 out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
             }
         });
+    if (subgraphPlan.hasAccepted()) {
+        AstSenTree* const childTriggerp = new AstSenTree{
+            netlistp->fileline(), new AstSenItem{netlistp->fileline(), VEdgeType::ET_TRUE,
+                                                 trigKit.newAnySetCall(trigKit.vscp())}};
+        netlistp->topScopep()->addSenTreesp(childTriggerp);
+        icoFuncp = subgraphPlan.appendIcoLogic(netlistp, icoFuncp, childTriggerp, cgRefBindings);
+    }
     util::splitCheck(icoFuncp);
 
     // Create the region evaluation function
@@ -952,7 +960,7 @@ void schedule(AstNetlist* netlistp) {
 
     // Step 9: Create the input combinational logic
     createIcoRegion(netlistp, staticp, senExprBuilder, logicReplicas.m_ico, virtIfaceTriggers,
-                    cgRefBindings);
+                    cgRefBindings, subgraphPlan);
     if (v3Global.opt.stats()) V3Stats::statsStage("sched-create-ico");
 
     // Step 10: Create the triggers
