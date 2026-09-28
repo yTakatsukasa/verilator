@@ -42,7 +42,13 @@ module sg_internal_comb (
   /*verilator subgraph_boundary*/
   logic [7:0] intermediate;
   logic [7:0] next_q;
-  always_comb intermediate = q + d;
-  always_comb next_q = intermediate + 8'd1;
+  function automatic logic [7:0] advance(input logic [8:0] sig_a, input logic [7:0] sig_b);
+    // verilator no_inline_task
+    return sig_a[7:0] + sig_b;
+  endfunction
+  always_comb begin
+    intermediate = q + d;
+    next_q = advance({1'b0, intermediate}, 8'd1);
+  end
   always_ff @(posedge clk) q <= next_q;
 endmodule

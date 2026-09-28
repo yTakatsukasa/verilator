@@ -149,15 +149,17 @@ class InstVisitor final : public VNVisitor {
         }
 
         void combProcedure(AstAlways* alwaysp) {
-            const AstNodeAssign* const assp = VN_CAST(alwaysp->stmtsp(), NodeAssign);
-            const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-            if (!assp || assp->nextp() || !lhsp || !lhsp->access().isWriteOnly()
-                || !m_ownedVars.count(lhsp->varp()) || lhsp->varp()->isIO()
-                || assp->isTimingControl() || !m_combWriters.insert(lhsp->varp()).second) {
-                m_valid = false;
-                return;
+            for (AstNode* nodep = alwaysp->stmtsp(); nodep; nodep = nodep->nextp()) {
+                const AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign);
+                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
+                if (!lhsp || !lhsp->access().isWriteOnly() || !m_ownedVars.count(lhsp->varp())
+                    || lhsp->varp()->isIO() || assp->isTimingControl()
+                    || !m_combWriters.insert(lhsp->varp()).second) {
+                    m_valid = false;
+                    return;
+                }
+                readExpression(assp->rhsp(), false);
             }
-            readExpression(assp->rhsp(), false);
         }
     };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;
