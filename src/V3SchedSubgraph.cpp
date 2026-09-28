@@ -1265,34 +1265,6 @@ static bool sameReceiverGroup(const SubgraphGroup& representative,
                                 representative.m_boundaryScopep, candidate.m_boundaryScopep);
 }
 
-// Local combinational assignments run before FF evaluation. The FF-derived output cone
-// also runs after NBA commits, before the output values are published to the parent.
-static void appendOrderedCombinational(SubgraphGroup& group, AstCFunc* funcp,
-                                       const SubgraphPlan& plan, bool post) {
-    const LogicByScope& logic = group.m_combLogic;
-    std::map<AstVarScope*, size_t> writers;
-    for (size_t i = 0; i < logic.size(); ++i) {
-        AstAlways* const alwaysp = VN_AS(logic[i].second->stmtsp(), Always);
-        AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
-        AstVarRef* const lhsp = VN_AS(assp->lhsp(), VarRef);
-        UASSERT_OBJ(writers.emplace(lhsp->varScopep(), i).second, assp,
-                    "Duplicate local next-state writer");
-    }
-    const std::vector<size_t> ordered = orderNextState(logic, writers);
-    UASSERT_OBJ(ordered.size() == logic.size(), group.m_boundaryScopep,
-                "Admitted subgraph next-state logic became cyclic");
-    for (const size_t index : ordered) {
-        AstAlways* const alwaysp = VN_AS(logic[index].second->stmtsp(), Always);
-        AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
-        if (post
-            && !plan.isOutputCombinational(group.m_boundaryScopep,
-                                           VN_AS(assp->lhsp(), VarRef)->varp())) {
-            continue;
-        }
-        funcp->addStmtsp(alwaysp->stmtsp()->cloneTree(true));
-    }
-}
-
 static void deleteCombinationalLogic(SubgraphGroup& group) {
     LogicByScope& logic = group.m_combLogic;
     for (const auto& pair : logic) {
@@ -1403,6 +1375,30 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
 
         const auto orderPhase = [&](LogicByScope& phaseLogic, const string& phase, bool post) {
             if (phaseLogic.empty()) return;
+            AstSenTree* const phaseSenTreep = phaseLogic.front().second->sentreep();
+            std::unordered_set<const AstVarScope*> combinationalReads;
+            for (const auto& pair : group.m_combLogic) {
+                pair.second->foreach([&](const AstNodeVarRef* refp) {
+                    if (refp->access().isReadOrRW()) {
+                        combinationalReads.insert(refp->varScopep());
+                    }
+                });
+            }
+            const V3Order::ExternalDomainsProvider localDomains
+                = [&](const AstVarScope* vscp, std::vector<AstSenTree*>& out) {
+                      externalDomains(vscp, out);
+                      if (combinationalReads.count(vscp)) out.push_back(phaseSenTreep);
+                  };
+            V3Order::FreshReads localFreshReads;
+            if (!post) {
+                for (const auto& pair : group.m_combLogic) {
+                    const AstNodeAssign* const assp
+                        = localCombinationalAssignment(pair.second->stmtsp());
+                    localFreshReads[group.m_boundaryScopep].push_back(
+                        VN_AS(assp->lhsp(), VarRef)->varScopep());
+                    phaseLogic.emplace_back(pair.first, pair.second->cloneTree(false));
+                }
+            }
             V3Order::BoundaryContract contract;
             const bool portOnly = plan.isAccepted(group.m_boundaryScopep);
             if (portOnly) {
@@ -1458,29 +1454,31 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                 ++sharedOrderSkips;
             } else {
                 const string tag = "nba_subgraph_" + phase + "_" + cvtToStr(groupIndex);
-                funcp = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag,
-                                       false, slow, externalDomains, group.m_boundaryScopep);
+                funcp
+                    = V3Order::order(netlistp, {&phaseLogic}, trigToSen, cgRefBindings, tag, false,
+                                     slow, localDomains, group.m_boundaryScopep, &localFreshReads);
                 if (!funcp) return;
-                if (!post && !group.m_combLogic.empty()) {
-                    AstCFunc* const orderedp = funcp;
-                    funcp = new AstCFunc{group.m_filelinep,
-                                         "_eval_body__nba_subgraph_next_" + cvtToStr(groupIndex),
-                                         group.m_boundaryScopep, ""};
-                    funcp->dontCombine(true);
-                    funcp->isStatic(false);
-                    funcp->isLoose(true);
-                    funcp->slow(slow);
-                    funcp->isConst(false);
-                    funcp->declPrivate(true);
-                    group.m_boundaryScopep->addBlocksp(funcp);
-                    appendOrderedCombinational(group, funcp, plan, false);
-                    AstCCall* const callp = new AstCCall{group.m_filelinep, orderedp};
-                    callp->dtypeSetVoid();
-                    funcp->addStmtsp(callp->makeStmt());
-                }
                 if (post && portOnly) {
-                    if (!group.m_combLogic.empty()) {
-                        appendOrderedCombinational(group, funcp, plan, true);
+                    LogicByScope postComb;
+                    for (const auto& pair : group.m_combLogic) {
+                        const AstNodeAssign* const assp
+                            = localCombinationalAssignment(pair.second->stmtsp());
+                        if (!plan.isOutputCombinational(group.m_boundaryScopep,
+                                                        VN_AS(assp->lhsp(), VarRef)->varp())) {
+                            continue;
+                        }
+                        postComb.emplace_back(pair.first, pair.second->cloneTree(false));
+                    }
+                    if (!postComb.empty()) {
+                        AstCFunc* const combinationalp
+                            = V3Order::order(netlistp, {&postComb}, trigToSen, cgRefBindings,
+                                             "nba_subgraph_comb_post_" + cvtToStr(groupIndex),
+                                             false, slow, localDomains, group.m_boundaryScopep);
+                        UASSERT_OBJ(combinationalp, group.m_boundaryScopep,
+                                    "Missing scheduled subgraph output cone");
+                        AstCCall* const callp = new AstCCall{group.m_filelinep, combinationalp};
+                        callp->dtypeSetVoid();
+                        funcp->addStmtsp(callp->makeStmt());
                     }
                     plan.appendPublications(group.m_boundaryScopep, funcp);
                 }
