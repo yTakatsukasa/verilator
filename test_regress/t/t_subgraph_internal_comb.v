@@ -28,8 +28,9 @@ module t (
       $write("*-* All Finished *-*\n");
       $finish;
     end
-    expected0 <= expected0 + expected1 + 8'd1;
-    expected1 <= expected1 + expected0 + 8'd4;
+    expected0 <= expected0 + expected1 + (expected1[0] ? 8'd1 : 8'd2);
+    expected1 <= expected1 + expected0 + 8'd3
+                 + (((expected0 + 8'd3) & 8'd1) != 0 ? 8'd1 : 8'd2);
     cycles <= cycles + 1;
   end
 endmodule
@@ -48,7 +49,8 @@ module sg_internal_comb (
   endfunction
   always_comb begin
     intermediate = q + d;
-    next_q = advance({1'b0, intermediate}, 8'd1);
+    if (d[0]) next_q = advance({1'b0, intermediate}, 8'd1);
+    else next_q = advance({1'b0, intermediate}, 8'd2);
   end
   always_ff @(posedge clk) q <= next_q;
 endmodule

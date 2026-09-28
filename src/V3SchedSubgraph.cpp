@@ -120,38 +120,101 @@ bool isBoundaryInputActive(const AstScope* boundaryScopep, const AstActive* acti
            && isBoundaryInputStatement(boundaryScopep, activep->stmtsp());
 }
 
-// Keep the straight-line assignments and lowered pure calls of one combinational
-// procedure together. Order handles their dependencies on other procedures.
-AstNodeAssign* localCombinationalAssignment(AstNode* stmtp, AstNode** problemp = nullptr,
-                                            std::vector<AstNodeAssign*>* assignmentsp = nullptr) {
+// Keep the statements of one combinational procedure together. Order handles
+// their dependencies on other procedures.
+AstNode* collectLocalAssignments(AstNode* stmtsp, std::vector<AstNodeAssign*>& assignments) {
+    for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
+        if (VN_IS(nodep, Comment)) continue;
+        if (AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
+            assignments.push_back(assp);
+        } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
+            if (AstNode* const problem = collectLocalAssignments(ifp->thensp(), assignments)) {
+                return ifp;
+            }
+            if (AstNode* const problem = collectLocalAssignments(ifp->elsesp(), assignments)) {
+                return ifp;
+            }
+        } else if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
+            if (AstNode* const problem = collectLocalAssignments(beginp->stmtsp(), assignments)) {
+                return problem;
+            }
+        } else if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
+            if (!VN_IS(exprp->exprp(), CCall)) return nodep;
+        } else {
+            return nodep;
+        }
+    }
+    return nullptr;
+}
+
+bool localCombinationalAssignments(AstNode* stmtp, std::vector<AstNodeAssign*>& assignments,
+                                   AstNode** problemp = nullptr) {
     AstAlways* const alwaysp = VN_CAST(stmtp, Always);
     if (!alwaysp) {
         if (problemp) *problemp = stmtp;
-        return nullptr;
+        return false;
     }
-    AstNodeAssign* assp = nullptr;
-    for (AstNode* nodep = alwaysp->stmtsp(); nodep; nodep = nodep->nextp()) {
-        if (VN_IS(nodep, Comment)) continue;
-        if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
-            if (!VN_IS(exprp->exprp(), CCall)) {
-                if (problemp) *problemp = nodep;
-                return nullptr;
+    AstNode* const problem = collectLocalAssignments(alwaysp->stmtsp(), assignments);
+    if (problemp) *problemp = problem ? problem : assignments.empty() ? alwaysp : nullptr;
+    return !problem && !assignments.empty();
+}
+
+// A value moved into the edge-triggered child evaluation must have the same value
+// as if its combinational procedure had settled after the latest input change.
+AstNode* checkDefiniteLocalWrites(AstNode* stmtsp,
+                                  const std::unordered_set<AstVarScope*>& localWriters,
+                                  std::unordered_set<AstVarScope*>& assigned) {
+    for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
+        if (AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
+            AstNode* problem = nullptr;
+            assp->rhsp()->foreach([&](AstNodeVarRef* refp) {
+                if (!problem && refp->access().isReadOrRW()
+                    && localWriters.count(refp->varScopep())
+                    && !assigned.count(refp->varScopep())) {
+                    problem = refp;
+                }
+            });
+            if (problem) return assp->rhsp();
+            if (AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef)) {
+                assigned.insert(lhsp->varScopep());
             }
-        } else if (AstNodeAssign* const assignmentp = VN_CAST(nodep, NodeAssign)) {
-            assp = assignmentp;
-            if (assignmentsp) assignmentsp->push_back(assignmentp);
-        } else {
-            if (problemp) *problemp = nodep;
-            return nullptr;
+        } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
+            if (!ifp->condp()->isPure()) return ifp->condp();
+            AstNode* problem = nullptr;
+            ifp->condp()->foreach([&](AstNodeVarRef* refp) {
+                if (!problem && refp->access().isReadOrRW()
+                    && localWriters.count(refp->varScopep())
+                    && !assigned.count(refp->varScopep())) {
+                    problem = refp;
+                }
+            });
+            if (problem) return problem;
+            std::unordered_set<AstVarScope*> thenAssigned = assigned;
+            std::unordered_set<AstVarScope*> elseAssigned = assigned;
+            if (AstNode* const errorp
+                = checkDefiniteLocalWrites(ifp->thensp(), localWriters, thenAssigned)) {
+                return errorp;
+            }
+            if (AstNode* const errorp
+                = checkDefiniteLocalWrites(ifp->elsesp(), localWriters, elseAssigned)) {
+                return errorp;
+            }
+            for (AstVarScope* const vscp : thenAssigned) {
+                if (elseAssigned.count(vscp)) assigned.insert(vscp);
+            }
+        } else if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
+            if (AstNode* const errorp
+                = checkDefiniteLocalWrites(beginp->stmtsp(), localWriters, assigned)) {
+                return errorp;
+            }
         }
     }
-    if (!assp && problemp) *problemp = alwaysp;
-    return assp;
+    return nullptr;
 }
 
 bool isLocalCombinationalStatement(const AstScope* boundaryScopep, AstNode* stmtp) {
     std::vector<AstNodeAssign*> assignments;
-    if (!localCombinationalAssignment(stmtp, nullptr, &assignments)) return false;
+    if (!localCombinationalAssignments(stmtp, assignments)) return false;
     for (const AstNodeAssign* const assp : assignments) {
         const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
         if (!lhsp || !isUnderScope(lhsp->varScopep()->scopep(), boundaryScopep)
@@ -418,16 +481,15 @@ std::vector<size_t> orderNextState(const Logic& logic,
     return ordered;
 }
 
-bool collectFfOutputCone(AstNode* rootp, AstNodeAssign* localAssignp,
-                         const EarlyCandidate& candidate,
+bool collectFfOutputCone(AstNode* rootp, bool localProcedure, const EarlyCandidate& candidate,
                          const std::map<AstVarScope*, size_t>& combWriters,
                          const std::unordered_set<AstVarScope*>& clockedWrites,
                          std::unordered_map<AstVarScope*, bool>& combHasFf,
                          std::unordered_set<AstVarScope*>& visiting,
                          std::unordered_set<AstVarScope*>& outputComb, bool& hasFf) {
-    bool valid = localAssignp ? localAssignp->rhsp()->isPure() : rootp->isPure();
+    bool valid = localProcedure || rootp->isPure();
     std::unordered_set<AstVarScope*> localWrites;
-    if (localAssignp) {
+    if (localProcedure) {
         rootp->foreachAndNext([&](AstNodeVarRef* refp) {
             if (refp->access().isWriteOnly()) localWrites.insert(refp->varScopep());
         });
@@ -454,9 +516,8 @@ bool collectFfOutputCone(AstNode* rootp, AstNodeAssign* localAssignp,
                 }
                 AstAlways* const alwaysp
                     = VN_AS(candidate.m_comb[writer->second].second->stmtsp(), Always);
-                AstNodeAssign* const assp = localCombinationalAssignment(alwaysp);
                 bool writerHasFf = false;
-                const bool writerValid = collectFfOutputCone(alwaysp->stmtsp(), assp, candidate,
+                const bool writerValid = collectFfOutputCone(alwaysp->stmtsp(), true, candidate,
                                                              combWriters, clockedWrites, combHasFf,
                                                              visiting, outputComb, writerHasFf);
                 visiting.erase(vscp);
@@ -750,14 +811,13 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             AstActive* const activep = candidate.m_comb[i].second;
             AstNode* shapeProblemp = nullptr;
             std::vector<AstNodeAssign*> assignments;
-            AstNodeAssign* const assp
-                = localCombinationalAssignment(activep->stmtsp(), &shapeProblemp, &assignments);
+            const bool localShape
+                = localCombinationalAssignments(activep->stmtsp(), assignments, &shapeProblemp);
             AstNode* const callp
                 = findUnsupportedCallOrSuspendable(activep, candidate.m_scopep, calleeSafety);
-            if (!assp || callp) {
+            if (!localShape || callp) {
                 AstNode* const problemp = callp           ? callp
                                           : shapeProblemp ? shapeProblemp
-                                          : assp          ? static_cast<AstNode*>(assp)
                                                           : activep->stmtsp();
                 reject(candidate, "unsupported child combinational logic", problemp->fileline());
             }
@@ -769,29 +829,31 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                     || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
                     || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
                     || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
-                    || assignmentp->isTimingControl() || !assignmentp->rhsp()->isPure()
-                    || !combWriters.emplace(lhsp->varScopep(), i).second) {
+                    || assignmentp->isTimingControl() || !assignmentp->rhsp()->isPure()) {
                     reject(candidate, "unsupported child combinational logic",
                            assignmentp->fileline());
                     continue;
+                }
+                const auto inserted = combWriters.emplace(lhsp->varScopep(), i);
+                if (!inserted.second && inserted.first->second != i) {
+                    reject(candidate, "unsupported child combinational logic",
+                           assignmentp->fileline());
                 }
                 lhsRefs.insert(lhsp);
                 localWriters.insert(lhsp->varScopep());
             }
             std::unordered_set<AstVarScope*> assigned;
-            for (AstNodeAssign* const assignmentp : assignments) {
-                assignmentp->rhsp()->foreach([&](AstNodeVarRef* refp) {
-                    if (localWriters.count(refp->varScopep())
-                        && !assigned.count(refp->varScopep())) {
-                        reject(candidate, "child combinational cycle",
-                               assignmentp->rhsp()->fileline());
-                    }
-                });
-                if (AstVarRef* const lhsp = VN_CAST(assignmentp->lhsp(), VarRef)) {
-                    assigned.insert(lhsp->varScopep());
+            if (localShape) {
+                if (AstNode* const problemp = checkDefiniteLocalWrites(
+                        VN_AS(activep->stmtsp(), Always)->stmtsp(), localWriters, assigned)) {
+                    reject(candidate, "child combinational cycle", problemp->fileline());
+                }
+                if (assigned.size() != localWriters.size()) {
+                    reject(candidate, "unsupported child combinational logic",
+                           activep->stmtsp()->fileline());
                 }
             }
-            if (assp) {
+            if (localShape) {
                 VN_AS(activep->stmtsp(), Always)->stmtsp()->foreachAndNext([&](AstNode* nodep) {
                     if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
                         if (lhsRefs.count(refp)) return;
@@ -817,9 +879,11 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             size_t cycleIndex = 0;
             if (orderNextState(candidate.m_comb, combWriters, &cycleIndex).size()
                 != candidate.m_comb.size()) {
-                AstNodeAssign* const assp
-                    = localCombinationalAssignment(candidate.m_comb[cycleIndex].second->stmtsp());
-                reject(candidate, "child combinational cycle", assp->fileline());
+                std::vector<AstNodeAssign*> cycleAssignments;
+                localCombinationalAssignments(candidate.m_comb[cycleIndex].second->stmtsp(),
+                                              cycleAssignments);
+                reject(candidate, "child combinational cycle",
+                       cycleAssignments.back()->fileline());
             }
         }
         if (!combWriters.empty()) {
@@ -891,7 +955,7 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             std::unordered_set<AstVarScope*> outputComb;
             for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
                 bool hasFf = false;
-                if (!collectFfOutputCone(output.m_exprp.get(), nullptr, candidate, combWriters,
+                if (!collectFfOutputCone(output.m_exprp.get(), false, candidate, combWriters,
                                          clockedWrites, combHasFf, visiting, outputComb, hasFf)
                     || !hasFf) {
                     reject(candidate, "output is not FF state", output.m_exprp->fileline());
@@ -1093,8 +1157,13 @@ void SubgraphPlan::appendSettleLogic(LogicByScope& comb,
                                      std::vector<AstActive*>& receiverClones) const {
     for (const Impl::Group& group : m_impl->m_groups) {
         const auto isOutputCone = [&](AstActive* const activep) {
-            const AstNodeAssign* const assp = localCombinationalAssignment(activep->stmtsp());
-            return group.m_outputCombVars.count(VN_AS(assp->lhsp(), VarRef)->varp());
+            std::vector<AstNodeAssign*> assignments;
+            UASSERT_OBJ(localCombinationalAssignments(activep->stmtsp(), assignments), activep,
+                        "Accepted child combinational procedure changed shape");
+            for (const AstNodeAssign* const assp : assignments) {
+                if (group.m_outputCombVars.count(VN_AS(assp->lhsp(), VarRef)->varp())) return true;
+            }
+            return false;
         };
         for (const auto& pair : group.m_comb) {
             if (isOutputCone(pair.second)) comb.emplace_back(pair);
@@ -1420,7 +1489,8 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
             if (!post) {
                 for (const auto& pair : group.m_combLogic) {
                     std::vector<AstNodeAssign*> assignments;
-                    localCombinationalAssignment(pair.second->stmtsp(), nullptr, &assignments);
+                    UASSERT_OBJ(localCombinationalAssignments(pair.second->stmtsp(), assignments),
+                                pair.second, "Accepted child combinational procedure changed");
                     for (const AstNodeAssign* const assp : assignments) {
                         localFreshReads[group.m_boundaryScopep].push_back(
                             VN_AS(assp->lhsp(), VarRef)->varScopep());
@@ -1491,7 +1561,9 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                     LogicByScope postComb;
                     for (const auto& pair : group.m_combLogic) {
                         std::vector<AstNodeAssign*> assignments;
-                        localCombinationalAssignment(pair.second->stmtsp(), nullptr, &assignments);
+                        UASSERT_OBJ(
+                            localCombinationalAssignments(pair.second->stmtsp(), assignments),
+                            pair.second, "Accepted child combinational procedure changed");
                         bool outputCone = false;
                         for (const AstNodeAssign* const assp : assignments) {
                             if (plan.isOutputCombinational(group.m_boundaryScopep,

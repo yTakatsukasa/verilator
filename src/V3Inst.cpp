@@ -148,17 +148,36 @@ class InstVisitor final : public VNVisitor {
             statements(alwaysp->stmtsp(), alwaysp);
         }
 
-        void combProcedure(AstAlways* alwaysp) {
-            for (AstNode* nodep = alwaysp->stmtsp(); nodep; nodep = nodep->nextp()) {
-                const AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign);
-                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-                if (!lhsp || !lhsp->access().isWriteOnly() || !m_ownedVars.count(lhsp->varp())
-                    || lhsp->varp()->isIO() || assp->isTimingControl()
-                    || !m_combWriters.insert(lhsp->varp()).second) {
+        void combStatements(AstNode* stmtsp, std::set<AstVar*>& localWriters) {
+            for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
+                if (const AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
+                    const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+                    if (!lhsp || !lhsp->access().isWriteOnly() || !m_ownedVars.count(lhsp->varp())
+                        || lhsp->varp()->isIO() || assp->isTimingControl()) {
+                        m_valid = false;
+                        return;
+                    }
+                    localWriters.insert(lhsp->varp());
+                    readExpression(assp->rhsp(), false);
+                } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
+                    readExpression(ifp->condp(), false);
+                    combStatements(ifp->thensp(), localWriters);
+                    combStatements(ifp->elsesp(), localWriters);
+                } else if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
+                    combStatements(beginp->stmtsp(), localWriters);
+                } else if (!VN_IS(nodep, Comment)) {
                     m_valid = false;
                     return;
                 }
-                readExpression(assp->rhsp(), false);
+            }
+        }
+
+        void combProcedure(AstAlways* alwaysp) {
+            std::set<AstVar*> localWriters;
+            combStatements(alwaysp->stmtsp(), localWriters);
+            if (localWriters.empty()) m_valid = false;
+            for (AstVar* const varp : localWriters) {
+                if (!m_combWriters.insert(varp).second) m_valid = false;
             }
         }
     };
@@ -198,10 +217,8 @@ class InstVisitor final : public VNVisitor {
             AstAlways* const alwaysp = VN_CAST(stmtp, Always);
             if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 analysis.procedure(alwaysp);
-            } else if (alwaysp) {
-                const AstNodeAssign* const assp = VN_CAST(alwaysp->stmtsp(), NodeAssign);
-                const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-                if (lhsp && !lhsp->varp()->isIO()) analysis.combProcedure(alwaysp);
+            } else if (alwaysp && alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB) {
+                analysis.combProcedure(alwaysp);
             }
         }
         for (AstVar* const varp : analysis.m_combWriters) {

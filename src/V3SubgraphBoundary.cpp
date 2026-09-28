@@ -53,6 +53,25 @@ bool V3SubgraphBoundary::shareableLocalFunction(const AstNodeFTask* ftaskp) {
     return local;
 }
 
+static bool shareableCombinationalStatements(const AstNode* stmtsp) {
+    for (const AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
+        if (const AstAssign* const assp = VN_CAST(nodep, Assign)) {
+            const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+            if (!lhsp || lhsp->varp()->isIO()) return false;
+        } else if (const AstIf* const ifp = VN_CAST(nodep, If)) {
+            if (!shareableCombinationalStatements(ifp->thensp())
+                || !shareableCombinationalStatements(ifp->elsesp())) {
+                return false;
+            }
+        } else if (const AstBegin* const beginp = VN_CAST(nodep, Begin)) {
+            if (!shareableCombinationalStatements(beginp->stmtsp())) return false;
+        } else if (!VN_IS(nodep, Comment)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
     unsigned clocked = 0;
     std::set<const AstNodeFTask*> localFunctions;
@@ -72,11 +91,8 @@ bool V3SubgraphBoundary::shareableModuleShape(const AstNodeModule* modp) {
             if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_FF) {
                 ++clocked;
             } else if (alwaysp->keyword() == VAlwaysKwd::ALWAYS_COMB) {
-                if (!alwaysp->stmtsp()) return false;
-                for (const AstNode* nodep = alwaysp->stmtsp(); nodep; nodep = nodep->nextp()) {
-                    const AstAssign* const assp = VN_CAST(nodep, Assign);
-                    const AstVarRef* const lhsp = assp ? VN_CAST(assp->lhsp(), VarRef) : nullptr;
-                    if (!lhsp || lhsp->varp()->isIO()) return false;
+                if (!alwaysp->stmtsp() || !shareableCombinationalStatements(alwaysp->stmtsp())) {
+                    return false;
                 }
             } else {
                 const AstAssignW* const assp = VN_CAST(alwaysp->stmtsp(), AssignW);
