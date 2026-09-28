@@ -28,6 +28,7 @@
 #include "V3SchedSubgraph.h"
 
 #include "V3Stats.h"
+#include "V3SubgraphBoundary.h"
 
 #include <map>
 #include <set>
@@ -175,7 +176,8 @@ AstNode* checkDefiniteLocalWrites(AstNode* stmtsp,
                 }
             });
             if (problem) return assp->rhsp();
-            if (AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef)) {
+            if (const AstVarRef* const lhsp
+                = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp())) {
                 assigned.insert(lhsp->varScopep());
             }
         } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
@@ -216,7 +218,7 @@ bool isLocalCombinationalStatement(const AstScope* boundaryScopep, AstNode* stmt
     std::vector<AstNodeAssign*> assignments;
     if (!localCombinationalAssignments(stmtp, assignments)) return false;
     for (const AstNodeAssign* const assp : assignments) {
-        const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+        const AstVarRef* const lhsp = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
         if (!lhsp || !isUnderScope(lhsp->varScopep()->scopep(), boundaryScopep)
             || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
             || lhsp->varp()->subgraphCaptured() || lhsp->varp()->subgraphPublished()) {
@@ -768,13 +770,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
     // Index accesses that bypass a boundary's ports once for the entire design.
     // Shared receivers are mapped to their representative candidate.
     std::unordered_map<AstScope*, FileLine*> externallyAccessed;
-    using Reader = std::pair<AstActive*, AstNodeVarRef*>;
-    std::unordered_map<AstVarScope*, std::vector<Reader>> activeReaders;
     for (const auto& pair : allActives) {
         pair.second->foreach([&](AstNodeVarRef* refp) {
-            if (refp->access().isReadOrRW()) {
-                activeReaders[refp->varScopep()].emplace_back(pair.second, refp);
-            }
             AstScope* const boundaryScopep = findBoundaryScope(refp->varScopep()->scopep());
             if (!boundaryScopep || isUnderScope(pair.first, boundaryScopep)) return;
             const AstVar* const varp = refp->varp();
@@ -824,7 +821,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             std::unordered_set<const AstNodeVarRef*> lhsRefs;
             std::unordered_set<AstVarScope*> localWriters;
             for (AstNodeAssign* const assignmentp : assignments) {
-                AstVarRef* const lhsp = VN_CAST(assignmentp->lhsp(), VarRef);
+                const AstVarRef* const lhsp
+                    = V3SubgraphBoundary::writtenCombinationalVarRef(assignmentp->lhsp());
                 if (!lhsp || !lhsp->access().isWriteOnly()
                     || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
                     || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
@@ -880,19 +878,6 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                                               cycleAssignments);
                 reject(candidate, "child combinational cycle",
                        cycleAssignments.back()->fileline());
-            }
-        }
-        if (!combWriters.empty()) {
-            std::unordered_set<AstActive*> local;
-            for (const auto& pair : candidate.m_clocked) local.insert(pair.second);
-            for (const auto& pair : candidate.m_comb) local.insert(pair.second);
-            for (const auto& writer : combWriters) {
-                for (const Reader& reader : activeReaders[writer.first]) {
-                    if (!local.count(reader.first) && !isPublishActive(reader.first)) {
-                        reject(candidate, "child combinational value used outside FF evaluation",
-                               reader.second->fileline());
-                    }
-                }
             }
         }
         AstVarScope* clockVscp = nullptr;
@@ -1176,7 +1161,10 @@ void SubgraphPlan::appendSettleLogic(AstNetlist* netlistp, LogicByScope& comb,
             UASSERT_OBJ(localCombinationalAssignments(activep->stmtsp(), assignments), activep,
                         "Accepted child combinational procedure changed shape");
             for (const AstNodeAssign* const assp : assignments) {
-                if (group.m_outputCombVars.count(VN_AS(assp->lhsp(), VarRef)->varp())) return true;
+                const AstVarRef* const lhsp
+                    = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
+                UASSERT_OBJ(lhsp, assp, "Accepted child combinational writer changed");
+                if (group.m_outputCombVars.count(lhsp->varp())) return true;
             }
             return false;
         };
@@ -1651,8 +1639,10 @@ V3Order::FreshReads lowerSubgraphNbaLogic(AstNetlist* netlistp,
                             pair.second, "Accepted child combinational procedure changed");
                         bool outputCone = false;
                         for (const AstNodeAssign* const assp : assignments) {
-                            if (plan.isOutputCombinational(group.m_boundaryScopep,
-                                                           VN_AS(assp->lhsp(), VarRef)->varp())) {
+                            const AstVarRef* const lhsp
+                                = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
+                            UASSERT_OBJ(lhsp, assp, "Accepted child combinational writer changed");
+                            if (plan.isOutputCombinational(group.m_boundaryScopep, lhsp->varp())) {
                                 outputCone = true;
                             }
                         }

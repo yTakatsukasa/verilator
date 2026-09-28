@@ -151,12 +151,19 @@ class InstVisitor final : public VNVisitor {
         void combStatements(AstNode* stmtsp, std::set<AstVar*>& localWriters) {
             for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
                 if (const AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
-                    const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+                    const AstVarRef* const lhsp
+                        = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
                     if (!lhsp || !lhsp->access().isWriteOnly() || !m_ownedVars.count(lhsp->varp())
                         || lhsp->varp()->isIO() || assp->isTimingControl()) {
                         m_valid = false;
                         return;
                     }
+                    assp->lhsp()->foreach([&](const AstNodeVarRef* refp) {
+                        if (refp == lhsp) return;
+                        if (!refp->access().isReadOnly() || !m_ownedVars.count(refp->varp())) {
+                            m_valid = false;
+                        }
+                    });
                     localWriters.insert(lhsp->varp());
                     readExpression(assp->rhsp(), false);
                 } else if (AstIf* const ifp = VN_CAST(nodep, If)) {

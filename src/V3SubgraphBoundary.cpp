@@ -53,10 +53,22 @@ bool V3SubgraphBoundary::shareableLocalFunction(const AstNodeFTask* ftaskp) {
     return local;
 }
 
+const AstVarRef* V3SubgraphBoundary::writtenCombinationalVarRef(const AstNodeExpr* lhsp) {
+    const AstVarRef* resultp = nullptr;
+    bool multiple = false;
+    lhsp->foreach([&](const AstVarRef* refp) {
+        if (!refp->access().isWriteOrRW()) return;
+        if (resultp) multiple = true;
+        resultp = refp;
+    });
+    return multiple ? nullptr : resultp;
+}
+
 static bool shareableCombinationalStatements(const AstNode* stmtsp) {
     for (const AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
         if (const AstAssign* const assp = VN_CAST(nodep, Assign)) {
-            const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+            const AstVarRef* const lhsp
+                = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
             if (!lhsp || lhsp->varp()->isIO()) return false;
         } else if (const AstIf* const ifp = VN_CAST(nodep, If)) {
             if (!shareableCombinationalStatements(ifp->thensp())
