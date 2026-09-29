@@ -368,15 +368,31 @@ void reject(EarlyCandidate& candidate, const char* reason, FileLine* filelinep) 
 // A call can remain in the shared body if it depends only on its arguments and
 // automatic function locals. Receiver-specific state must be explicit in the
 // caller so input capture and the boundary contract can account for it.
+bool isDpiImport(const AstCFunc* funcp) {
+    return funcp->dpiImportPrototype() || funcp->dpiImportWrapper();
+}
+
 bool isStatelessCallee(AstCFunc* funcp, std::unordered_map<const AstCFunc*, bool>& calleeSafety) {
     const auto inserted = calleeSafety.emplace(funcp, false);
     if (!inserted.second) return inserted.first->second;
-    if (funcp->dpiImportPrototype() || funcp->dpiImportWrapper() || funcp->dpiExportImpl()
-        || funcp->recursive() || funcp->needProcess() || funcp->isCoroutine()) {
+    if (isDpiImport(funcp)) {
+        inserted.first->second = true;
+        return true;
+    }
+    if (funcp->dpiExportImpl() || funcp->recursive() || funcp->needProcess()
+        || funcp->isCoroutine()) {
         return false;
     }
     bool valid = true;
     funcp->foreach([&](AstNode* nodep) {
+        if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
+            if (AstCCall* const callp = VN_CAST(exprp->exprp(), CCall)) {
+                if (isDpiImport(callp->funcp())) return;
+            }
+        }
+        if (AstCCall* const callp = VN_CAST(nodep, CCall)) {
+            if (isDpiImport(callp->funcp())) return;
+        }
         if (!nodep->isPure() || nodep->isTimingControl() || VN_IS(nodep, NodeCCall)
             || VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, VarXRef)
             || VN_IS(nodep, CExpr) || VN_IS(nodep, CExprUser) || VN_IS(nodep, CStmt)
@@ -839,7 +855,11 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                     || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
                     || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
                     || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
-                    || assignmentp->isTimingControl() || !assignmentp->rhsp()->isPure()) {
+                    || assignmentp->isTimingControl()
+                    || (!assignmentp->rhsp()->isPure()
+                        && !(VN_IS(assignmentp->rhsp(), CCall)
+                             && isStatelessCallee(VN_AS(assignmentp->rhsp(), CCall)->funcp(),
+                                                  calleeSafety)))) {
                     reject(candidate, "unsupported child combinational logic",
                            assignmentp->fileline());
                     continue;
