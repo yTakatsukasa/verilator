@@ -183,9 +183,7 @@ class InstVisitor final : public VNVisitor {
             std::set<AstVar*> localWriters;
             combStatements(alwaysp->stmtsp(), localWriters);
             if (localWriters.empty()) m_valid = false;
-            for (AstVar* const varp : localWriters) {
-                if (!m_combWriters.insert(varp).second) m_valid = false;
-            }
+            for (AstVar* const varp : localWriters) { m_combWriters.insert(varp); }
         }
     };
     std::map<AstNodeModule*, std::vector<AstCell*>> m_cellsByModule;

@@ -434,21 +434,26 @@ void foreachCombinationalRead(AstActive* activep, Func&& func) {
     });
 }
 
+using CombinationalWriters = std::map<AstVarScope*, std::vector<size_t>>;
+
 template <typename Logic>
-std::vector<size_t> orderNextState(const Logic& logic,
-                                   const std::map<AstVarScope*, size_t>& writers,
+std::vector<size_t> orderNextState(const Logic& logic, const CombinationalWriters& writers,
                                    size_t* cycleIndexp = nullptr) {
     std::vector<std::vector<size_t>> successors(logic.size());
     std::vector<size_t> indegree(logic.size(), 0);
     for (size_t i = 0; i < logic.size(); ++i) {
+        std::unordered_set<size_t> predecessors;
         foreachCombinationalRead(logic[i].second, [&](AstNodeVarRef* refp) {
             const auto writer = writers.find(refp->varScopep());
             if (writer == writers.end()) return;
-            if (writer->second != i) {
-                successors[writer->second].push_back(i);
-                ++indegree[i];
+            for (const size_t index : writer->second) {
+                if (index != i) predecessors.insert(index);
             }
         });
+        for (const size_t index : predecessors) {
+            successors[index].push_back(i);
+            ++indegree[i];
+        }
     }
     std::set<size_t> ready;
     for (size_t i = 0; i < indegree.size(); ++i) {
@@ -472,8 +477,9 @@ std::vector<size_t> orderNextState(const Logic& logic,
             size_t predecessor = index;
             foreachCombinationalRead(logic[index].second, [&](AstNodeVarRef* refp) {
                 const auto writer = writers.find(refp->varScopep());
-                if (writer != writers.end() && indegree[writer->second]) {
-                    predecessor = writer->second;
+                if (writer == writers.end()) return;
+                for (const size_t candidate : writer->second) {
+                    if (candidate != index && indegree[candidate]) predecessor = candidate;
                 }
             });
             index = predecessor;
@@ -484,7 +490,7 @@ std::vector<size_t> orderNextState(const Logic& logic,
 }
 
 bool collectFfOutputCone(AstNode* rootp, bool localProcedure, const EarlyCandidate& candidate,
-                         const std::map<AstVarScope*, size_t>& combWriters,
+                         const CombinationalWriters& combWriters,
                          const std::unordered_set<AstVarScope*>& clockedWrites,
                          std::unordered_map<AstVarScope*, bool>& combHasFf,
                          std::unordered_set<AstVarScope*>& visiting,
@@ -516,12 +522,19 @@ bool collectFfOutputCone(AstNode* rootp, bool localProcedure, const EarlyCandida
                     valid = false;
                     return;
                 }
-                AstAlways* const alwaysp
-                    = VN_AS(candidate.m_comb[writer->second].second->stmtsp(), Always);
                 bool writerHasFf = false;
-                const bool writerValid = collectFfOutputCone(alwaysp->stmtsp(), true, candidate,
-                                                             combWriters, clockedWrites, combHasFf,
-                                                             visiting, outputComb, writerHasFf);
+                bool writerValid = true;
+                for (const size_t index : writer->second) {
+                    AstAlways* const alwaysp
+                        = VN_AS(candidate.m_comb[index].second->stmtsp(), Always);
+                    bool hasWriterFf = false;
+                    if (!collectFfOutputCone(alwaysp->stmtsp(), true, candidate, combWriters,
+                                             clockedWrites, combHasFf, visiting, outputComb,
+                                             hasWriterFf)) {
+                        writerValid = false;
+                    }
+                    writerHasFf |= hasWriterFf;
+                }
                 visiting.erase(vscp);
                 if (!writerValid) {
                     valid = false;
@@ -800,10 +813,9 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                        : candidate.m_scopep->modp()->fileline());
             continue;
         }
-        // An internal combinational value used only for FF next state can be
-        // recomputed in the local pre phase. Require a pure, complete assignment
-        // DAG; values visible before an edge still need the parent settle path.
-        std::map<AstVarScope*, size_t> combWriters;
+        // Track all writers of a value. Separate procedures can write disjoint
+        // elements of the same variable, and the output cone needs each source.
+        CombinationalWriters combWriters;
         for (size_t i = 0; i < candidate.m_comb.size(); ++i) {
             AstActive* const activep = candidate.m_comb[i].second;
             AstNode* shapeProblemp = nullptr;
@@ -832,11 +844,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                            assignmentp->fileline());
                     continue;
                 }
-                const auto inserted = combWriters.emplace(lhsp->varScopep(), i);
-                if (!inserted.second && inserted.first->second != i) {
-                    reject(candidate, "unsupported child combinational logic",
-                           assignmentp->fileline());
-                }
+                std::vector<size_t>& writers = combWriters[lhsp->varScopep()];
+                if (writers.empty() || writers.back() != i) writers.push_back(i);
                 lhsRefs.insert(lhsp);
                 localWriters.insert(lhsp->varScopep());
             }
