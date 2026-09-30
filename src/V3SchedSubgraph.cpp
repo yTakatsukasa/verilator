@@ -519,18 +519,21 @@ void collectOutputDependencies(AstNode* stmtsp, OutputDependencies& dependencies
                                const OutputSources& controls) {
     for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
         if (AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
-            const AstVarRef* const lhsp
-                = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
-            UASSERT_OBJ(lhsp, assp, "Accepted child combinational writer changed");
-            OutputSources& sources = dependencies[lhsp->varScopep()];
-            sources.insert(controls.begin(), controls.end());
+            OutputSources sources = controls;
             collectOutputReads(assp->lhsp(), sources);
             collectOutputReads(assp->rhsp(), sources);
+            assp->lhsp()->foreach([&](AstNodeVarRef* refp) {
+                if (!refp->access().isWriteOrRW()) return;
+                OutputSources& targetSources = dependencies[refp->varScopep()];
+                targetSources.insert(sources.begin(), sources.end());
+            });
         } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
             OutputSources branchControls = controls;
             collectOutputReads(ifp->condp(), branchControls);
             collectOutputDependencies(ifp->thensp(), dependencies, branchControls);
             collectOutputDependencies(ifp->elsesp(), dependencies, branchControls);
+        } else if (AstNodeProcedure* const procp = VN_CAST(nodep, NodeProcedure)) {
+            collectOutputDependencies(procp->stmtsp(), dependencies, controls);
         } else if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
             collectOutputDependencies(beginp->stmtsp(), dependencies, controls);
         } else if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
@@ -704,7 +707,7 @@ struct SubgraphPlan::Impl final {
     std::map<AstScope*, size_t> m_accepted;
 };
 
-SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
+SubgraphPlan::SubgraphPlan(AstNetlist* netlistp, const V3SubgraphBoundary& subgraphBoundary)
     : m_impl{new Impl} {
     if (!v3Global.opt.subgraphSchedule()) return;
     const SharedReceivers sharedReceivers = prepareSharedReceiverState(netlistp);
@@ -794,25 +797,6 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
         if (!found) {
             candidate.m_outputs.push_back({portId, std::move(expression), lhsp->varp(), nullptr});
         }
-    }
-
-    // Index accesses that bypass a boundary's ports once for the entire design.
-    // Shared receivers are mapped to their representative candidate.
-    std::unordered_map<AstScope*, FileLine*> externallyAccessed;
-    for (const auto& pair : allActives) {
-        pair.second->foreach([&](AstNodeVarRef* refp) {
-            AstScope* const boundaryScopep = findBoundaryScope(refp->varScopep()->scopep());
-            if (!boundaryScopep || isUnderScope(pair.first, boundaryScopep)) return;
-            const AstVar* const varp = refp->varp();
-            const bool inputWrite = varp->isInput() && refp->access().isWriteOnly();
-            const bool captureWrite = varp->subgraphCaptured() && refp->access().isWriteOnly();
-            const bool outputRead = varp->subgraphPublished() && refp->access().isReadOnly();
-            if (inputWrite || captureWrite || outputRead) return;
-            AstScope* const implementationp = boundaryScopep->subgraphImplementationScopep()
-                                                  ? boundaryScopep->subgraphImplementationScopep()
-                                                  : boundaryScopep;
-            externallyAccessed.emplace(implementationp, refp->fileline());
-        });
     }
 
     std::unordered_map<const AstCFunc*, bool> calleeSafety;
@@ -984,58 +968,57 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 candidate.m_outputCombVars.insert(vscp->varp());
             }
         }
-        if (const auto it = externallyAccessed.find(candidate.m_scopep);
-            it != externallyAccessed.end()) {
-            reject(candidate, "external access to child state", it->second);
+        if (FileLine* const flp = subgraphBoundary.externalAccessFileline(candidate.m_scopep)) {
+            reject(candidate, "external access to child state", flp);
         }
     }
 
-    // A boundary value used as a parent clock can move the boundary into the Active region,
-    // which this NBA-only experiment cannot schedule. Follow combinational assignments so an
-    // output alias or a short combinational chain cannot hide that dependency.
+    // A clock derived from child FF state requires Active-region scheduling. Boundary
+    // inputs and unrelated assignments in the same procedure do not create that dependency.
+    OutputDependencies clockDependencies;
+    for (const auto& pair : allComb) {
+        collectOutputDependencies(pair.second->stmtsp(), clockDependencies, {});
+    }
+    OutputDependencies clockDependents;
+    for (const auto& dependency : clockDependencies) {
+        for (AstVarScope* const sourcep : dependency.second) {
+            clockDependents[sourcep].insert(dependency.first);
+        }
+    }
     for (EarlyCandidate& candidate : candidates) {
         if (!candidate.m_rejection.empty()) continue;
-        std::unordered_set<AstVarScope*> tainted;
-        const auto seedInternal = [&](const auto& pairs) {
-            for (const auto& pair : pairs) {
-                pair.second->foreach([&](AstNodeVarRef* refp) {
-                    if (isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
-                        tainted.insert(refp->varScopep());
-                    }
-                });
-            }
+        OutputSources tainted;
+        std::vector<AstVarScope*> pending;
+        std::set<const AstVar*> stateVars;
+        const auto seed = [&](AstVarScope* const vscp) {
+            if (tainted.insert(vscp).second) pending.push_back(vscp);
         };
-        seedInternal(candidate.m_clocked);
-        seedInternal(candidate.m_comb);
-        // Receiver procedures have not been cloned. Include their state in the parent-clock
-        // check so an instance-specific generated clock cannot bypass admission.
+        for (const auto& pair : candidate.m_clocked) {
+            pair.second->foreach([&](AstNodeVarRef* refp) {
+                const AstVar* const varp = refp->varp();
+                if (!refp->access().isWriteOrRW() || varp->isTemp() || varp->isInput()
+                    || varp->subgraphCaptured()
+                    || !isUnderScope(refp->varScopep()->scopep(), candidate.m_scopep)) {
+                    return;
+                }
+                stateVars.insert(varp);
+                seed(refp->varScopep());
+            });
+        }
+        // Receiver procedures have not been cloned; seed their corresponding FF state.
         const auto receivers = sharedReceivers.find(candidate.m_scopep);
         if (receivers != sharedReceivers.end()) {
             for (AstScope* const receiverp : receivers->second) {
                 for (AstVarScope* vscp = receiverp->varsp(); vscp;
                      vscp = VN_AS(vscp->nextp(), VarScope)) {
-                    tainted.insert(vscp);
+                    if (stateVars.count(vscp->varp())) seed(vscp);
                 }
             }
         }
-
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (const auto& pair : allComb) {
-                bool readsTainted = false;
-                pair.second->foreach([&](AstNodeVarRef* refp) {
-                    if (refp->access().isReadOrRW() && tainted.count(refp->varScopep())) {
-                        readsTainted = true;
-                    }
-                });
-                if (!readsTainted) continue;
-                pair.second->foreach([&](AstNodeVarRef* refp) {
-                    if (refp->access().isWriteOrRW() && tainted.insert(refp->varScopep()).second) {
-                        changed = true;
-                    }
-                });
-            }
+        for (size_t index = 0; index < pending.size(); ++index) {
+            const auto it = clockDependents.find(pending[index]);
+            if (it == clockDependents.end()) continue;
+            for (AstVarScope* const targetp : it->second) seed(targetp);
         }
 
         for (const auto& pair : allClocked) {

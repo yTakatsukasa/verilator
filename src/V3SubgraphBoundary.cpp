@@ -17,7 +17,8 @@
 // Record elaborated ports and connections as values, carrying only numeric port
 // identities on the AST. No expression or procedure pointers survive a pass.
 // Resolve publication links after Scope/LinkDot and check them again after NBA
-// lowering. The scheduler still owns eligibility and capture/evaluate/publish.
+// lowering. Record direct RTL accesses before optimization creates cross-scope
+// aliases. The scheduler still owns eligibility and capture/evaluate/publish.
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
@@ -167,6 +168,8 @@ struct V3SubgraphBoundary::Impl final {
     std::set<uint32_t> m_connectedOutputs;
     std::set<std::pair<const AstCell*, uint32_t>> m_connectedInstanceOutputs;
     std::map<std::pair<uint32_t, uint32_t>, int> m_scoped;
+    // Record RTL accesses before optimization creates cross-scope intermediate values.
+    std::map<uint32_t, FileLine*> m_externalAccess;
     unsigned m_specializations = 0;
     unsigned m_nbaAssignments = 0;
 
@@ -394,8 +397,43 @@ void V3SubgraphBoundary::scoped(AstNetlist* netlistp) {
     netlistp->foreach([&](AstScope* scopep) {
         if (scopep->modp()->subgraphBoundary()) scopep->subgraphInstanceId(++nextId);
     });
+    // Inst creates the port-to-publication copy in the parent scope. These two
+    // references implement the boundary contract rather than bypassing it.
+    std::set<const AstNodeVarRef*> publicationRefs;
+    netlistp->foreach([&](AstNodeAssign* assp) {
+        const AstVarRef* const lhsp = VN_CAST(assp->lhsp(), VarRef);
+        const AstVarRef* const rhsp = VN_CAST(assp->rhsp(), VarRef);
+        if (!lhsp || !rhsp || !lhsp->varp()->subgraphPublished()) return;
+        publicationRefs.insert(lhsp);
+        publicationRefs.insert(rhsp);
+    });
+    netlistp->foreach([&](AstScope* scopep) {
+        scopep->foreach([&](AstNodeVarRef* refp) {
+            if (publicationRefs.count(refp)) return;
+            AstScope* boundaryp = refp->varScopep()->scopep();
+            while (boundaryp && !boundaryp->modp()->subgraphBoundary()) {
+                boundaryp = boundaryp->aboveScopep();
+            }
+            if (!boundaryp || isUnderScope(scopep, boundaryp)) return;
+            const AstVar* const varp = refp->varp();
+            const bool inputWrite = varp->isInput() && refp->access().isWriteOnly();
+            const bool captureWrite = varp->subgraphCaptured() && refp->access().isWriteOnly();
+            const bool outputRead = varp->subgraphPublished() && refp->access().isReadOnly();
+            if (inputWrite || captureWrite || outputRead) return;
+            AstScope* const implementationp = boundaryp->subgraphImplementationScopep()
+                                                  ? boundaryp->subgraphImplementationScopep()
+                                                  : boundaryp;
+            m_impl->m_externalAccess.emplace(implementationp->subgraphInstanceId(),
+                                             refp->fileline());
+        });
+    });
     V3Stats::addStat("Subgraph boundary, resolved instances", nextId);
     m_impl->publications(netlistp, false);
+}
+
+FileLine* V3SubgraphBoundary::externalAccessFileline(const AstScope* scopep) const {
+    const auto it = m_impl->m_externalAccess.find(scopep->subgraphInstanceId());
+    return it == m_impl->m_externalAccess.end() ? nullptr : it->second;
 }
 
 void V3SubgraphBoundary::delayed(AstNetlist* netlistp) {

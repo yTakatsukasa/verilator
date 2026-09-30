@@ -41,7 +41,7 @@ public:
         bool m_write = false;
     };
 
-    explicit SubgraphPlan(AstNetlist* netlistp);
+    SubgraphPlan(AstNetlist* netlistp, const V3SubgraphBoundary& subgraphBoundary);
     ~SubgraphPlan();
     VL_UNCOPYABLE(SubgraphPlan);
 

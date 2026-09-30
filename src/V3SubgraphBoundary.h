@@ -23,6 +23,8 @@
 #include <memory>
 
 class AstNetlist;
+class AstScope;
+class FileLine;
 class AstNodeModule;
 class AstNodeFTask;
 class AstNodeExpr;
@@ -44,6 +46,7 @@ public:
 
     void prepare(AstNetlist* netlistp);
     void scoped(AstNetlist* netlistp);
+    FileLine* externalAccessFileline(const AstScope* scopep) const;
     void delayed(AstNetlist* netlistp);
     void scheduled(AstNetlist* netlistp);
 };

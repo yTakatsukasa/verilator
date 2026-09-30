@@ -848,7 +848,7 @@ cloneMapWithNewTriggerReferences(const std::unordered_map<const AstSenTree*, Ast
 //============================================================================
 // Top level entry-point to scheduling
 
-void schedule(AstNetlist* netlistp) {
+void schedule(AstNetlist* netlistp, const V3SubgraphBoundary& subgraphBoundary) {
     const auto addSizeStat = [](const string& name, const LogicByScope& lbs) {
         uint64_t size = 0;
         lbs.foreachLogic([&](AstNode* nodep) { size += nodep->nodeCount(); });
@@ -880,7 +880,7 @@ void schedule(AstNetlist* netlistp) {
     TimingKit timingKit = prepareTiming(netlistp);
 
     // Step 3: Gather and classify all logic in the design
-    SubgraphPlan subgraphPlan{netlistp};
+    SubgraphPlan subgraphPlan{netlistp, subgraphBoundary};
     LogicClasses logicClasses = gatherLogicClasses(netlistp, subgraphPlan);
 
     if (v3Global.opt.stats()) {

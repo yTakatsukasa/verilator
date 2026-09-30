@@ -30,6 +30,7 @@
 #include <vector>
 
 class SenExprBuilder;
+class V3SubgraphBoundary;
 
 //============================================================================
 
@@ -492,7 +493,7 @@ TimingKit prepareTiming(AstNetlist* const netlistp) VL_MT_DISABLED;
 void transformForks(AstNetlist* const netlistp) VL_MT_DISABLED;
 
 // Top level entry point to scheduling
-void schedule(AstNetlist*) VL_MT_DISABLED;
+void schedule(AstNetlist*, const V3SubgraphBoundary&) VL_MT_DISABLED;
 
 // Sub-steps
 LogicByScope breakCycles(AstNetlist* netlistp,
