@@ -220,7 +220,6 @@ bool isLocalCombinationalStatement(const AstScope* boundaryScopep, AstNode* stmt
     for (const AstNodeAssign* const assp : assignments) {
         const AstVarRef* const lhsp = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
         if (!lhsp || !isUnderScope(lhsp->varScopep()->scopep(), boundaryScopep)
-            || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
             || lhsp->varp()->subgraphCaptured() || lhsp->varp()->subgraphPublished()) {
             return false;
         }
@@ -853,7 +852,6 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                     = V3SubgraphBoundary::writtenCombinationalVarRef(assignmentp->lhsp());
                 if (!lhsp || !lhsp->access().isWriteOnly()
                     || !isUnderScope(lhsp->varScopep()->scopep(), candidate.m_scopep)
-                    || (lhsp->varp()->isIO() && lhsp->varp()->isNonOutput())
                     || lhsp->varp()->subgraphPublished() || lhsp->varp()->subgraphCaptured()
                     || assignmentp->isTimingControl()
                     || (!assignmentp->rhsp()->isPure()
