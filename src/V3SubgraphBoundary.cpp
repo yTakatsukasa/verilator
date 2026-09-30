@@ -33,6 +33,13 @@
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
+static bool isUnderScope(const AstScope* scopep, const AstScope* basep) {
+    for (const AstScope* scanp = scopep; scanp; scanp = scanp->aboveScopep()) {
+        if (scanp == basep) return true;
+    }
+    return false;
+}
+
 bool V3SubgraphBoundary::shareableLocalFunction(const AstNodeFTask* ftaskp) {
     if (!ftaskp || !ftaskp->isFunction() || ftaskp->dpiImport() || ftaskp->dpiExport()
         || ftaskp->recursive() || ftaskp->needProcess()
@@ -272,7 +279,8 @@ struct V3SubgraphBoundary::Impl final {
                                                       : representative->second;
                 const auto it = post.find(statep);
                 if (it == post.end() || !pre.count(it->second)) continue;
-                UASSERT_OBJ(source.first->scopep() == source.second->scopep(), source.first,
+                UASSERT_OBJ(isUnderScope(source.second->scopep(), source.first->scopep()),
+                            source.first,
                             "Published NBA state belongs to a different boundary instance");
                 ++nbaPublications;
             }

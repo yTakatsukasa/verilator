@@ -35,8 +35,8 @@ module t;
       `checkh(y1, ~(expected1[0] ? expected1 ^ 7'h35 : expected1 + 7'd7));
       clk = 1;
       #1;
-      expected0 = expected0 + d0 + 7'd1;
-      expected1 = expected1 + d1 + 7'd1;
+      expected0 = expected0 + d0 + (expected0[0] ? 7'd1 : 7'd2);
+      expected1 = expected1 + d1 + (expected1[0] ? 7'd1 : 7'd2);
       `checkh(y0, ~(expected0[0] ? expected0 ^ 7'h35 : expected0 + 7'd7));
       `checkh(y1, ~(expected1[0] ? expected1 ^ 7'h35 : expected1 + 7'd7));
       clk = 0;
@@ -54,11 +54,23 @@ module sg_comb_branch_out (
 );
   /*verilator subgraph_boundary*/
   logic [6:0] q = 1;
-  logic [6:0] mix;
+  logic [6:0] mix /*verilator public_flat*/;
+  logic [6:0] next_q /*verilator public_flat*/;
+  function automatic logic [6:0] advance(input logic [6:0] value,
+                                        input logic [6:0] delta,
+                                        input logic [6:0] offset);
+    // verilator no_inline_task
+    return value + delta + offset;
+  endfunction
   always_comb begin
-    if (q[0]) mix = q ^ 7'h35;
-    else mix = q + 7'd7;
+    if (q[0]) begin
+      mix = q ^ 7'h35;
+      next_q = advance(q, d, 7'd1);
+    end else begin
+      mix = q + 7'd7;
+      next_q = advance(q, d, 7'd2);
+    end
   end
   assign y = ~mix;
-  always_ff @(posedge clk) q <= q + d + 7'd1;
+  always_ff @(posedge clk) q <= next_q;
 endmodule

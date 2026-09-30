@@ -504,72 +504,71 @@ std::vector<size_t> orderNextState(const Logic& logic, const CombinationalWriter
     return ordered;
 }
 
-bool collectFfOutputCone(AstNode* rootp, bool localProcedure, const EarlyCandidate& candidate,
-                         const CombinationalWriters& combWriters,
-                         const std::unordered_set<AstVarScope*>& clockedWrites,
-                         std::unordered_map<AstVarScope*, bool>& combHasFf,
-                         std::unordered_set<AstVarScope*>& visiting,
-                         std::unordered_set<AstVarScope*>& outputComb, bool& hasFf) {
-    bool valid = localProcedure || rootp->isPure();
-    std::unordered_set<AstVarScope*> localWrites;
-    if (localProcedure) {
-        rootp->foreachAndNext([&](AstNodeVarRef* refp) {
-            if (refp->access().isWriteOnly()) localWrites.insert(refp->varScopep());
-        });
-    }
-    rootp->foreachAndNext([&](AstNode* nodep) {
-        if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
-            AstVarScope* const vscp = refp->varScopep();
-            if (localWrites.count(vscp)) return;
-            if (!refp->access().isReadOnly()
-                || !isUnderScope(vscp->scopep(), candidate.m_scopep)) {
-                valid = false;
-                return;
-            }
-            const auto writer = combWriters.find(vscp);
-            if (writer != combWriters.end()) {
-                const auto cached = combHasFf.find(vscp);
-                if (cached != combHasFf.end()) {
-                    hasFf |= cached->second;
-                    return;
-                }
-                if (!visiting.insert(vscp).second) {
-                    valid = false;
-                    return;
-                }
-                bool writerHasFf = false;
-                bool writerValid = true;
-                for (const size_t index : writer->second) {
-                    AstAlways* const alwaysp
-                        = VN_AS(candidate.m_comb[index].second->stmtsp(), Always);
-                    bool hasWriterFf = false;
-                    if (!collectFfOutputCone(alwaysp->stmtsp(), true, candidate, combWriters,
-                                             clockedWrites, combHasFf, visiting, outputComb,
-                                             hasWriterFf)) {
-                        writerValid = false;
-                    }
-                    writerHasFf |= hasWriterFf;
-                }
-                visiting.erase(vscp);
-                if (!writerValid) {
-                    valid = false;
-                    return;
-                }
-                outputComb.insert(vscp);
-                combHasFf.emplace(vscp, writerHasFf);
-                hasFf |= writerHasFf;
-            } else if (clockedWrites.count(vscp) && !vscp->varp()->isTemp()
-                       && !vscp->varp()->subgraphCaptured()) {
-                hasFf = true;
-            } else {
-                valid = false;
-            }
-        } else if (VN_IS(nodep, NodeFTaskRef) || VN_IS(nodep, ScopeName) || VN_IS(nodep, CExpr)
-                   || VN_IS(nodep, CExprUser) || VN_IS(nodep, CStmt) || VN_IS(nodep, CStmtUser)) {
-            valid = false;
-        }
+using OutputSources = std::unordered_set<AstVarScope*>;
+using OutputDependencies = std::map<AstVarScope*, OutputSources>;
+
+void collectOutputReads(AstNode* rootp, OutputSources& sources) {
+    rootp->foreach([&](AstNodeVarRef* refp) {
+        if (refp->access().isReadOrRW()) sources.insert(refp->varScopep());
     });
-    return valid;
+}
+
+// Index each assignment separately so an unrelated next-state expression in the same
+// procedure cannot make an FF-derived output appear to depend on a boundary input.
+void collectOutputDependencies(AstNode* stmtsp, OutputDependencies& dependencies,
+                               const OutputSources& controls) {
+    for (AstNode* nodep = stmtsp; nodep; nodep = nodep->nextp()) {
+        if (AstNodeAssign* const assp = VN_CAST(nodep, NodeAssign)) {
+            const AstVarRef* const lhsp
+                = V3SubgraphBoundary::writtenCombinationalVarRef(assp->lhsp());
+            UASSERT_OBJ(lhsp, assp, "Accepted child combinational writer changed");
+            OutputSources& sources = dependencies[lhsp->varScopep()];
+            sources.insert(controls.begin(), controls.end());
+            collectOutputReads(assp->lhsp(), sources);
+            collectOutputReads(assp->rhsp(), sources);
+        } else if (AstIf* const ifp = VN_CAST(nodep, If)) {
+            OutputSources branchControls = controls;
+            collectOutputReads(ifp->condp(), branchControls);
+            collectOutputDependencies(ifp->thensp(), dependencies, branchControls);
+            collectOutputDependencies(ifp->elsesp(), dependencies, branchControls);
+        } else if (AstBegin* const beginp = VN_CAST(nodep, Begin)) {
+            collectOutputDependencies(beginp->stmtsp(), dependencies, controls);
+        } else if (AstStmtExpr* const exprp = VN_CAST(nodep, StmtExpr)) {
+            // Lowered function calls can write a return temporary through an argument.
+            OutputSources sources = controls;
+            collectOutputReads(exprp->exprp(), sources);
+            exprp->exprp()->foreach([&](AstNodeVarRef* refp) {
+                if (!refp->access().isWriteOrRW()) return;
+                OutputSources& targetSources = dependencies[refp->varScopep()];
+                targetSources.insert(sources.begin(), sources.end());
+            });
+        }
+    }
+}
+
+// Reject identified feedthrough paths. Unknown local sources are admitted for the MVP,
+// rather than requiring a complete proof that every output leaf is FF state.
+bool collectOutputCone(AstVarScope* vscp, const EarlyCandidate& candidate,
+                       const OutputDependencies& dependencies,
+                       const std::unordered_set<AstVarScope*>& clockedWrites,
+                       OutputSources& visited, OutputSources& outputComb) {
+    if (!isUnderScope(vscp->scopep(), candidate.m_scopep) || vscp->varp()->subgraphCaptured()
+        || (vscp->scopep() == candidate.m_scopep && vscp->varp()->isNonOutput()
+            && vscp->varp()->subgraphPortId())) {
+        return false;
+    }
+    // Clocked writes terminate the combinational path, including lowered FF temporaries.
+    if (clockedWrites.count(vscp) || !visited.insert(vscp).second) return true;
+    const auto it = dependencies.find(vscp);
+    if (it == dependencies.end()) return true;
+    outputComb.insert(vscp);
+    for (AstVarScope* const sourcep : it->second) {
+        if (!collectOutputCone(sourcep, candidate, dependencies, clockedWrites, visited,
+                               outputComb)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 AstVarScope* posedgeClock(AstActive* activep) {
@@ -771,6 +770,8 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
                 mapped = false;
                 return;
             }
+            // Unshared boundaries keep their references, including descendant FF state.
+            if (implementationp == boundaryScopep) return;
             AstVarScope* const representativep = findVarScope(implementationp, refp->varp());
             if (!representativep) {
                 mapped = false;
@@ -958,15 +959,25 @@ SubgraphPlan::SubgraphPlan(AstNetlist* netlistp)
             });
         }
         if (candidate.m_rejection.empty()) {
-            std::unordered_map<AstVarScope*, bool> combHasFf;
-            std::unordered_set<AstVarScope*> visiting;
-            std::unordered_set<AstVarScope*> outputComb;
+            OutputDependencies dependencies;
+            for (const auto& pair : candidate.m_comb) {
+                collectOutputDependencies(VN_AS(pair.second->stmtsp(), Always)->stmtsp(),
+                                          dependencies, {});
+            }
+            OutputSources visited;
+            OutputSources outputComb;
             for (const EarlyCandidate::OutputBinding& output : candidate.m_outputs) {
-                bool hasFf = false;
-                if (!collectFfOutputCone(output.m_exprp.get(), false, candidate, combWriters,
-                                         clockedWrites, combHasFf, visiting, outputComb, hasFf)
-                    || !hasFf) {
+                bool valid = true;
+                output.m_exprp->foreach([&](AstNodeVarRef* refp) {
+                    if (valid
+                        && !collectOutputCone(refp->varScopep(), candidate, dependencies,
+                                              clockedWrites, visited, outputComb)) {
+                        valid = false;
+                    }
+                });
+                if (!valid) {
                     reject(candidate, "output is not FF state", output.m_exprp->fileline());
+                    break;
                 }
             }
             for (AstVarScope* const vscp : outputComb) {
