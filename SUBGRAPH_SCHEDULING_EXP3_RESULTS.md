@@ -45,14 +45,12 @@ there were 512 NBA shadow pairs, 512 publications, and 1024 child NBA actives.
 The 1026 receiver wrapper functions alone occupied 818391 C++ bytes at 512
 instances, while the shared evaluation body stayed at 1192 bytes. Total
 generated C++ was about 6.1 times larger than flat, and simulation was
-about 3.1 times slower. Flat inlines the child, so its `Scope, Subgraph
-boundary procedures` counter is zero; that counter alone does not mean flat
+about 3.1 times slower. Flat inlines the child, so its `Scope, Subgraph boundary procedures` counter is zero; that counter alone does not mean flat
 eliminated the child logic.
 
 Early subgraph separation succeeded for one instance but fell back for every
 instance when sharing was active. There were 512 fallbacks at 512 instances.
-The reason reported with `--debugi-V3SchedSubgraph 4` was `child combinational
-logic`: the early path cannot yet isolate the child's combinational output
+The reason reported with `--debugi-V3SchedSubgraph 4` was `child combinational logic`: the early path cannot yet isolate the child's combinational output
 handling. The late Order evaluation body is shared, but per-instance input
 capture, output publication, and wrapper functions remain in the parent
 schedule. Total AST nodes after Scope were 23643 flat versus 25196 shared at

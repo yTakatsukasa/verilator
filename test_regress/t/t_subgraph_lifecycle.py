@@ -11,9 +11,8 @@ import vltest_bootstrap
 
 test.scenarios('vlt')
 
-test.compile(verilator_flags2=[
-    "--subgraph-schedule", "--stats", "--dump-tree", "--dump-tree-json"
-])
+test.compile(
+    verilator_flags2=["--subgraph-schedule", "--stats", "--dump-tree", "--dump-tree-json"])
 test.execute()
 
 test.file_grep(test.stats, r'Subgraph boundary, elaborated specializations\s+(\d+)', 2)
@@ -39,8 +38,7 @@ test.file_grep_count(metadata, r'connection port=3 width=7 shape=VARREF referenc
 test.file_grep(metadata, r"instance=t__DOT__i_b expression=7'h2a")
 
 implementation = test.obj_dir + "/" + test.vm_prefix + "_sg_lifecycle__0.cpp"
-test.file_grep_count(implementation,
-                     r'vlSelfRef\.__Vdly__q = vlSelfRef\.__VsubgraphInput__2;', 1)
+test.file_grep_count(implementation, r'vlSelfRef\.__Vdly__q = vlSelfRef\.__VsubgraphInput__2;', 1)
 test.file_grep_not(implementation, r'vlSelfRef\.q = 0x2aU;')
 
 test.passes()
