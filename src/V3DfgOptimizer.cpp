@@ -82,11 +82,14 @@ class DataflowOptimize final {
                 const bool hasExtRd =  //
                     varp->isPrimaryIO()  // Top level port - readable
                     || varp->isSigUserRdPublic()  // Readable by user
+                    || varp->subgraphPublished()  // Read by the parent across the boundary
+                    || varp->subgraphSharedState()  // Used by another receiver after scheduling
                     || varp->constPoolEntry()  // Held in V3ConstPool lookup cache, keep
                     ;
                 const bool hasExtWr =  //
                     (varp->isPrimaryIO() && varp->isNonOutput())  // Top level port - writable
                     || varp->isSigUserRWPublic()  // Writable by user
+                    || varp->subgraphSharedState()  // Other receivers can supply distinct values
                     ;
                 if (hasExtRd) DfgVertexVar::setHasExtRdRefs(vscp);
                 if (hasExtWr) DfgVertexVar::setHasExtWrRefs(vscp);
