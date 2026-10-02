@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+# DESCRIPTION: Verilator: Shared subgraph logic respects clock domains and hierarchy
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2026 Wilson Snyder
+# SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+
+import vltest_bootstrap
+
+test.scenarios('vlt')
+test.compile(
+    make_main=False,
+    verilator_flags2=["--subgraph-schedule", "--stats", "-Wno-fatal", "--exe", test.pli_filename])
+test.execute()
+
+# Scope now runs before Inline: repeated wrapper instances retain their nested
+# cells, so those cells use local scheduling without early procedure sharing.
+test.file_grep(test.stats, r'Inst, Subgraph shared input captures\s+(\d+)', 3)
+test.file_grep(test.stats, r'Scope, Subgraph shared procedures\s+(\d+)', 2)
+test.file_grep(test.stats, r'Scheduling, Subgraph shared Order skips\s+(\d+)', 10)
+
+test.passes()

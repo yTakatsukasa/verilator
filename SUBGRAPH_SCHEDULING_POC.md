@@ -65,17 +65,46 @@ Local scheduling starts with a single rising-edge clock and compatible child
 logic. Multiple clocks, generated-clock dependencies, zero-delay scheduling,
 unsupported timing controls, and combinational cycles can require fallback.
 Eligibility is checked on the transformed AST, so the exact accepted shapes
-are defined by the implementation and accompanying tests.
+are defined by the implementation and accompanying tests. Output analysis
+rejects identified input feedthrough paths, but admits unknown local sources;
+it is not a complete proof of output provenance.
 
 Early sharing has stricter requirements than local scheduling. It requires
 compatible instances of the same elaborated specialization, supported local
 procedures and input connections, and single-threaded compilation. Failure
-to share does not itself imply failure to schedule locally.
+to share does not itself imply failure to schedule locally. Because upstream
+now scopes before inlining, a module nested inside repeated wrapper instances
+may use local scheduling without early sharing. The early check currently
+requires the elaborated cell count to equal the total instance count.
 
-The series preserves the source branch's accepted behavior, including its
-later extensions for combinational writes, input aliases, and output
-provenance. Tests cover both enabled and disabled operation, phase ordering,
+The series retains the source branch's extensions for combinational writes,
+input aliases, and output provenance. Adapting to upstream's Scope-before-Inline
+pipeline exposed a simulation mismatch for local combinational logic below an
+intermediate parent. These boundaries and their subgraph producers now remain together in the parent scheduler until the
+parent and child dependencies can be modeled correctly. Other independent
+boundaries and nested clocked-only boundaries can still schedule locally.
+Tests cover both enabled and disabled operation, phase ordering,
 fallback diagnostics, state independence, and generated-function sharing.
+
+## Implementation responsibilities
+
+`V3SubgraphBoundary` retains port identities, connection metadata, and RTL
+locations across elaboration, pin lowering, scoping, and NBA lowering.
+`V3SubgraphSharing` checks early sharing and creates per-instance input
+captures before Scope expands procedures. Inst retains its normal pin
+lowering; Scope retains representative bodies and independent receiver state.
+
+`V3SchedSubgraphEligibility` checks transformed logic and records fallback
+causes. `SubgraphPlan` in `V3SchedSubgraph` owns admitted logic and local
+partitioning, replication, settling, and input-combinational evaluation.
+`V3SchedSubgraphNba` orders next-state and publication functions, reuses
+compatible bodies, and emits receiver calls. These helpers use the existing
+scheduler and Order graph through explicit port contracts and phase edges.
+There is no separate subgraph RTL representation.
+
+The commit series starts from upstream/master `2a82047e4`. It introduces the
+proposal, selectors, boundary metadata, local scheduling with fallback, and
+early sharing, with regression tests next to the behavior they exercise.
 
 ## Measurements and questions for discussion
 

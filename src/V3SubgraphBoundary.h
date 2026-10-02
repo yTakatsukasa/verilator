@@ -42,6 +42,7 @@ public:
 
     void prepare(AstNetlist* netlistp);
     void scoped(AstNetlist* netlistp);
+    bool hasIntermediateParent(const AstScope* scopep) const;
     FileLine* externalAccessFileline(const AstScope* scopep) const;
     void delayed(AstNetlist* netlistp);
     void scheduled(AstNetlist* netlistp);

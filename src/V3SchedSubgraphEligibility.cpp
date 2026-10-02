@@ -721,6 +721,70 @@ class SubgraphEligibility final {
         checkOutputs(candidate);
     }
 
+    void checkIntermediateHierarchy() {
+        // Keep unsupported nested combinational transactions and their producers
+        // together in the parent scheduler. Falling back only the consumer can
+        // still expose a producer publication at the wrong point in its input cone.
+        OutputDependencies dependencies;
+        for (const auto& pair : m_allComb) {
+            collectOutputDependencies(pair.second->stmtsp(), dependencies, {});
+        }
+        std::map<AstVarScope*, SubgraphCandidate*> producers;
+        for (SubgraphCandidate& candidate : m_candidates) {
+            for (const auto& output : candidate.m_outputs) {
+                if (AstVarScope* const vscp
+                    = findVarScope(candidate.m_scopep, output.m_publishedVarp)) {
+                    producers.emplace(vscp, &candidate);
+                }
+                const auto receivers = m_receivers.find(candidate.m_scopep);
+                if (receivers == m_receivers.end()) continue;
+                for (AstScope* const receiverp : receivers->second) {
+                    if (AstVarScope* const vscp
+                        = findVarScope(receiverp, output.m_publishedVarp)) {
+                        producers.emplace(vscp, &candidate);
+                    }
+                }
+            }
+        }
+        for (SubgraphCandidate& candidate : m_candidates) {
+            if (!candidate.m_rejection.empty() || candidate.m_comb.empty()
+                || !m_boundary.hasIntermediateParent(candidate.m_scopep))
+                continue;
+            FileLine* const flp = candidate.m_comb.front().second->stmtsp()->fileline();
+            reject(candidate, "local combinational logic below intermediate hierarchy", flp);
+            OutputSources visited;
+            std::vector<AstVarScope*> pending;
+            const auto seed = [&](AstVarScope* vscp) {
+                if (visited.insert(vscp).second) pending.push_back(vscp);
+            };
+            const auto seedInputs = [&](const SubgraphCandidate& current) {
+                const auto readLogic = [&](const auto& logic) {
+                    for (const auto& pair : logic) {
+                        pair.second->foreach([&](AstNodeVarRef* refp) {
+                            if (refp->access().isReadOrRW()) seed(refp->varScopep());
+                        });
+                    }
+                };
+                readLogic(current.m_clocked);
+                readLogic(current.m_comb);
+            };
+            seedInputs(candidate);
+            for (size_t index = 0; index < pending.size(); ++index) {
+                AstVarScope* const vscp = pending[index];
+                const auto producer = producers.find(vscp);
+                if (producer != producers.end() && producer->second->m_rejection.empty()) {
+                    reject(*producer->second,
+                           "feeds local combinational logic below intermediate hierarchy", flp);
+                    seedInputs(*producer->second);
+                }
+                const auto source = dependencies.find(vscp);
+                if (source != dependencies.end()) {
+                    for (AstVarScope* const inputp : source->second) seed(inputp);
+                }
+            }
+        }
+    }
+
     void checkDerivedClocks() {
         // A clock derived from child FF state requires Active-region scheduling.
         // Boundary inputs and unrelated assignments in the same procedure do not
@@ -791,6 +855,7 @@ public:
         gather(netlistp);
         bindOutputs();
         for (SubgraphCandidate& candidate : m_candidates) checkCandidate(candidate);
+        checkIntermediateHierarchy();
         checkDerivedClocks();
     }
 

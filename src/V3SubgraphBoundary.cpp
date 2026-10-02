@@ -83,6 +83,7 @@ struct V3SubgraphBoundary::Impl final {
         m_scoped;  // Scoped variable counts indexed by boundary and port
     // Record RTL accesses before optimization creates cross-scope intermediate values.
     std::map<uint32_t, FileLine*> m_externalAccess;
+    std::set<uint32_t> m_nestedInstances;  // Boundaries below intermediate hierarchy before Inline
     unsigned m_specializations = 0;  // Number of selected elaborated modules
     unsigned m_nbaAssignments = 0;  // Delayed assignment count in selected modules
 
@@ -127,9 +128,15 @@ struct V3SubgraphBoundary::Impl final {
         netlistp->foreach([&](AstVarScope* vscp) {
             if (!vscp->varp()->subgraphPublished()) return;
             const Port& metadata = port(vscp->varp());
+            const std::pair<uint32_t, uint32_t> key{vscp->scopep()->subgraphInstanceId(),
+                                                    vscp->varp()->subgraphPortId()};
             const std::pair<const AstCell*, uint32_t> connection{vscp->scopep()->aboveCellp(),
                                                                  vscp->varp()->subgraphPortId()};
-            if (!m_connectedInstanceOutputs.count(connection)) {
+            // Inline may clone cells after Scope. Later checks use the stable
+            // instance/port identity resolved before those hierarchy edits.
+            const bool connected = afterDelayed ? m_scoped.count(key)
+                                                : m_connectedInstanceOutputs.count(connection);
+            if (!connected) {
                 UASSERT_OBJ(writers[vscp] == 0, vscp,
                             "Unconnected boundary output has a publication driver");
                 return;
@@ -143,14 +150,7 @@ struct V3SubgraphBoundary::Impl final {
             UASSERT_OBJ(vscp->scopep()->modp()->subgraphBoundary(), vscp,
                         "Publication escaped its boundary scope");
             UASSERT_OBJ(writers[vscp] == 1, vscp, "Boundary publication must have one driver");
-            const std::pair<uint32_t, uint32_t> key{vscp->scopep()->subgraphInstanceId(),
-                                                    vscp->varp()->subgraphPortId()};
-            if (afterDelayed) {
-                UASSERT_OBJ(
-                    m_scoped.count(key), vscp,
-                    "Publication was not resolved after Scope");  // Scoped variable counts indexed
-                                                                  // by boundary and port
-            } else {
+            if (!afterDelayed) {
                 UASSERT_OBJ(m_scoped.emplace(key, vscp->width()).second, vscp,
                             "Duplicate boundary publication identity");
             }
@@ -220,13 +220,11 @@ struct V3SubgraphBoundary::Impl final {
             *osp << "port " << id << " width=" << entry.m_width
                  << " direction=" << entry.m_direction.ascii() << " writes=" << entry.m_writes
                  << " specialization=" << VIdProtect::protect(entry.m_specialization)
-                 << " name=" << VIdProtect::protect(entry.m_name)
-                 << '\n';  // Original RTL port name
+                 << " name=" << VIdProtect::protect(entry.m_name) << '\n';
         }
         for (const Event& event : m_events) {
             *osp << "event " << event.m_edge.ascii() << " references=" << event.m_references.size()
-                 << " specialization=" << VIdProtect::protect(event.m_specialization)
-                 << '\n';  // Elaborated module specialization name
+                 << " specialization=" << VIdProtect::protect(event.m_specialization) << '\n';
         }
         for (const Connection& connection : m_connections) {
             *osp << "connection port=" << connection.m_portId << " width=" << connection.m_width
@@ -259,9 +257,8 @@ V3SubgraphBoundary::V3SubgraphBoundary(AstNetlist* netlistp)
         modp->foreach([&](AstAssignDly*) { ++m_impl->m_nbaAssignments; });
         modp->foreach([&](AstSenItem* senp) {
             Impl::Event event{modp->name(), senp->edgeType(), {}};
-            senp->foreach([&](AstNodeVarRef* refp) {
-                event.m_references.push_back(refp->varp()->name());
-            });  // RTL names referenced by the connection or event
+            senp->foreach(
+                [&](AstNodeVarRef* refp) { event.m_references.push_back(refp->varp()->name()); });
             m_impl->m_events.emplace_back(std::move(event));
         });
     });
@@ -299,11 +296,9 @@ void V3SubgraphBoundary::prepare(AstNetlist* netlistp) {
                                         ""};
             std::ostringstream expression;
             V3EmitV::verilogForTree(pinp->exprp(), expression);
-            connection.m_expression
-                = expression.str();  // Connected expression before pin lowering
+            connection.m_expression = expression.str();
             pinp->exprp()->foreach([&](AstNodeVarRef* refp) {
-                connection.m_references.push_back(
-                    refp->varp()->name());  // RTL names referenced by the connection or event
+                connection.m_references.push_back(refp->varp()->name());
             });
             m_impl->m_connections.emplace_back(std::move(connection));
         }
@@ -316,7 +311,12 @@ void V3SubgraphBoundary::scoped(AstNetlist* netlistp) {
     if (!v3Global.opt.subgraphSchedule()) return;
     uint32_t nextId = 0;
     netlistp->foreach([&](AstScope* scopep) {
-        if (scopep->modp()->subgraphBoundary()) scopep->subgraphInstanceId(++nextId);
+        if (!scopep->modp()->subgraphBoundary()) return;
+        scopep->subgraphInstanceId(++nextId);
+        const AstScope* const parentp = scopep->aboveScopep();
+        if (parentp && parentp->aboveScopep() && !parentp->aboveScopep()->isTop()) {
+            m_impl->m_nestedInstances.insert(nextId);
+        }
     });
     // Inst creates the port-to-publication copy in the parent scope. These two
     // references implement the boundary contract rather than bypassing it.
@@ -350,6 +350,10 @@ void V3SubgraphBoundary::scoped(AstNetlist* netlistp) {
     });
     V3Stats::addStat("Subgraph boundary, resolved instances", nextId);
     m_impl->publications(netlistp, false);
+}
+
+bool V3SubgraphBoundary::hasIntermediateParent(const AstScope* scopep) const {
+    return m_impl->m_nestedInstances.count(scopep->subgraphInstanceId());
 }
 
 FileLine* V3SubgraphBoundary::externalAccessFileline(const AstScope* scopep) const {
