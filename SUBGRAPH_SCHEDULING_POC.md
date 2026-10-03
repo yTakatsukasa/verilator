@@ -113,4 +113,3 @@ There is no separate subgraph RTL representation.
 The commit series starts from the upstream baseline above. It introduces the
 proposal, selectors, boundary metadata, local scheduling with fallback, and
 early sharing, with regression tests next to the behavior they exercise.
-
