@@ -174,8 +174,9 @@ class ProtectVisitor final : public VNVisitor {
                    " to use DPI libraries\n");
 
         // Module declaration
-        // Port ranges were checked in the source design; do not warn again in the wrapper.
-        txtp->add("// verilator lint_save\n// verilator lint_off ASCRANGE\n");
+        // Wrapper ranges preserve the original RTL, including intentional ascending ranges.
+        txtp->add("/*verilator lint_save*/\n");
+        txtp->add("/*verilator lint_off ASCRANGE*/\n");
         m_modPortsp = new AstTextBlock{fl, "module " + m_libName + " (\n", ", ", ");\n\n"};
         txtp->add(m_modPortsp);
 
@@ -319,7 +320,8 @@ class ProtectVisitor final : public VNVisitor {
         // Final
         txtp->add("final " + m_libName + "_protectlib_final(handle__V);\n\n");
 
-        txtp->add("endmodule\n// verilator lint_restore\n");
+        txtp->add("endmodule\n");
+        txtp->add("/*verilator lint_restore*/\n");
 
         configSection(modp, txtp, fl);
 

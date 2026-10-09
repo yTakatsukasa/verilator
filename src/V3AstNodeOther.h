@@ -304,6 +304,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
     // excluding $unit package stuff
     // @astgen op1 := inlinesp : List[AstNode]
     // @astgen op2 := stmtsp : List[AstNode]
+    // @astgen op3 := scSectionsp : List[AstSystemCSection]
     string m_name;  // Name of the module
     const string m_origName;  // Name of the module, ignoring name() changes, for dot lookup
     // dist-ast-dump-suppress  // For some user errors messages only, visible where used
@@ -1908,10 +1909,6 @@ public:
     AstCell* aboveCellp() const { return m_aboveCellp; }
     void aboveCellp(AstCell* nodep) { m_aboveCellp = nodep; }
     bool isTop() const VL_MT_SAFE { return aboveScopep() == nullptr; }  // At top of hierarchy
-    // Create new MODULETEMP variable under this scope
-    AstVarScope* createTemp(const string& name, unsigned width);
-    AstVarScope* createTemp(const string& name, AstNodeDType* dtypep);
-    AstVarScope* createTempLike(const string& name, const AstVarScope* vscp);
 };
 class AstSenItem final : public AstNode {
     // Parents:  SENTREE
@@ -2028,9 +2025,7 @@ public:
     AstSystemCSection(FileLine* fl, VSystemCSectionType sectionType, const std::string& text)
         : ASTGEN_SUPER_SystemCSection(fl)
         , m_sectionType{sectionType}
-        , m_text{text} {
-        v3Global.setHasSystemCSections();
-    }
+        , m_text{text} {}
     ASTGEN_MEMBERS_AstSystemCSection;
     VSystemCSectionType sectionType() const { return m_sectionType; }
     const std::string& text() const { return m_text; }
@@ -2103,6 +2098,9 @@ class AstTopScope final : public AstNode {
 public:
     ASTGEN_MEMBERS_AstTopScope;
     bool maybePointedTo() const override VL_MT_SAFE { return true; }
+    // Create new MODULETEMP variable in the top level scope. Name must start with '__V'
+    AstVarScope* createTemp(const string& name, unsigned width);
+    AstVarScope* createTemp(const string& name, AstNodeDType* dtypep);
 };
 class AstTypeTable final : public AstNode {
     // Container for hash of standard data types
@@ -2319,8 +2317,8 @@ class AstVar final : public AstNode {
     bool m_attrSFormat : 1;  // User sformat attribute
     bool m_attrSplitVar : 1;  // declared with split_var metacomment
     bool m_attrFsmState : 1;  // declared with fsm_state metacomment
-    bool m_attrFsmResetArc : 1;  // declared with fsm_reset_arc metacomment
     bool m_attrFsmArcInclCond : 1;  // declared with fsm_arc_include_cond metacomment
+    VFsmExpandType::en m_attrFsmStateExpand : 2;  // FSM expansion type for FSM coverage
     bool m_constPoolEntry : 1;  // Constant pool variable
     bool m_covergroupRefMember : 1;  // Persistent covergroup ref/const ref argument
     bool m_embeddedCovergroup : 1;  // Instance variable an embedded covergroup declares
@@ -2387,8 +2385,8 @@ class AstVar final : public AstNode {
         m_attrSFormat = false;
         m_attrSplitVar = false;
         m_attrFsmState = false;
-        m_attrFsmResetArc = false;
         m_attrFsmArcInclCond = false;
+        m_attrFsmStateExpand = VFsmExpandType::DEFAULT;
         m_constPoolEntry = false;
         m_covergroupRefMember = false;
         m_embeddedCovergroup = false;
@@ -2543,8 +2541,11 @@ public:
     void attrSFormat(bool flag) { m_attrSFormat = flag; }
     void attrSplitVar(bool flag) { m_attrSplitVar = flag; }
     void attrFsmState(bool flag) { m_attrFsmState = flag; }
-    void attrFsmResetArc(bool flag) { m_attrFsmResetArc = flag; }
     void attrFsmArcInclCond(bool flag) { m_attrFsmArcInclCond = flag; }
+    void attrFsmStateExpand(const VFsmExpandType flag) {
+        UASSERT_OBJ(flag < 4, this, "Expand mode value should be in range [0;3]");
+        m_attrFsmStateExpand = flag;
+    }
     bool constPoolEntry() const { return m_constPoolEntry; }
     void setConstPoolEntry() { m_constPoolEntry = true; }
     bool covergroupRefMember() const { return m_covergroupRefMember; }
@@ -2721,8 +2722,8 @@ public:
     bool attrSFormat() const { return m_attrSFormat; }
     bool attrSplitVar() const { return m_attrSplitVar; }
     bool attrFsmState() const { return m_attrFsmState; }
-    bool attrFsmResetArc() const { return m_attrFsmResetArc; }
     bool attrFsmArcInclCond() const { return m_attrFsmArcInclCond; }
+    VFsmExpandType attrFsmStateExpand() const { return m_attrFsmStateExpand; }
     AstIface* sensIfacep() const { return m_sensIfacep; }
     VRandAttr rand() const { return m_rand; }
     string verilogKwd() const override;

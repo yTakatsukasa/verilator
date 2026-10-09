@@ -44,33 +44,34 @@
 //======================================================================
 // CLASSES
 
-class DpiTypesToStringConverter VL_NOT_FINAL {
-public:
-    virtual string openArray(const AstVar*) const { return "const svOpenArrayHandle"; }
-    virtual string bitLogicVector(const AstVar* /*varp*/, bool isBit) const {
-        return isBit ? "svBitVecVal" : "svLogicVecVal";
-    }
-    virtual string primitive(const AstVar* varp) const {
-        string type;
-        const VBasicDTypeKwd keyword = varp->basicp()->keyword();
-        if (keyword.isDpiUnsignable() && !varp->basicp()->isSigned()) type = "unsigned ";
-        type += keyword.dpiType();
-        return type;
-    }
-    string convert(const AstVar* varp) const {
-        if (varp->isDpiOpenArray()) {
-            return openArray(varp);
-        } else if (const AstBasicDType* const basicp = varp->basicp()) {
-            if (basicp->isDpiBitVec() || basicp->isDpiLogicVec()) {
-                return bitLogicVector(varp, basicp->isDpiBitVec());
-            } else {
-                return primitive(varp);
-            }
+class DpiTypesToStringConverter VL_NOT_FINAL{public : virtual string openArray(const AstVar*)
+                                                 const {return "const svOpenArrayHandle";
+}
+virtual string bitLogicVector(const AstVar* /*varp*/, bool isBit) const {
+    return isBit ? "svBitVecVal" : "svLogicVecVal";
+}
+virtual string primitive(const AstVar* varp) const {
+    string type;
+    const VBasicDTypeKwd keyword = varp->basicp()->keyword();
+    if (keyword.isDpiUnsignable() && !varp->basicp()->isSigned()) type = "unsigned ";
+    type += keyword.dpiType();
+    return type;
+}
+string convert(const AstVar* varp) const {
+    if (varp->isDpiOpenArray()) {
+        return openArray(varp);
+    } else if (const AstBasicDType* const basicp = varp->basicp()) {
+        if (basicp->isDpiBitVec() || basicp->isDpiLogicVec()) {
+            return bitLogicVector(varp, basicp->isDpiBitVec());
         } else {
-            return "UNKNOWN";
+            return primitive(varp);
         }
+    } else {
+        return "UNKNOWN";
     }
-};
+}
+}
+;
 
 class AstNodeDType::CTypeRecursed final {
 public:
@@ -1441,8 +1442,12 @@ void AstCoverInc::dump(std::ostream& str) const {
     } else {
         str << "%E:UNLINKED";
     }
+    if (isDuplicate()) str << " [DUPLICATE]";
 }
-void AstCoverInc::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstCoverInc::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, isDuplicate);
+    dumpJsonGen(str);
+}
 void AstCoverOption::dump(std::ostream& str) const {
     Super::dump(str);
     str << " " << m_optType.ascii();
@@ -2246,7 +2251,7 @@ AstFuncRef* AstNetlist::stdPackageProcessSelfp(FileLine* flp) const {
 }
 AstVarScope* AstNetlist::stlFirstIterationp() {
     if (!m_stlFirstIterationp) {
-        m_stlFirstIterationp = topScopep()->scopep()->createTemp("__VstlFirstIteration", 1);
+        m_stlFirstIterationp = topScopep()->createTemp("__VstlFirstIteration", 1);
     }
     AstVarScope* const vscp = m_stlFirstIterationp;
     return vscp;
@@ -3495,26 +3500,6 @@ void AstSampled::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, internal);
     dumpJsonGen(str);
 }
-AstVarScope* AstScope::createTemp(const string& name, unsigned width) {
-    FileLine* const flp = fileline();
-    AstVar* const varp
-        = new AstVar{flp, VVarType::MODULETEMP, name, VFlagBitPacked{}, static_cast<int>(width)};
-    modp()->addStmtsp(varp);
-    AstVarScope* const vscp = new AstVarScope{flp, this, varp};
-    addVarsp(vscp);
-    return vscp;
-}
-AstVarScope* AstScope::createTemp(const string& name, AstNodeDType* dtypep) {
-    FileLine* const flp = fileline();
-    AstVar* const varp = new AstVar{flp, VVarType::MODULETEMP, name, dtypep};
-    modp()->addStmtsp(varp);
-    AstVarScope* const vscp = new AstVarScope{flp, this, varp};
-    addVarsp(vscp);
-    return vscp;
-}
-AstVarScope* AstScope::createTempLike(const string& name, const AstVarScope* vscp) {
-    return createTemp(name, vscp->dtypep());
-}
 void AstScope::dump(std::ostream& str) const {
     Super::dump(str);
     str << " [abovep=" << nodeAddr(aboveScopep()) << "]";
@@ -3749,6 +3734,19 @@ void AstTimeImport::dump(std::ostream& str) const {
 void AstTimeImport::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "timeunit", timeunit().ascii());
     dumpJsonGen(str);
+}
+AstVarScope* AstTopScope::createTemp(const string& name, unsigned width) {
+    return createTemp(name, findBitDType(width, width, VSigning::UNSIGNED));
+}
+AstVarScope* AstTopScope::createTemp(const string& name, AstNodeDType* dtypep) {
+    UASSERT_OBJ(VString::startsWith(name, "__V"), this,
+                "Temporary name must start with '__V': " << name);
+    FileLine* const flp = scopep()->fileline();
+    AstVar* const varp = new AstVar{flp, VVarType::MODULETEMP, name, dtypep};
+    scopep()->modp()->addStmtsp(varp);
+    AstVarScope* const vscp = new AstVarScope{flp, scopep(), varp};
+    scopep()->addVarsp(vscp);
+    return vscp;
 }
 void AstTraceDecl::dump(std::ostream& str) const {
     Super::dump(str);
@@ -4191,8 +4189,8 @@ void AstVar::dump(std::ostream& str) const {
     if (processQueue()) str << " [PROCQ]";
     if (sampled()) str << " [SAMPLED]";
     if (attrFsmState()) str << " [aFSMSTATE]";
-    if (attrFsmResetArc()) str << " [aFSMRESETARC]";
     if (attrFsmArcInclCond()) str << " [aFSMARCCOND]";
+    if (attrFsmState() || attrFsmArcInclCond()) str << " [" << attrFsmStateExpand() << "]";
     if (attrFileDescr()) str << " [aFD]";
     if (isFuncReturn()) {
         str << " [FUNCRTN]";
@@ -4233,8 +4231,10 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, processQueue);
     dumpJsonBoolFuncIf(str, sampled);
     dumpJsonBoolFuncIf(str, attrFsmState);
-    dumpJsonBoolFuncIf(str, attrFsmResetArc);
     dumpJsonBoolFuncIf(str, attrFsmArcInclCond);
+    if (attrFsmState() || attrFsmArcInclCond()) {
+        dumpJsonStr(str, "attrFsmStateExpand", attrFsmStateExpand().ascii());
+    }
     dumpJsonBoolFuncIf(str, attrFileDescr);
     dumpJsonBoolFuncIf(str, icoMaybeWritten);
     dumpJsonBoolFuncIf(str, isDpiOpenArray);
